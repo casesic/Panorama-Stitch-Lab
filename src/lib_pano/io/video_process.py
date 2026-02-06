@@ -11,7 +11,7 @@ def extract_video_frames(path_video: str, output_dir: str, frame_index: int = 1)
         return
     cap.set(cv.CAP_PROP_POS_FRAMES, frame_index)
     ret, frame = cap.read()
-    output_path = f"{output_dir}/frame_{frame_index:05d}_lrv.png"
+    output_path = f"{output_dir}/frame_{frame_index:05d}.png"
     cv.imwrite(output_path, frame)
     cap.release()
     print(f"已保存帧 {frame_index} 到 {output_path}")

@@ -17,10 +17,13 @@ def load_projected_image(idx):
         return None
     return img
 
-def stitch_cumulative(canvas, new_shard, aligner, step_idx, use_mesh_warp=True):
+def stitch_cumulative(canvas, new_shard, aligner, step_idx, use_mesh_warp=True, distribute_warp=True):
     """
     Aligns new_shard to canvas using RAFT with masking, then matches and blends.
     Returns the updated canvas.
+    Args:
+        distribute_warp (bool): If True, warp both Canvas and Shard towards a middle ground (Bidirectional).
+                                If False, only warp Shard towards Canvas (Unidirectional).
     """
     if new_shard is None:
         return canvas
@@ -55,6 +58,7 @@ def stitch_cumulative(canvas, new_shard, aligner, step_idx, use_mesh_warp=True):
     print("  Running RAFT alignment with Masking...")
     # We need flow if we are doing mesh warp
     return_flow = use_mesh_warp 
+    use_bidirectional = True # Enable bidirectional flow consistency check
     
     result_tuple = aligner.align_with_masking(
         img_source=crop_shard, 
@@ -62,11 +66,20 @@ def stitch_cumulative(canvas, new_shard, aligner, step_idx, use_mesh_warp=True):
         return_flow=return_flow,
         mask_people=False,      # ENABLE MASKING to ignore moving people
         dilate_pixels=30,      # DILATE to cover handheld objects/shadows
-        mask_threshold=0.5
+        mask_threshold=0.2,
+        bidirectional=use_bidirectional
     )
     
+    valid_mask = None
     if return_flow:
-        aligned_crop_shard, flow_roi, src_run, dst_run = result_tuple
+        if use_bidirectional:
+            aligned_crop_shard, flow_roi, valid_mask, src_run, dst_run = result_tuple
+            # Visualize mask for debug
+            if valid_mask is not None:
+                mask_vis = (valid_mask * 255).astype(np.uint8)
+                cv2.imwrite(os.path.join(debug_dir, f'step{step_idx}_flow_validity_mask.png'), mask_vis)
+        else:
+            aligned_crop_shard, flow_roi, src_run, dst_run = result_tuple
     else:
         aligned_crop_shard, src_run, dst_run = result_tuple
 
@@ -75,60 +88,106 @@ def stitch_cumulative(canvas, new_shard, aligner, step_idx, use_mesh_warp=True):
     # Prepare for Composition
     warped_shard_full = new_shard # Default: no global warp
     crop_to_blend = aligned_crop_shard # Default: use locally aligned cop
+    
+    # Store the canvas to be used for blending (it might be warped below)
+    canvas_to_blend = canvas
 
     if use_mesh_warp and return_flow:
-        print("  Applying Global Mesh Warp...")
         h_full, w_full = canvas.shape[:2]
         mesh_warper = MeshGridWarper(h_full, w_full, grid_size=32)
         
-        # Compute global displacement map
-        map_x, map_y = mesh_warper.compute_mesh_flow_from_roi(flow_roi, roi_bbox)
+        if distribute_warp:
+            print("  Applying Global Mesh Warp (Bidirectional / Distributed)...")
+            
+            # Compute global displacement map
+            # map_x, map_y maps SOURCE -> TARGET (Standard RAFT)
+            # But we want to distribute the warp.
+            # 1. Get the full field flow (Displacement D where Target(x) ~= Source(x + D))
+            _, _, full_flow = mesh_warper.compute_mesh_flow_from_roi(flow_roi, roi_bbox, validity_mask=valid_mask, return_flow=True)
+            
+            # 2. Distribute Flow
+            # We want to warp Canvas (Target) by +0.5 * D (Forward Warp direction Target->Mid)
+            # We want to warp Shard (Source) by -0.5 * D ??
+            
+            # Let's think about coordinates.
+            # Mid Coordinate m.
+            # Target coordinate x_t.
+            # Source coordinate x_s.
+            # x_s = x_t + D(x_t)
+            # We define m = x_t + 0.5 * D(x_t).
+            
+            # Warp Shard (Source) -> Mid:
+            # We need a map for remap(Source, map_shard). map_shard(m) should point to x_s.
+            # x_s = m + 0.5 * D(x_t).
+            # Since we only have D(x_t), we approximate D(x_t) approx D(m).
+            # map_shard = grid + 0.5 * D
+            
+            # Warp Canvas (Target) -> Mid:
+            # We need a map for remap(Target, map_canvas). map_canvas(m) should point to x_t.
+            # x_t = m - 0.5 * D(x_t).
+            # map_canvas = grid - 0.5 * D
+            
+            flow_mid = full_flow * 0.5
+            
+            grid_y, grid_x = np.mgrid[0:h_full, 0:w_full].astype(np.float32)
+            
+            # Map for Canvas: T -> Mid
+            map_x_canvas = grid_x - flow_mid[..., 0]
+            map_y_canvas = grid_y - flow_mid[..., 1]
+            
+            # Map for Shard: S -> Mid
+            # Note: map_x normally is x + flow. Here flow describes x_t -> x_s displacement.
+            # Source is at grid + full_flow relative to target.
+            # We want Source at grid + 0.5 * full_flow relative to Mid ??
+            # No.
+            # map_shard(m) = x_s.
+            # x_s = x_t + D.
+            # m = x_t + 0.5 D.
+            # x_s = m + 0.5 D.
+            map_x_shard = grid_x + flow_mid[..., 0]
+            map_y_shard = grid_y + flow_mid[..., 1]
+            
+            # Warp BOTH
+            canvas_to_blend = cv2.remap(canvas, map_x_canvas, map_y_canvas, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT)
+            warped_shard_full = cv2.remap(new_shard, map_x_shard, map_y_shard, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT)
+            
+            cv2.imwrite(os.path.join(debug_dir, f'step{step_idx}_warped_canvas_full.png'), canvas_to_blend)
+
+        else:
+            print("  Applying Global Mesh Warp (Unidirectional: Shard -> Canvas)...")
+            # Unidirectional: Only warp the new shard (Source) to match the Canvas (Target)
+            # The Canvas remains fixed.
+            map_x, map_y = mesh_warper.compute_mesh_flow_from_roi(flow_roi, roi_bbox, validity_mask=valid_mask)
+            
+            warped_shard_full = mesh_warper.warp_image(new_shard, map_x, map_y)
+            # canvas_to_blend remains the original canvas
         
-        # Warp the full source image (new_shard)
-        warped_shard_full = mesh_warper.warp_image(new_shard, map_x, map_y)
         cv2.imwrite(os.path.join(debug_dir, f'step{step_idx}_warped_shard_full.png'), warped_shard_full)
         
-        # Re-extract the ROI from the GLOBALLY warped image to use for blending
-        # This replaces the 'aligned_crop_shard' which was only locally warped
-        # Valid slicing: [y_min : y_max+1, x_min : x_max+1]
-        crop_to_blend = warped_shard_full[y1:y2+1, x1:x2+1] 
-        
-        # Double check size match 
-        if crop_to_blend.shape[:2] != crop_canvas.shape[:2]:
-            print(f"  Warning: Warped crop shape {crop_to_blend.shape} mismatch with canvas crop {crop_canvas.shape}. Resizing to fit.")
-            crop_to_blend = cv2.resize(crop_to_blend, (crop_canvas.shape[1], crop_canvas.shape[0]))
+        # ROI adjustments?
+        # Since we warped both globally, valid blending region is the intersection.
+        # However, blend_priority uses the full images.
+        # So we can just blend the globally warped images.
     else:
         print("  Skipping Mesh Warp (using local RAFT alignment only)...")
 
-    # 4. Blend the aligned shard into the canvas ROI
-    # crop_canvas is the Reference. aligned_crop_shard is the Adjusted Overlay.
-    # blend_priority typically takes (Source, Target). 
-    # Here we treat the new image as 'Source' to replace/blend onto 'Target' Canvas.
-    blended_roi = blend_priority(crop_to_blend, crop_canvas)
-    cv2.imwrite(os.path.join(debug_dir, f'step{step_idx}_blended_roi.png'), blended_roi)
-
-    # 5. Compose the full updated panorama
-    # We take the original 'new_shard' (which contains the non-overlapping parts we want to keep)
-    # and the 'canvas' (base), and update it with the 'blended_roi'.
-    # Note: 'compose_final_panorama' logic usually:
-    #   Output = Canvas (Target)
-    #   ROI Area = Blended ROI
-    #   Non-ROI Area of Shard = Added to output (if not black)
+    print("  Composing integration (Global Blend)...")
     
-    print("  Composing integration...")
-    updated_canvas = compose_final_panorama(
-        target_pano=canvas,       # The accumulating result
-        source_pano=warped_shard_full,    # The raw new image (provides the outlying pixels)
-        blended_roi=blended_roi,  # The fixed confluence area
-        roi_bbox=roi_bbox,
-        overlap_mask=overlap_mask
+    updated_canvas = blend_priority(
+        warped_shard_full, 
+        canvas_to_blend, 
+        use_target_mask=False, # Do NOT mask by target, strictly use Source validity
+        erode_kernel_size=3, 
+        save_cleaned_source_path=os.path.join(debug_dir, f'step{step_idx}_warped_shard_cleaned.png')
     )
     
     return updated_canvas
 
-def main():
+if __name__ == "__main__":
     print("=== Cumulative Stitching 'Snowball' Test ===")
     USE_MESH_WARP = True # Global Toggle for Mesh Warping
+    # 改为 True 启用双向光流分布（形变分摊），改为 False 使用单向形变（只变新图，画板不动）
+    DISTRIBUTE_WARP = True 
     
     # Initialize Aligner
     aligner = RAFTAligner()
@@ -138,25 +197,21 @@ def main():
     canvas = load_projected_image(0)
     if canvas is None:
         print("Failed to start: Cam 0 missing.")
-        return
-
-    # 2. Iterate through subsequent cameras
-    # Adding Cam 1, then Cam 2...
-    cam_indices = [1, 2] 
-    
-    for i, cam_idx in enumerate(cam_indices):
-        print(f"\n--- Adding Cam {cam_idx} ---")
-        new_img = load_projected_image(cam_idx)
+    else:
+        # 2. Iterate through subsequent cameras
+        # Adding Cam 1, then Cam 2...
+        cam_indices = [1, 2] 
         
-        # UPDATE the canvas by stitching the new image onto it
-        canvas = stitch_cumulative(canvas, new_img, aligner, step_idx=i+1, use_mesh_warp=USE_MESH_WARP)
-        
-        # Save intermediate checkpoint
-        out_path = os.path.join(ls.DATA_OUTPUT_DIR, 'test_raft_result', f'snowball_result_after_cam{cam_idx}.png')
-        cv2.imwrite(out_path, canvas)
-        print(f"Saved checkpoint: {out_path}")
+        for i, cam_idx in enumerate(cam_indices):
+            print(f"\n--- Adding Cam {cam_idx} ---")
+            new_img = load_projected_image(cam_idx)
+            
+            # UPDATE the canvas by stitching the new image onto it
+            canvas = stitch_cumulative(canvas, new_img, aligner, step_idx=i+1, use_mesh_warp=USE_MESH_WARP, distribute_warp=DISTRIBUTE_WARP)
+            
+            # Save intermediate checkpoint
+            out_path = os.path.join(ls.DATA_OUTPUT_DIR, 'test_raft_result', f'snowball_result_after_cam{cam_idx}.png')
+            cv2.imwrite(out_path, canvas)
+            print(f"Saved checkpoint: {out_path}")
 
     print("\nProcessing Complete.")
-
-if __name__ == "__main__":
-    main()

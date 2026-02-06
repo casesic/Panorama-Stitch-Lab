@@ -19,7 +19,7 @@ class MeshGridWarper:
         self.grid_h = int(np.ceil(full_h / grid_size))
         self.grid_w = int(np.ceil(full_w / grid_size))
 
-    def compute_mesh_flow_from_roi(self, flow_roi, roi_bbox):
+    def compute_mesh_flow_from_roi(self, flow_roi, roi_bbox, validity_mask=None, return_flow=False):
         """
         根据局部 ROI 的光流，推断出全局的网格形变场。
         采用 Masked Decay 策略：重叠区精确对齐，非重叠区平滑衰减至静止。
@@ -27,16 +27,20 @@ class MeshGridWarper:
         Args:
             flow_roi: (h_roi, w_roi, 2) numpy array, RAFT/GMFlow output.
             roi_bbox: (x_min, y_min, x_max, y_max) tuple, ROI 在全图中的位置.
+            validity_mask: (h_roi, w_roi) numpy array, optional. 
+                           光流可靠性掩码 (0 or 1.0)。如果提供，会过滤掉不可靠的像素（如遮挡区）。
+            return_flow: bool, 是否返回原始的光流场 (H, W, 2)
             
         Returns:
             map_x, map_y: 全图尺寸的 remap 映射表,可以直接传给 cv2.remap
+            (optional) full_flow: 全图的光流场 (H, W, 2)
         """
         x_min, y_min, x_max, y_max = roi_bbox
         
         # 1. 初始化全图的低分辨率 Grid Flow (h_grid, w_grid, 2)
         grid_flow = np.zeros((self.grid_h, self.grid_w, 2), dtype=np.float32)
         
-        # 记录哪些 Grid 是被 ROI 覆盖并“激活”的（有真实数据的）
+        # 记录哪些 Grid 是被 ROI 覆盖并“激活”的（有真实数据且有效的）
         grid_mask = np.zeros((self.grid_h, self.grid_w), dtype=np.bool_)
 
         # 2. 将 ROI 内的像素级光流“聚合”到网格控制点上
@@ -67,11 +71,31 @@ class MeshGridWarper:
                         intersect_x0 - x_min : intersect_x1 - x_min
                     ]
                     
-                    # 取均值作为该 Grid 的移动向量
-                    mean_motion = np.mean(roi_slice, axis=(0, 1))
-                    
-                    grid_flow[gy, gx] = mean_motion
-                    grid_mask[gy, gx] = True
+                    if validity_mask is not None:
+                        # 提取对应的 validity mask 片段
+                        mask_slice = validity_mask[
+                            intersect_y0 - y_min : intersect_y1 - y_min, 
+                            intersect_x0 - x_min : intersect_x1 - x_min
+                        ]
+                        
+                        # 仅使用有效的像素计算均值
+                        # 注意：valid_pixels 可能是空的（如果全是遮挡）
+                        valid_pixels = roi_slice[mask_slice > 0.5]
+                        
+                        if len(valid_pixels) > 0:
+                            mean_motion = np.mean(valid_pixels, axis=0)
+                            grid_flow[gy, gx] = mean_motion
+                            grid_mask[gy, gx] = True
+                        else:
+                            # 如果该Grid下所有像素都不可靠，该怎么办？
+                            # 策略：不标记为grid_mask=True，让它被后续的平滑/外推填补
+                            # 或者强制为0
+                            pass
+                    else:
+                        # 旧逻辑：无脑取均值
+                        mean_motion = np.mean(roi_slice, axis=(0, 1))
+                        grid_flow[gy, gx] = mean_motion
+                        grid_mask[gy, gx] = True
 
         # 3. 外推/传播 (Extrapolation / Propagation) - Masked Decay Strategy
         # 需求是：非Overlap区域尽量不动，但不能撕裂。
@@ -135,7 +159,7 @@ class MeshGridWarper:
         elif np.all(inv_mask == 0): # 全是 ROI
              dist_map = np.zeros_like(inv_mask, dtype=np.float32)
         else:
-            dist_map = cv2.distanceTransform(inv_mask, cv2.DIST_L2, 5) 
+            dist_map = cv2.distanceTransform(inv_mask, cv2.DIST_L2, 5) # 计算最近0像素距离
         
         # 设定衰减半径 (Grid count). 8 grids * 32 px = 256 px
         decay_radius = 12.0 
@@ -165,6 +189,8 @@ class MeshGridWarper:
         map_x = (grid_x + full_flow[..., 0]).astype(np.float32)
         map_y = (grid_y + full_flow[..., 1]).astype(np.float32)
         
+        if return_flow:
+            return map_x, map_y, full_flow
         return map_x, map_y
 
     def warp_image(self, img, map_x, map_y):

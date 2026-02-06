@@ -80,14 +80,33 @@ def extract_overlap_roi(img1: np.ndarray, img2: np.ndarray, overlap_mask: np.nda
     
     return crop1, crop2, roi_bbox
 
-def blend_priority(img1, img2):
+def blend_priority(img1, img2, threshold=10, use_target_mask=False, save_cleaned_source_path=None, erode_kernel_size=0):
     """
-    优先使用img1，img1为黑色/透明时使用img2
+    使用灰度值判断, 避免单通道为0的问题
+    :param use_target_mask: 是否利用 img2 的Mask来过滤 img1 (清除warp产生的artifacts)
+    :param save_cleaned_source_path: 如果不为None, 且启用了use_target_mask, 则将清洗后的img1保存到此路径
+    :param erode_kernel_size: 腐蚀Mask的核大小, 用于去除边缘插值产生的杂色. 默认为3.
     """
-    mask = np.all(img1 > 0, axis=2).astype(np.uint8) * 255
+    img1_to_process = img1
+    if use_target_mask:
+        img1_to_process = img1.copy()
+        gray2 = cv2.cvtColor(img2, cv2.COLOR_BGR2GRAY)
+        mask2 = (gray2 > 1) # Boolean mask, threshold 1 to catch any non-black
+        img1_to_process[~mask2] = 0
+        
+        if save_cleaned_source_path:
+            cv2.imwrite(save_cleaned_source_path, img1_to_process)
+
+    # 转换为灰度图
+    gray = cv2.cvtColor(img1_to_process, cv2.COLOR_BGR2GRAY)
+    mask = (gray > threshold).astype(np.uint8) * 255
     
-    # 应用掩码
-    result = img1.copy()
+    # 增加腐蚀操作, 收缩 Mask, 以去除边缘插值引入的灰黑色伪影
+    if erode_kernel_size > 0:
+        kernel = np.ones((erode_kernel_size, erode_kernel_size), np.uint8)
+        mask = cv2.erode(mask, kernel, iterations=1)
+    
+    result = img1_to_process.copy()
     result[mask == 0] = img2[mask == 0]
     
     return result
