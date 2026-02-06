@@ -83,86 +83,216 @@ def omnidir_to_equirect(input_img, mei_params, out_w=2048, out_h=1024, border_mo
     equi = cv2.remap(input_img, map_x, map_y, interpolation=cv2.INTER_LINEAR, borderMode=border_mode)
     return equi
 
-# 这是针对鱼眼相机的Ds-None模型(标定文件里说的是)
 
-def kalibr_fisheye_to_equirectangular(
+def double_sphere_to_equirectangular(input_img, mei_params, out_w=1920, out_h=960):
+    """
+    基于 Kalibr Double Sphere (DS) 模型的鱼眼图转经纬图
+    Params keys used: 'xi_ds', 'alpha', 'fx', 'fy', 'cx', 'cy'
+    """
+    xi = mei_params.get('xi_ds', 0.0)
+    alpha = mei_params.get('alpha', 0.0)
+    fx = mei_params['fx']
+    fy = mei_params['fy']
+    cx = mei_params['cx']
+    cy = mei_params['cy']
+    
+    h, w = out_h, out_w
+    u = np.linspace(0, w - 1, w)
+    v = np.linspace(0, h - 1, h)
+    uu, vv = np.meshgrid(u, v)
+
+    # 1. Equirect -> Camera Vector
+    # v=0(Top) -> Lat=pi/2
+    lat = (0.5 - vv / float(h)) * np.pi
+    lon = (uu / float(w) - 0.5) * 2.0 * np.pi
+    
+    # Camera frame: Z-Forward, X-Right, Y-Down
+    # World frame: Y-Up, Z-Forward (center of pano), X-Right
+    # So Y_c = -Y_w
+    
+    cos_lat = np.cos(lat)
+    sin_lat = np.sin(lat)
+    cos_lon = np.cos(lon)
+    sin_lon = np.sin(lon)
+    
+    # Using standard conversion
+    x = cos_lat * sin_lon
+    y = -sin_lat
+    z = cos_lat * cos_lon
+    
+    # 2. DS Projection (3D -> 2D)
+    # d1 = sqrt(x^2 + y^2 + z^2). Since unit vector, d1=1.
+    d1 = 1.0
+    
+    # z' = z + xi * d1
+    z_prime = z + xi
+    
+    # d2 = sqrt(x^2 + y^2 + z'^2)
+    x2_y2 = x*x + y*y
+    d2 = np.sqrt(x2_y2 + z_prime*z_prime)
+    
+    # denom = alpha * d2 + (1 - alpha) * z'
+    denom = alpha * d2 + (1.0 - alpha) * z_prime
+    
+    # Avoid division by zero
+    valid_mask = np.abs(denom) > 1e-6
+    
+    # Normalized coords
+    # u_n = x / denom
+    # v_n = y / denom
+    # Using 'where' to handle safe division
+    safe_denom = denom.copy()
+    safe_denom[~valid_mask] = np.nan
+    
+    u_norm = x / safe_denom
+    v_norm = y / safe_denom
+    
+    # Pixel coords
+    map_x = fx * u_norm + cx
+    map_y = fy * v_norm + cy
+    
+    map_x = map_x.astype(np.float32)
+    map_y = map_y.astype(np.float32)
+    
+    # Mask out invalid points (e.g. behind camera)
+    # Since z is the forward axis, z < 0 implies point is behind camera plane (FOV > 180)
+    # User requested to ban z < 0
+    map_x[z <= 0] = -1.0
+    map_y[z <= 0] = -1.0
+    
+    output = cv2.remap(input_img, map_x, map_y, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT)
+    return output
+
+
+def fisheye_to_equirectangular(
     fisheye_img, 
-    k1, k2, fx, fy, cx, cy, 
+    mei_params,
+    out_w=1920,
+    out_h=960
 ):
     """
-    将Kalibr标定的鱼眼图像转换为经纬图
+    基于 Kannala-Brandt (KB4) 模型的鱼眼图转经纬图 (Equidistant)
     """
-    h, w = fisheye_img.shape[:2]
+    k1 = mei_params['k1']
+    k2 = mei_params['k2']
+    k3 = mei_params.get('p1', 0.0) # p1 slot used for k3
+    k4 = mei_params.get('p2', 0.0) # p2 slot used for k4
     
-    # 1. 创建经纬图网格
-    equi_h, equi_w = h, w * 2  # 2:1宽高比
-    phi, theta = np.meshgrid(
-        np.linspace(-np.pi, np.pi, equi_w),
-        np.linspace(-np.pi/2, np.pi/2, equi_h)
-    )
+    fx, fy = mei_params['fx'], mei_params['fy']
+    cx, cy = mei_params['cx'], mei_params['cy']
     
-    # 2. 球面坐标 -> 单位向量
-    x = np.cos(theta) * np.cos(phi)
-    y = np.cos(theta) * np.sin(phi)
-    z = np.sin(theta)
+    h, w = out_h, out_w
     
-    # 3. 计算在鱼眼图像上的位置
-    # 注意：需要根据相机外参旋转到相机坐标系
-    # 这里假设相机光轴对应经纬图的 (0,0) -> (θ=0, φ=0)
+    u = np.linspace(0,  w - 1, w)
+    v = np.linspace(0, h - 1, h)
+    uu, vv = np.meshgrid(u, v)
     
-    # 计算入射角
-    theta_angle = np.arccos(z)  # 与光轴的夹角
-    phi_angle = np.arctan2(y, x)  # 方位角
+    lat = (0.5 - vv / float(h)) * np.pi
+    lon = (uu / float(w) - 0.5) * 2.0 * np.pi
+
+    cos_lat = np.cos(lat)
+    sin_lat = np.sin(lat)
+    cos_lon = np.cos(lon)
+    sin_lon = np.sin(lon)
+
+    x_c = cos_lat * sin_lon 
+    y_c = -sin_lat               
+    z_c = cos_lat * cos_lon      
     
-    # 4. Kalibr鱼眼投影：theta -> r
-    # 需要解逆问题：已知r，求theta
-    # r_projected = theta * (1 + k1*theta² + k2*theta⁴)
+    theta = np.arccos(z_c) 
+    phi = np.arctan2(y_c, x_c)
+
+    theta_2 = theta ** 2
+    theta_4 = theta_2 ** 2
+    theta_6 = theta_2 * theta_4
+    theta_8 = theta_4 ** 2
     
-    # 简化：如果小畸变，可直接近似
-    r_normalized = np.tan(theta_angle)  # 对于小角度近似
+    theta_d = theta * (1.0 + k1 * theta_2 + k2 * theta_4 + k3 * theta_6 + k4 * theta_8)
     
-    # 考虑畸变
-    r_distorted = theta_angle * (1 + k1 * theta_angle**2 + k2 * theta_angle**4)
+    u_fish = fx * theta_d * np.cos(phi) + cx
+    v_fish = fy * theta_d * np.sin(phi) + cy
     
-    # 5. 映射到鱼眼图像像素
-    u_fisheye = fx * r_distorted * np.cos(phi_angle) + cx
-    v_fisheye = fy * r_distorted * np.sin(phi_angle) + cy
-    
-    # 6. 采样
+    # Mask z < 0 to avoid wrapping artifacts or projecting back-sphere
+    u_fish[z_c <= 0] = -1.0
+    v_fish[z_c <= 0] = -1.0
+
     equirectangular = cv2.remap(
         fisheye_img, 
-        u_fisheye.astype(np.float32), 
-        v_fisheye.astype(np.float32),
-        cv2.INTER_LINEAR
+        u_fish.astype(np.float32), 
+        v_fish.astype(np.float32),
+        interpolation=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=(0,0,0)
     )
     
     return equirectangular
 
 
 def test_main(calib_path: str, camera_name:str, image_path: str, out_path: str, flip_v: bool):
-    K, distortion, xi = load_single_K_and_distortion(calib_path, camera_name)
-    k1, k2 , p1, p2 = distortion[0], distortion[1], distortion[2], distortion[3]
+    # Updated to receive model name
+    K, distortion, xi, model = load_single_K_and_distortion(calib_path, camera_name)
+    
+    # Universal params extraction
     fx, fy = K[0,0], K[1,1]
     cx, cy = K[0,2], K[1,2]
+
+    use_ds = False
+    use_kb = False
+    
+    # Check model string
+    if 'ds' in model or 'double' in model:
+        use_ds = True
+    elif 'equi' in model or 'kb' in model:
+        use_kb = True
+    
+    # For 135 calibration explicitly mentioned in task:
+    if model == 'ds-none':
+        use_ds = True
+
     mei_params = {
-        'k1': k1,
-        'k2': k2,
-        'p1': p1,
-        'p2': p2,
-        'xi': xi,
-        'fx': fx,
-        'fy': fy,
-        'cx': cx,
-        'cy': cy,
+        'fx': fx, 'fy': fy, 'cx': cx, 'cy': cy
     }
+
+    if use_ds:
+        print(f"[Info] Detected Double Sphere model: {model}")
+        # In this specific custom json, DS params seem to be in 'distortion' array
+        mei_params['xi_ds'] = distortion[0]
+        mei_params['alpha'] = distortion[1]
+        
+    elif use_kb:
+        print(f"[Info] Detected Equidistant/KB model: {model}")
+        mei_params['k1'] = distortion[0]
+        mei_params['k2'] = distortion[1]
+        mei_params['p1'] = distortion[2]
+        mei_params['p2'] = distortion[3]
+        
+    else:
+        # Default / Fallback / Omni
+        # If camera is one of the 135s but model was not detected as DS, maybe default to DS if params look like it?
+        # But stick to safe logic
+        print(f"[Info] Using default Omni/MEI model: {model}")
+        mei_params['xi'] = xi
+        mei_params['k1'] = distortion[0]
+        mei_params['k2'] = distortion[1]
+        mei_params['p1'] = distortion[2]
+        mei_params['p2'] = distortion[3]
+
     img = cv2.imread(image_path, cv2.IMREAD_COLOR)
     if img is None:
         raise RuntimeError('无法打开输入图像: %s' % image_path)
-
-    equi = omnidir_to_equirect(img, mei_params, out_w=1920, out_h=960, flip_v=flip_v)
+    
+    if use_ds:
+        equi = double_sphere_to_equirectangular(img, mei_params, out_w=1920, out_h=960)
+    elif use_kb: 
+        equi = fisheye_to_equirectangular(img, mei_params, out_w=1920, out_h=960)
+    else:
+        # Legacy check if we want to force something for specific cameras
+        if camera_name in ['camera1', 'camera3', 'camera5'] and 'ds' not in model:
+             # Previously forced KB4 here, but if model is not DS, maybe it IS KB4? 
+             # Let's trust the model string first.
+             equi = fisheye_to_equirectangular(img, mei_params, out_w=1920, out_h=960)
+        else:
+             equi = omnidir_to_equirect(img, mei_params, out_w=1920, out_h=960, flip_v=flip_v)
 
     cv2.imwrite(out_path, equi)
     print('写出：', out_path)
-    
-    
-# 可以作为一个优化思路吧，把overlap投到赤道上

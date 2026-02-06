@@ -16,6 +16,7 @@ def load_single_K_and_distortion(path_calib: str, camera_name: str):
     if camera_name not in results:
         raise ValueError(f"相机名称 {camera_name} 不存在于标定文件中")
     camera_data = results[camera_name]
+    model = camera_configs.get("model", "unknown")
     distortion = np.array(camera_data["distortion"], dtype=np.float32)
     K_params = camera_data["K"]
     xi = K_params[0]  # Omni模型特有参数
@@ -27,7 +28,7 @@ def load_single_K_and_distortion(path_calib: str, camera_name: str):
         [0, fy, cy],
         [0, 0, 1]
     ], dtype=np.float32)
-    return K_matrix, distortion, xi
+    return K_matrix, distortion, xi, model
     
 
 def load_R_and_T(path_calib: str):
@@ -136,16 +137,26 @@ def load_opt_R_and_T(path_opt_calib: str):
     
 
 def load_all_K_and_distortion(path_calib: str):
+    # Try to detect if we should use 135 cams (camera1, 3, 5) or 200 cams (camera2, 4, 6)
+    # But for now hardcode or try-catch
     camera_name_list = ["camera2", "camera4", "camera6"]
+    # Quick hack: check if these exist
+    with open(path_calib, 'r') as f:
+        data = json.load(f)
+    if "camera1" in data["camera_configs"]["results"]:
+         camera_name_list = ["camera1", "camera3", "camera5"]
+
     K_list = []
     distortion_list = []
     xi_list = []
+    model_list = []
     for camera_name in camera_name_list:
-        K, distortion, xi = load_single_K_and_distortion(path_calib, camera_name)
+        K, distortion, xi, model = load_single_K_and_distortion(path_calib, camera_name)
         K_list.append(K)
         distortion_list.append(distortion)  
         xi_list.append(xi)
-    return camera_name_list, K_list, distortion_list, xi_list
+        model_list.append(model)
+    return camera_name_list, K_list, distortion_list, xi_list, model_list
 
 def create_rotation_matrix_y_axis(angle_rad: float) -> np.ndarray:
     """

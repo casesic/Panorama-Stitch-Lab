@@ -144,7 +144,7 @@ def undistort_r1_quick(path_in, path_out, path_intrinsic):
     cv.imwrite(path_out, undist)
 
 def undistort_r2_quick(path_calib: str, camera_name: str, path_in: str, path_out: str):
-    K, distortion, xi = load_single_K_and_distortion(path_calib, camera_name)
+    K, distortion, xi, _ = load_single_K_and_distortion(path_calib, camera_name)
     D = np.array([distortion[0], distortion[1], 0, 0, 0])
     img = cv.imread(path_in)
     # undist = cv.fisheye.undistortImage(img, K, D)

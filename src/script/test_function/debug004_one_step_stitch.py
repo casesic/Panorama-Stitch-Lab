@@ -13,6 +13,11 @@ image135_paths = [
     os.path.join(ls.IMAGE_ORIGIN3_DIR, 'frame_00001_rotate.png'),
     os.path.join(ls.IMAGE_ORIGIN5_DIR, 'frame_00001_rotate.png'),
 ]
-output_path = os.path.join(ls.DATA_OUTPUT_DIR, 'preview','frame_246_00001_stitched.png')
-one_step_stitch(image246_paths, ls.CAMERA_CALIB_FILE, ls.CALIB_OPT_FILE, output_path)
+output_path = os.path.join(ls.DATA_OUTPUT_DIR, 'preview','frame_135_00001_stitched.png')
+# using 135 config
+# Pass 135 calib as both arguments (second one is ignored by logic but must be valid str)
+one_step_stitch(image135_paths, ls.CAMERA_135_CALIB_FILE, ls.CAMERA_135_CALIB_FILE, output_path)
+
+# output_path = os.path.join(ls.DATA_OUTPUT_DIR, 'preview','frame_246_00001_stitched.png')
+# one_step_stitch(image246_paths, ls.CAMERA_CALIB_FILE, ls.CALIB_OPT_FILE, output_path)
 

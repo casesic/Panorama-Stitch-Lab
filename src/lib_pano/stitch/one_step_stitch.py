@@ -24,6 +24,63 @@ def forward_unified_to_normalized(X: np.ndarray, Y: np.ndarray, Z: np.ndarray, x
     return mx, my
 
 
+def forward_kb4_to_pixel(X: np.ndarray, Y: np.ndarray, Z: np.ndarray, 
+                         k1: float, k2: float, k3: float, k4: float,
+                         fx: float, fy: float, cx: float, cy: float):
+    """Kannala-Brandt (Equidistant) Model Forward Projection
+    World/Cam coords -> Pixel coords
+    """
+    r = np.sqrt(X*X + Y*Y + Z*Z)
+    theta = np.arccos(Z / (r + 1e-8))
+    phi = np.arctan2(Y, X)
+    
+    theta_2 = theta * theta
+    theta_4 = theta_2 * theta_2
+    theta_6 = theta_4 * theta_2
+    theta_8 = theta_4 * theta_4
+    
+    theta_d = theta * (1.0 + k1 * theta_2 + k2 * theta_4 + k3 * theta_6 + k4 * theta_8)
+    
+    x_dist = theta_d * np.cos(phi)
+    y_dist = theta_d * np.sin(phi)
+    
+    u = fx * x_dist + cx
+    v = fy * y_dist + cy
+    
+    return u, v
+
+
+def forward_ds_to_pixel(X: np.ndarray, Y: np.ndarray, Z: np.ndarray, 
+                        xi: float, alpha: float,
+                        fx: float, fy: float, cx: float, cy: float):
+    """Double Sphere Model Forward Projection"""
+    # d1 = sqrt(x^2 + y^2 + z^2)
+    # z' = z + xi * d1
+    # d2 = sqrt(x^2 + y^2 + z'^2)
+    # denom = alpha * d2 + (1 - alpha) * z'
+    
+    # Normalized:
+    # u = x / denom
+    # v = y / denom
+    
+    d1 = np.sqrt(X*X + Y*Y + Z*Z)
+    z_prime = Z + xi * d1
+    
+    d2 = np.sqrt(X*X + Y*Y + z_prime*z_prime)
+    denom = alpha * d2 + (1.0 - alpha) * z_prime
+    
+    # Valid check?
+    
+    u_n = X / (denom + 1e-8)
+    v_n = Y / (denom + 1e-8)
+    
+    u = fx * u_n + cx
+    v = fy * v_n + cy
+    
+    return u, v
+
+
+
 def apply_radtan_distortion(mx: np.ndarray, my: np.ndarray, k1: float, k2: float, p1: float, p2: float):
     """对无畸变归一化坐标应用 Radtan 畸变模型，返回畸变后的归一化坐标 (xd, yd)。"""
     x = mx
@@ -82,6 +139,7 @@ def remap_and_accumulate(
     xis: List[float],
     Rs: List[np.ndarray],
     Ts: List[np.ndarray],
+    models: List[str],  # Added models list
     output_size: Tuple[int, int] = (1024, 512),
 ):
     """对一组相机进行反向映射并融合：
@@ -92,15 +150,22 @@ def remap_and_accumulate(
     返回融合后的 BGR uint8 全景图
     """
     H, W = output_size[1], output_size[0]
-    H = pano_dirs.shape[0]
-    W = pano_dirs.shape[1]
+    # H = pano_dirs.shape[0] # Overwriting param H? Careful.
+    # W = pano_dirs.shape[1] # Prefer using output_size or shape of dirs if matched.
+    H_grid, W_grid = pano_dirs.shape[:2]
 
 
     dirs_flat = pano_dirs.reshape(-1, 3).T  # 3,N 列向量形式，便于右乘外参
     # 为接缝合并准备每相机的采样与权重栈（硬边界：选择权重最高的相机）
     num_cam = len(images)
-    sampled_stack = np.zeros((num_cam, H, W, 3), dtype=np.float64)
-    weight_stack = np.zeros((num_cam, H, W), dtype=np.float64)
+    
+    # Ensure num_cam matches provided params
+    if len(models) < num_cam:
+        # Fallback if models not provided correctly
+        models = ["unknown"] * num_cam
+
+    sampled_stack = np.zeros((num_cam, H_grid, W_grid, 3), dtype=np.float64)
+    weight_stack = np.zeros((num_cam, H_grid, W_grid), dtype=np.float64)
     # 修改一下 让R[1] = R[2] R[2] =R[1]  PROBLEM
     # Rs[1], Rs[2] = Rs[2], Rs[1]  
     for idx, img in enumerate(images):
@@ -109,58 +174,120 @@ def remap_and_accumulate(
         xi = xis[idx]
         R = Rs[idx]
         t = Ts[idx]
+        model = models[idx]
 
         ih, iw = img.shape[:2]
 
         fx = float(K[0, 0]); fy = float(K[1, 1]); cx = float(K[0, 2]); cy = float(K[1, 2])
-        k1 = float(dist[0]) if dist.size > 0 else 0.0
-        k2 = float(dist[1]) if dist.size > 1 else 0.0
-        p1 = float(dist[2]) if dist.size > 2 else 0.0
-        p2 = float(dist[3]) if dist.size > 3 else 0.0
+        
+        # Decide projection method
+        use_ds = False
+        use_kb = False
+        
+        if 'ds' in model or 'double' in model:
+            use_ds = True
+        elif 'equi' in model or 'kb' in model:
+            use_kb = True
+        elif model == 'ds-none': # Specific case from json
+            use_ds = True
+            
+        if use_ds:
+             # DS params: usually distortion=[xi, alpha, 0, 0] in that json
+             # Double check param interpretation
+             xi_ds = float(dist[0])
+             alpha = float(dist[1])
+             # xi from K is usually for Omni, ignore if DS uses dist[0]
+        elif use_kb:
+             k1 = float(dist[0])
+             k2 = float(dist[1])
+             p1 = float(dist[2]) # k3
+             p2 = float(dist[3]) # k4
+        else:
+             # Default Unified/Omni
+             k1 = float(dist[0]) if dist.size > 0 else 0.0
+             k2 = float(dist[1]) if dist.size > 1 else 0.0
+             p1 = float(dist[2]) if dist.size > 2 else 0.0
+             p2 = float(dist[3]) if dist.size > 3 else 0.0
+
 
         # 将世界点/方向转换到相机坐标系（包含外参平移）：
         # 真实关系为 Pc = R^T * (Pw - t)。使用行向量表示,做转置了以后,则为 Pc_row = (Pw_row - t_row) @ R
         # R_inv, T_inv = Get_inv_RT(R, t) # wor_to_cam
         R_wor_to_cam , T_wor_to_cam = R, t
-        euler_X, euler_Y, euler_Z = get_camera_std_euler_by_R(R_wor_to_cam)
-        print(f"euler_X:{euler_X}, euler_y:{euler_Y}, euler_Z:{euler_Z}\n")
+        # euler_X, euler_Y, euler_Z = get_camera_std_euler_by_R(R_wor_to_cam)
+        # print(f"euler_X:{euler_X}, euler_y:{euler_Y}, euler_Z:{euler_Z}\n")
         dirs_cam = R_wor_to_cam @ dirs_flat   # 3,N 列向量
         # dirs_cam = dirs_flat
         dirs_cam = normalize_dirs_cam(dirs_cam)
-        print(dirs_cam.shape)
+        # print(dirs_cam.shape)
         Xc = dirs_cam[0, :]
         Yc = dirs_cam[1, :]
         Zc = dirs_cam[2, :]
 
         # 仅保留面向相机的像素（Zc > 0）
-        facing = Zc > 1e-6
-        if not np.any(facing):
-            continue
+        # 对于 Fisheye > 180 度 FOV, Zc>0 限制可能太严格了?
+        # DS/KB4 supports > 180 (Zc can be negative).
+        # Unified usually supports > 180 depending on xi.
+        # However, for stitching we usually want the front facing part.
+        # But if FOV is 220, we want Zc slightly negative too.
+        # Let's relax facing check for fisheye models or check projection validity.
+        
+        # Valid mask based on Zc
+        if use_ds or use_kb:
+            # Allow slightly back
+            # But usually we filter by image circle boundary (FOV) later?
+            # Let's allow all for now and filter by map_x/map_y range
+            pass
+        else:
+            # Unified old logic
+            facing = Zc > 1e-6
+            if not np.any(facing):
+                continue
 
-        # 前向统一模型 -> 无畸变归一化坐标
-        mx, my = forward_unified_to_normalized(Xc, Yc, Zc, xi)
+        if use_ds:
+            map_x_flat, map_y_flat = forward_ds_to_pixel(
+                Xc, Yc, Zc, xi_ds, alpha, fx, fy, cx, cy
+            )
+        elif use_kb:
+            map_x_flat, map_y_flat = forward_kb4_to_pixel(
+                Xc, Yc, Zc, k1, k2, p1, p2, fx, fy, cx, cy
+            )
+        else:
+            # Unified
+            mx, my = forward_unified_to_normalized(Xc, Yc, Zc, xi)
+            xd, yd = apply_radtan_distortion(mx, my, k1, k2, p1, p2)
+            map_x_flat = xd * fx + cx
+            map_y_flat = yd * fy + cy
 
-        # 应用 radtan 畸变
-        xd, yd = apply_radtan_distortion(mx, my, k1, k2, p1, p2)
-        # xd, yd = mx, my
-
-        # 映射到像素坐标
-        map_x = (xd * fx + cx).reshape(H, W).astype(np.float32)
-        map_y = (yd * fy + cy).reshape(H, W).astype(np.float32)
+        map_x = map_x_flat.reshape(H_grid, W_grid).astype(np.float32)
+        map_y = map_y_flat.reshape(H_grid, W_grid).astype(np.float32)
 
         # mask: 在图像范围内并且朝向相机
-        valid_mask = (
-            (map_x >= 0) & (map_x <= (iw - 1)) & (map_y >= 0) & (map_y <= (ih - 1))
-        ).reshape(H, W) & (Zc.reshape(H, W) > 1e-6)
+        # Check image bounds
+        in_bounds = (map_x >= 0) & (map_x <= (iw - 1)) & (map_y >= 0) & (map_y <= (ih - 1))
+        
+        # Zc Check logic again
+        if use_ds or use_kb:
+            z_valid = Zc.reshape(H_grid, W_grid) > 0
+            valid_mask = in_bounds & z_valid
+        else:
+            z_valid = Zc.reshape(H_grid, W_grid) > 1e-6
+            valid_mask = in_bounds & z_valid
+
         map_x[~valid_mask] = -1  # 设置无效点，remap 会跳过
         map_y[~valid_mask] = -1
         # 使用 OpenCV remap（双线性插值）拉取颜色，注意输入图像为 BGR
         sampled = cv2.remap(img, map_x, map_y, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
-        cv2.imwrite(os.path.join(ls.DATA_OUTPUT_DIR, 'preview', f"debug_sampled_cam_{idx}.png"), sampled)
+        
+        # Save intermediate sampled images for debugging (requested for 135 mode)
+        debug_path = os.path.join(ls.DATA_OUTPUT_DIR, 'preview', f"debug_sampled_cam_{idx}.png")
+        cv2.imwrite(debug_path, sampled)
+        print(f"Saved debug image: {debug_path}")
+        
         sampled_f = sampled.astype(np.float64) / 255.0
 
         # 权重：使用 camera-facing 的 Zc（绝对值/余弦）作为权重（更正面贡献更大）
-        w = np.maximum(0.0, Zc.reshape(H, W))
+        w = np.maximum(0.0, Zc.reshape(H_grid, W_grid))
         w *= valid_mask.astype(np.float64)
 
         # 存入栈，用于后续按最大权重选取（接缝合并，硬边界）
@@ -180,11 +307,11 @@ def remap_and_accumulate(
     # 从 sampled_stack 中按 best_idx 取值
     # sampled_stack: num,H,W,3 -> 转为 H,W,num,3 以便索引
     arr = sampled_stack.transpose(1, 2, 0, 3)  # H,W,num,3
-    rows = np.arange(H)[:, None]
-    cols = np.arange(W)[None, :]
+    rows = np.arange(H_grid)[:, None]
+    cols = np.arange(W_grid)[None, :]
     pano_f = arr[rows, cols, best_idx]  # H,W,3
 
-    pano_out = np.zeros((H, W, 3), dtype=np.uint8)
+    pano_out = np.zeros((H_grid, W_grid, 3), dtype=np.uint8)
     pano_out[valid] = (pano_f[valid] * 255.0).astype(np.uint8)
 
     return pano_out
@@ -220,8 +347,17 @@ def one_step_stitch(images_path: List[str],
                     output_path: str,
                     pano_size: Tuple[int, int] = (1920, 960)):
 
-    names, K_list, dist_list, xi_list = load_all_K_and_distortion(calib_path)
-    R_list, t_list = load_opt_R_and_T(calib_opt_path)  # Debug
+    names, K_list, dist_list, xi_list, model_list = load_all_K_and_distortion(calib_path)
+    
+    # Simple heuristic to switch extrinsic loader
+    if "camera1" in names or "camera3" in names:
+        # Assuming 135 series use the standard kalibr 'chain' format in the main calib file
+        print(f"[Info] Detected 135 series ({names}), loading extrinsics from {calib_path} using chain format.")
+        R_list, t_list = load_R_and_T(calib_path)
+    else:
+        # Assuming 246 series use the 'opt' format
+        print(f"[Info] Detected 246 series ({names}), loading extrinsics from {calib_opt_path}.")
+        R_list, t_list = load_opt_R_and_T(calib_opt_path)  # Debug
     
     
     # R_list = trans_R(R_list)
@@ -233,7 +369,7 @@ def one_step_stitch(images_path: List[str],
     pano_dirs = generate_equirectangular_dirs(H, W)
 
     print("Start remap-and-fuse...")
-    pano = remap_and_accumulate(pano_dirs, images, K_list, dist_list, xi_list, R_list, t_list, output_size=pano_size)
+    pano = remap_and_accumulate(pano_dirs, images, K_list, dist_list, xi_list, R_list, t_list, model_list, output_size=pano_size)
     print(f"Panorama generated, saving to: {output_path}")
     cv2.imwrite(output_path, pano)
 

@@ -174,7 +174,7 @@ def visualize_omni_radtan(image_path: str, xi: float, fu: float, fv: float, cu: 
 
 def omni_radtan_to_sphere_main(image_path: str, calib_path: str, camera_name: str):
    
-    K_matrix, distortion, xi_from_file = load_single_K_and_distortion(calib_path, camera_name)
+    K_matrix, distortion, xi_from_file, _ = load_single_K_and_distortion(calib_path, camera_name)
     # override parameters from file
     fu = float(K_matrix[0, 0])
     fv = float(K_matrix[1, 1])

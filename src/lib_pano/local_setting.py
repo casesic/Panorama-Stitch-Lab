@@ -20,6 +20,7 @@ CALIBPARAM_DIR = os.path.join(DATA_INPUT_DIR, 'calib_params')
 INTRINSIC_FILE = os.path.join(CALIBPARAM_DIR, 'intrinsic.json')
 EXTRINSIC_FILE = os.path.join(CALIBPARAM_DIR, 'extrinsic.json')
 CAMERA_CALIB_FILE = os.path.join(CALIBPARAM_DIR, 'camera_calib.json')
+CAMERA_135_CALIB_FILE = os.path.join(CALIBPARAM_DIR, 'calib_135_custom.json')
 CALIB_OPT_FILE = os.path.join(CALIBPARAM_DIR, 'opt_camera_calib.json')
 CALIB_GROUND_FILE = os.path.join(CALIBPARAM_DIR, 'ground_params.json')
 
