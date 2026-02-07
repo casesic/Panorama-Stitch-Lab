@@ -94,9 +94,6 @@ def stitch_cumulative(canvas, new_shard, aligner, step_idx=0, use_mesh_warp=True
         if distribute_warp:
             print("  Applying Global Mesh Warp (Bidirectional / Distributed)...")
             
-            # Compute global displacement map
-            # map_x, map_y maps SOURCE -> TARGET (Standard RAFT)
-            # But we want to distribute the warp.
             # 1. Get the full field flow (Displacement D where Target(x) ~= Source(x + D))
             _, _, full_flow = mesh_warper.compute_mesh_flow_from_roi(flow_roi, roi_bbox, validity_mask=valid_mask, return_flow=True)
             

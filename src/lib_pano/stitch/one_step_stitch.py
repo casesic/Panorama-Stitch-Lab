@@ -224,13 +224,6 @@ def remap_and_accumulate(
         Yc = dirs_cam[1, :]
         Zc = dirs_cam[2, :]
 
-        # 仅保留面向相机的像素（Zc > 0）
-        # 对于 Fisheye > 180 度 FOV, Zc>0 限制可能太严格了?
-        # DS/KB4 supports > 180 (Zc can be negative).
-        # Unified usually supports > 180 depending on xi.
-        # However, for stitching we usually want the front facing part.
-        # But if FOV is 220, we want Zc slightly negative too.
-        # Let's relax facing check for fisheye models or check projection validity.
         
         # Valid mask based on Zc
         if use_ds or use_kb:
@@ -294,7 +287,6 @@ def remap_and_accumulate(
         sampled_stack[idx, :, :, :] = sampled_f
         weight_stack[idx, :, :] = w    
         
-    get_near_overlap_mask(weight_stack)
     
     # 基于权重栈按像素选择权重最大的相机（接缝合并）
     eps = 1e-8
@@ -315,20 +307,6 @@ def remap_and_accumulate(
     pano_out[valid] = (pano_f[valid] * 255.0).astype(np.uint8)
 
     return pano_out
-
-def get_near_overlap_mask(weight_stack: np.ndarray):
-    assert len(weight_stack.shape) == 3  # num_cam, H, W
-    N, H, W = weight_stack.shape
-    eps = 1e-8
-    overlap_masks = {}
-    for i in range(N):
-        wi = weight_stack[i]
-        for j in range(i+1, N):
-            wj = weight_stack[j]
-            overlap = (wi > eps) & (wj > eps)
-            cv2.imwrite(os.path.join(ls.DATA_OUTPUT_DIR, 'preview', f"debug_overlap_cam_{i}_{j}.png"), (overlap.astype(np.uint8)*255))
-            overlap_masks[(i, j)] = overlap
-    return overlap_masks
 
 def load_images_for_names(images_path: List[str]):
     images = []

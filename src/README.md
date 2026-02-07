@@ -267,7 +267,7 @@ map1(x,y)=(x,y), map2(x,y)=empty OR map1(x,y)=x , map2(x,y)=y
 
 ### toDO
 1. 做双向的光流  √
-2. 人在接缝的试一下
+2. 人在接缝的试一下  (1,3,5raft的对齐效果不是很好，猜测是色调的原因)
 3. pixelStitch试一下把非overlap拼回去 √
 4. 去除黑色缝隙  √
 5. 重建人体  可以尝试从原图人体追踪mask

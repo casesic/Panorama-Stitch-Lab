@@ -7,8 +7,8 @@ from lib_pano.stitch.cumulative_stitch import stitch_cumulative
 
 # 1. Setup
 print("Initializing...")
-# Source = cam 2, Target = cam 0
-source_pano_path = os.path.join(ls.DATA_OUTPUT_DIR, 'preview', 'debug_sampled_cam_2.png') 
+# Source = cam 1, Target = cam 0
+source_pano_path = os.path.join(ls.DATA_OUTPUT_DIR, 'preview', 'debug_sampled_cam_1.png') 
 target_pano_path = os.path.join(ls.DATA_OUTPUT_DIR, 'preview', 'debug_sampled_cam_0.png')
 
 source_pano_full = cv2.imread(source_pano_path)
@@ -31,7 +31,7 @@ final_pano = stitch_cumulative(
     step_idx=99, # Arbitrary debug index
     use_mesh_warp=True,
     # You can toggle this to True to test bidirectional warp
-    distribute_warp=False, 
+    distribute_warp=True, 
     debug_dir=debug_dir
 )
 
