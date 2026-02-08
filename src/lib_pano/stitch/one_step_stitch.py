@@ -103,7 +103,7 @@ def normalize_dirs_cam(dirs_cam: np.ndarray, eps: float = 1e-12):
     return dirs_cam / norms_safe
 
 
-def generate_equirectangular_dirs(H: int, W: int):
+def generate_equirectangular_dirs(H: int, W: int) -> np.ndarray:
     """为 equirectangular 全景生成每像素的单位方向向量（世界坐标系）。
     返回 shape=(H,W,3) 的数组，单位长度。
     映射约定：u  [0,W) -> theta  [-pi, pi), v  [0,H) -> phi  [pi/2, -pi/2]

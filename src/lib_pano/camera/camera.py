@@ -35,7 +35,7 @@ def get_fov_by_camera_K(K:np.ndarray, img_size_wh:Tuple[int, int]) -> float:
     fov_x = 2 * np.arctan(W / (2 * K[0, 0])) * 180 / np.pi
     return fov_x
 
-def get_rotate_space(space_src:np.ndarray, space_dst:np.ndarray) -> (np.ndarray):
+def get_rotate_space(space_src:np.ndarray, space_dst:np.ndarray) -> np.ndarray:
     '''
     space_src [3, 3] each line is an unit vector
     space_dist [3, 3] each line is an unit vector

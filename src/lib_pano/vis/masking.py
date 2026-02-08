@@ -1,4 +1,5 @@
 import torch
+from typing import Optional, Tuple, Any, List
 import torchvision
 from torchvision import transforms
 import numpy as np
@@ -6,22 +7,22 @@ import cv2
 import os
 
 class PersonSegmenter:
-    def __init__(self, device=None):
+    def __init__(self, device: Optional[str] = None):
         if device:
             self.device = device
         else:
             self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
         
-        print(f"[PersonSegmenter] Initializing on {self.device}...")
+        print(f'[PersonSegmenter] Initializing on {self.device}...')
         
         try:
             weights = torchvision.models.segmentation.DeepLabV3_MobileNet_V3_Large_Weights.DEFAULT
             self.model = torchvision.models.segmentation.deeplabv3_mobilenet_v3_large(weights=weights)
         except AttributeError:
-            print("[PersonSegmenter] Warning: New weights API not found, falling back to pretrained=True")
+            print('[PersonSegmenter] Warning: New weights API not found, falling back to pretrained=True')
             self.model = torchvision.models.segmentation.deeplabv3_resnet50(pretrained=True)
         except Exception as e:
-            print(f"[PersonSegmenter] Error loading model: {e}")
+            print(f'[PersonSegmenter] Error loading model: {e}')
             raise e
 
         self.model.to(self.device)
@@ -33,7 +34,7 @@ class PersonSegmenter:
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ])
 
-    def get_mask(self, img_bgr, threshold=0.5, dilate_pixels=0):
+    def get_mask(self, img_bgr: np.ndarray, threshold: float = 0.5, dilate_pixels: int = 0) -> np.ndarray:
         """
         输入 BGR 图像，返回人像 Mask (numpy uint8, 0 or 255)
         dilate_pixels: 膨胀像素数，用于覆盖人手持物品（如手机）。
@@ -67,7 +68,7 @@ class PersonSegmenter:
             
         return mask
 
-    def mask_out_person(self, img_bgr, fill_value=(0, 0, 0), dilate_pixels=0, threshold=0.5):
+    def mask_out_person(self, img_bgr: np.ndarray, fill_value: Tuple[int, int, int] = (0, 0, 0), dilate_pixels: int = 0, threshold: float = 0.5) -> Tuple[np.ndarray, np.ndarray]:
         """
         将图片中的人像区域涂抹为指定颜色
         """
@@ -82,13 +83,13 @@ class PersonSegmenter:
 # 全局单例
 _segmenter = None
 
-def get_person_mask(img_bgr, device=None, threshold=0.5, dilate_pixels=0):
+def get_person_mask(img_bgr: np.ndarray, device: Optional[str] = None, threshold: float = 0.5, dilate_pixels: int = 0) -> np.ndarray:
     global _segmenter
     if _segmenter is None:
         _segmenter = PersonSegmenter(device)
     return _segmenter.get_mask(img_bgr, threshold=threshold, dilate_pixels=dilate_pixels)
 
-def remove_person(img_bgr, device=None, fill_value=(0,0,0), dilate_pixels=0, threshold=0.5):
+def remove_person(img_bgr: np.ndarray, device: Optional[str] = None, fill_value: Tuple[int, int, int] = (0, 0, 0), dilate_pixels: int = 0, threshold: float = 0.5) -> Tuple[np.ndarray, np.ndarray]:
     """
     Helper function to remove person.
     Args:

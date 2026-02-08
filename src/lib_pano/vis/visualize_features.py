@@ -2,7 +2,7 @@ import cv2 as cv
 import numpy as np
 from typing import List
 from lib_pano.calibration.optimize_R import load_all_matches, pts_2d_to_3d_sphere, rotate_sphere_pts
-from lib_pano.io.params_read import load_opt_R_and_T, Get_inv_RT, load_ground_params
+from lib_pano.io.params_read import load_opt_R_and_T, get_inv_RT, load_ground_params
 from lib_pano.stitch.pano_stitch import sphere_to_equirect_coords
 
 CAMERA_COLORS = {2: (0, 0, 255), 4: (255, 0, 0), 6: (0, 255, 0)}  # 红蓝绿
@@ -11,12 +11,12 @@ CAMERA_INDICES = {2: 0, 4: 1, 6: 2}
 def _transform_to_world(pts_3d, R, T, is_ground, use_homography, ground_params_path):
     """统一的坐标变换函数"""
     if not use_homography or not is_ground.any():
-        R_inv, _ = Get_inv_RT(R, T)
+        R_inv, _ = get_inv_RT(R, T)
         return rotate_sphere_pts(pts_3d, R_inv)
     
     pts_world = np.zeros_like(pts_3d)
     if (~is_ground).any():
-        R_inv, _ = Get_inv_RT(R, T)
+        R_inv, _ = get_inv_RT(R, T)
         pts_world[~is_ground] = rotate_sphere_pts(pts_3d[~is_ground], R_inv)
     GROUND_N, GROUND_D = load_ground_params(ground_params_path) 
     n = GROUND_N.reshape(3, 1)  # 确保是列向量

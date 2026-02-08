@@ -1,13 +1,13 @@
 from lib_pano.calibration.optimize_R import load_all_matches, prepare_3d_matches, reproj_error_sphere
 import numpy as np
-from lib_pano.io.params_read import Get_inv_RT, load_opt_R_and_T
+from lib_pano.io.params_read import get_inv_RT, load_opt_R_and_T
 from lib_pano.calibration.optimize_R import get_camera_std_euler_by_R, get_R_by_euler, rotate_sphere_pts, run_optimization
 from typing import Dict, Tuple
 import json
 
 # 我需要知道d的高度
 
-def init_optimization_params():
+def init_optimization_params() -> Tuple[np.ndarray, list]:
     
     # 地面参数：使用球坐标 (theta, phi, d) 代替 (a, b, d)
     # 初始法向量 [0, 1, 0] 对应 theta=π/2, phi=π/2
@@ -29,19 +29,19 @@ def init_optimization_params():
     
     return x0, bounds
 
-def save_ground_params_to_json(n: np.ndarray, d: float, output_path: str):
+def save_ground_params_to_json(n: np.ndarray, d: float, output_path: str) -> None:
     """
     保存地面参数到JSON文件
     """
     ground_params = {
-        "ground_normal": n.tolist(),
-        "ground_distance": float(d)
+        'ground_normal': n.tolist(),
+        'ground_distance': float(d)
     }
     
     with open(output_path, 'w', encoding='utf-8') as f:
         json.dump(ground_params, f, indent=4, ensure_ascii=False)
     
-    print(f"\n地面参数已保存到: {output_path}")
+    print(f'\n地面参数已保存到: {output_path}')
 
 def calculate_ground_error_1(ground_params: np.ndarray,
                           R_euler: np.ndarray, 
@@ -72,9 +72,9 @@ def calculate_ground_error_1(ground_params: np.ndarray,
     n = np.array([a, b, c]).reshape(3, 1)  # 地面法向量（自动归一化）
 
     R = get_R_by_euler(R_euler[0], R_euler[1], R_euler[2])
-    R_cam_to_wor, T_cam_to_wor = Get_inv_RT(R, T)
+    R_cam_to_wor, T_cam_to_wor = get_inv_RT(R, T)
     R_base = get_R_by_euler(R_base_euler[0], R_base_euler[1], R_base_euler[2])
-    R_base_cam_to_wor, T_base_cam_to_wor = Get_inv_RT(R_base, T_base)
+    R_base_cam_to_wor, T_base_cam_to_wor = get_inv_RT(R_base, T_base)
     pts_src_to_wor = rotate_sphere_pts(ground_pts_3d_src, R_cam_to_wor) 
     # print(f"pts_src_to_wor: {pts_src_to_wor[0:10]}")
     dot_n_pts_src = np.dot(pts_src_to_wor, n).reshape(-1)  # (N,)

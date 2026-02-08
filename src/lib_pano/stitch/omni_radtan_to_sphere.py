@@ -10,10 +10,10 @@ import open3d as o3d
 
 
 from lib_pano.io.params_read import load_single_K_and_distortion, load_all_K_and_distortion
+from typing import Tuple
 
 
-
-def inverse_omni_unit_sphere(mx: np.ndarray, my: np.ndarray, xi: float, eps: float = 1e-12):
+def inverse_omni_unit_sphere(mx: np.ndarray, my: np.ndarray, xi: float, eps: float = 1e-12) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     
     r2 = mx * mx + my * my
 
@@ -92,11 +92,11 @@ def visualize_omni_radtan(image_path: str, xi: float, fu: float, fv: float, cu: 
 
     img_bgr = cv2.imread(image_path, cv2.IMREAD_COLOR)
     if img_bgr is None:
-        raise FileNotFoundError(f"Cannot read image: {image_path}")
+        raise FileNotFoundError(f'Cannot read image: {image_path}')
     img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
     ih, iw = img_rgb.shape[:2]
     if (iw != width) or (ih != height):
-        print(f"Warning: provided width/height ({width},{height}) != image ({iw},{ih}). Using image size.")
+        print(f'Warning: provided width/height ({width},{height}) != image ({iw},{ih}). Using image size.')
         width, height = iw, ih
 
     # adjust downsample automatically if too many points
@@ -104,7 +104,7 @@ def visualize_omni_radtan(image_path: str, xi: float, fu: float, fv: float, cu: 
     if est_points > max_points:
         factor = int(np.ceil(np.sqrt(est_points / max_points)))
         downsample = max(downsample, factor)
-        print(f"Auto-increase downsample to {downsample} to limit points (~{max_points})")
+        print(f'Auto-increase downsample to {downsample} to limit points (~{max_points})')
 
     # get undistorted normalized coordinates directly (mx,my)
     mx, my, grid_x, grid_y = undistort_pixel_grid(width, height, fu, fv, cu, cv,

@@ -125,7 +125,7 @@ def blend_near_region(pano_f: np.ndarray, sampled_stack: np.ndarray,
     
     return pano_f
 
-def Get_y_regions(out_height: int):
+def get_y_regions(out_height: int) -> Tuple[int, int, int, int]:
     y_regions = [
         {
             'y_range': (0, 600),  # 经纬图像素行：0-519
@@ -296,7 +296,7 @@ def stitch_images(image_list: List[np.ndarray], calib_opt_path: str, ground_para
     
     
     # 3. 获取分区域的优化旋转矩阵配置
-    y_regions = Get_y_regions(out_height)
+    y_regions = get_y_regions(out_height)
     
     # 4. 处理所有区域的所有相机
     sampled_stack, weight_stack = process_all_regions(

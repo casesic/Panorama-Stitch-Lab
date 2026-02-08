@@ -11,7 +11,7 @@ import json
 import os
 import lib_pano.local_setting as ls
 
-def load_all_matches(npz_paths: List[str]):
+def load_all_matches(npz_paths: List[str]) -> Dict[Tuple[int, int], Tuple[np.ndarray, np.ndarray]]:
     match_data: Dict[Tuple[int, int], Tuple[np.ndarray, np.ndarray]] = {}
     for npz_path in npz_paths:
         kpts0, kpts1, matches, conf, valid_mask = load_matches(npz_path)
@@ -222,15 +222,15 @@ def save_optimized_params_to_json(R_list: List[np.ndarray], T_list: List[np.ndar
                                     output_path: str):
 
     new_data = {
-        "name": "三个相机（优化后）",
-        "sequence": "2&4&6",
-        "model": "Omni-radtan",
-            "R2": R_list[0].tolist(),
-            "R4": R_list[1].tolist(),
-            "R6": R_list[2].tolist(),
-            "T2": T_list[0].tolist(),
-            "T4": T_list[1].tolist(),
-            "T6": T_list[2].tolist(),
+        'name': '三个相机（优化后）',
+        'sequence': '2&4&6',
+        'model': 'Omni-radtan',
+            'R2': R_list[0].tolist(),
+            'R4': R_list[1].tolist(),
+            'R6': R_list[2].tolist(),
+            'T2': T_list[0].tolist(),
+            'T4': T_list[1].tolist(),
+            'T6': T_list[2].tolist(),
     }
     
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
@@ -238,7 +238,7 @@ def save_optimized_params_to_json(R_list: List[np.ndarray], T_list: List[np.ndar
     with open(output_path, 'w', encoding='utf-8') as f:
         json.dump(new_data, f, indent=4, ensure_ascii=False)
     
-    print(f"\n优化后的标定参数已保存到: {output_path}")
+    print(f'\n优化后的标定参数已保存到: {output_path}')
 
 def parse_optimization_result(res: Any, R_list: List[np.ndarray], pts_3d_dict: Dict[str, np.ndarray], R2_euler: np.ndarray) :
     """

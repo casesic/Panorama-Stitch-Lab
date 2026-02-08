@@ -17,9 +17,9 @@ warnings.filterwarnings("ignore", category=UserWarning)
 # Assuming this file is at src/lib_pano/stitch/raft_align.py
 # RAFT core is at tools/RAFT/core
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECT_ROOT = os.path.abspath(os.path.join(CURRENT_DIR, "../../../"))
-RAFT_CORE_PATH = os.path.join(PROJECT_ROOT, "tools/RAFT/core")
-RAFT_MODELS_PATH = os.path.join(PROJECT_ROOT, "tools/RAFT/models")
+PROJECT_ROOT = os.path.abspath(os.path.join(CURRENT_DIR, '../../../'))
+RAFT_CORE_PATH = os.path.join(PROJECT_ROOT, 'tools/RAFT/core')
+RAFT_MODELS_PATH = os.path.join(PROJECT_ROOT, 'tools/RAFT/models')
 
 if RAFT_CORE_PATH not in sys.path:
     sys.path.append(RAFT_CORE_PATH)
@@ -34,7 +34,7 @@ except ImportError as e:
 # Utility Functions
 # =============================================================================
 
-def flow_warp(image_source, flow, mode='bilinear', padding_mode='zeros'):
+def flow_warp(image_source: torch.Tensor, flow: torch.Tensor, mode: str = 'bilinear', padding_mode: str = 'zeros') -> torch.Tensor:
     """
     Warp an image using the optical flow field.
     Args:

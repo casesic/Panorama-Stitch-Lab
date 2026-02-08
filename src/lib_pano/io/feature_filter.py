@@ -4,10 +4,10 @@ import os
 import argparse
 import numpy as np
 import cv2
-from typing import Optional
+from typing import Optional, Tuple
 
 
-def load_matches(npz_path: str):
+def load_matches(npz_path: str) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     data = np.load(npz_path, allow_pickle=True)
     kpts0 = data['keypoints0']
     kpts1 = data['keypoints1']

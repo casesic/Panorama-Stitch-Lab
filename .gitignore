@@ -9,4 +9,6 @@ __pycache__/
 **/__pycache__/
 docs/
 tools/
-*.zip
+*.zipsrc/lib_pano/local_setting.py
+src\script\test_function\debug0091_raft.py
+src\script\test_function\debug00101_multi_stitch.py

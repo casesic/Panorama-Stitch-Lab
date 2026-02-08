@@ -20,7 +20,7 @@ from PyQt6.QtGui import (
 )
 
 class Image_Viewer_Base(QMainWindow):
-    def __init__(self, H_show:int=960, W_show:int=1920):
+    def __init__(self, H_show: int = 960, W_show: int = 1920) -> None:
         super().__init__()
 
         # 原图与显示图分离：保留原始图用于保存 mask

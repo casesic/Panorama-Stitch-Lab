@@ -11,14 +11,14 @@ def load_single_K_and_distortion(path_calib: str, camera_name: str):
     '''
     with open(path_calib, 'r') as f:
         data = json.load(f)
-    camera_configs = data["camera_configs"]
-    results = camera_configs["results"]
+    camera_configs = data['camera_configs']
+    results = camera_configs['results']
     if camera_name not in results:
-        raise ValueError(f"相机名称 {camera_name} 不存在于标定文件中")
+        raise ValueError(f'相机名称 {camera_name} 不存在于标定文件中')
     camera_data = results[camera_name]
-    model = camera_configs.get("model", "unknown")
-    distortion = np.array(camera_data["distortion"], dtype=np.float32)
-    K_params = camera_data["K"]
+    model = camera_configs.get('model', 'unknown')
+    distortion = np.array(camera_data['distortion'], dtype=np.float32)
+    K_params = camera_data['K']
     xi = K_params[0]  # Omni模型特有参数
     fx, fy = K_params[1], K_params[2]
     cx, cy = K_params[3], K_params[4]
@@ -37,8 +37,8 @@ def load_R_and_T(path_calib: str):
     假设q (T_1_0) 是 0->1 的四元数
     从标定文件加载外参：四元数转旋转矩阵(R)和平移向量(T)
     '''
-    q_name_list = ["q (T_1_0)","q (T_2_1)"]
-    t_name_list = ["t (T_1_0)","t (T_2_1)"]
+    q_name_list = ['q (T_1_0)','q (T_2_1)']
+    t_name_list = ['t (T_1_0)','t (T_2_1)']
     # 我想获得q(T_2_0) t(T_2_0) 和 q(T_1_2) t(T_1_2) ,然后有这个来获得R和T
     R_wor_to_cam_list = []  # 三个相机_>世界的旋转矩阵
     T_wor_to_cam_list = []
@@ -46,7 +46,7 @@ def load_R_and_T(path_calib: str):
     T_wor_to_cam_list.append(np.zeros(3, dtype=np.float32))
     with open(path_calib, 'r') as f:
         data = json.load(f)
-    results = data["camera_configs"]["results"]
+    results = data['camera_configs']['results']
     
     for q_name, t_name in zip(q_name_list, t_name_list):
         q = results[q_name] 
@@ -69,7 +69,7 @@ def load_R_and_T(path_calib: str):
     return R_wor_to_cam_list, T_wor_to_cam_list
 
 
-def Get_inv_RT(R: np.ndarray, T: np.ndarray):
+def get_inv_RT(R: np.ndarray, T: np.ndarray):
     # 组成4*4矩阵
     M = np.eye(4, dtype=np.float32)
     M[0:3, 0:3] = R
@@ -77,6 +77,7 @@ def Get_inv_RT(R: np.ndarray, T: np.ndarray):
     M_inv = np.linalg.inv(M)
     R_inv = M_inv[0:3, 0:3]
     T_inv = M_inv[0:3, 3]
+    # return R_inv, T_inv -> R, T
     return R_inv, T_inv
 
 def load_R_and_T_2(path_calib: str):
@@ -101,7 +102,7 @@ def load_R_and_T_2(path_calib: str):
         rot = Rotation.from_quat(q)
         R = rot.as_matrix().astype(np.float32)  # 0->1
         t = np.array(results[t_name], dtype=np.float32)
-        R_1, T_1 = Get_inv_RT(R, t)  # 1->0
+        R_1, T_1 = get_inv_RT(R, t)  # 1->0
         R_prev = R_cam_to_wor_list[-1]
         T_prev = T_cam_to_wor_list[-1]
         R_world = R_prev @ R_1  

@@ -38,3 +38,4 @@ FEATURE_FILTER_DIR = os.path.join(FEATURE_MATCH_DIR, 'filter')
 FEATURE_DISTANT_FILTER_DIR = os.path.join(FEATURE_FILTER_DIR, 'distant_view')
 FEATURE_GROUND_FILTER_DIR = os.path.join(FEATURE_FILTER_DIR, 'ground')
 
+HUMAN_OBJ_DIR = os.path.join(DATA_INPUT_DIR, 'human_obj')

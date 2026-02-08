@@ -1,29 +1,30 @@
 import cv2
 import numpy as np
+from typing import Optional, Tuple
 
-def get_roi_overlap_mask(img1: np.ndarray, img2: np.ndarray, threshold: float = 1e-6) -> np.ndarray:
+def get_roi_overlap_mask(image_1: np.ndarray, image_2: np.ndarray, threshold: float = 1e-6) -> np.ndarray:
     """
     计算两张图的共同非黑区域（ROI Mask）。
     假设黑色 (0,0,0) 为无效区域。
     """
     # 转灰度
-    gray1 = cv2.cvtColor(img1, cv2.COLOR_BGR2GRAY)
-    gray2 = cv2.cvtColor(img2, cv2.COLOR_BGR2GRAY)
+    gray_1 = cv2.cvtColor(image_1, cv2.COLOR_BGR2GRAY)
+    gray_2 = cv2.cvtColor(image_2, cv2.COLOR_BGR2GRAY)
 
     # 提取非黑区域 Mask (255=valid, 0=invalid)
-    mask1 = (gray1 > threshold).astype(np.uint8) * 255
-    mask2 = (gray2 > threshold).astype(np.uint8) * 255
+    mask_1 = (gray_1 > threshold).astype(np.uint8) * 255
+    mask_2 = (gray_2 > threshold).astype(np.uint8) * 255
 
-    if mask1.shape != mask2.shape:
-        # Resize mask2 to match mask1 if shape mismatch
-        h1, w1 = mask1.shape
-        mask2 = cv2.resize(mask2, (w1, h1), interpolation=cv2.INTER_NEAREST)
+    if mask_1.shape != mask_2.shape:
+        # Resize mask_2 to match mask_1 if shape mismatch
+        h1, w1 = mask_1.shape
+        mask_2 = cv2.resize(mask_2, (w1, h1), interpolation=cv2.INTER_NEAREST)
 
     # 共同重叠区
-    overlap_mask = cv2.bitwise_and(mask1, mask2)
+    overlap_mask = cv2.bitwise_and(mask_1, mask_2)
     return overlap_mask
 
-def extract_overlap_roi(img1: np.ndarray, img2: np.ndarray, overlap_mask: np.ndarray):
+def extract_overlap_roi(image_1: np.ndarray, image_2: np.ndarray, overlap_mask: np.ndarray) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], Optional[Tuple[int, int, int, int]]]:
     """
     从两张图中根据 Mask 提取 Bounding Box 的重叠内容。
     修改：增加 x 轴过滤逻辑。
@@ -65,40 +66,47 @@ def extract_overlap_roi(img1: np.ndarray, img2: np.ndarray, overlap_mask: np.nda
     y_min = np.min(y_indices_sub)
     y_max = np.max(y_indices_sub)
 
-    crop1 = img1[y_min:y_max+1, x_min:x_max+1].copy()
-    crop2 = img2[y_min:y_max+1, x_min:x_max+1].copy()
+    crop_1 = image_1[y_min:y_max+1, x_min:x_max+1].copy()
+    crop_2 = image_2[y_min:y_max+1, x_min:x_max+1].copy()
 
     sub_mask = overlap_mask[y_min:y_max+1, x_min:x_max+1]
     
     # 非重叠区域设为黑色
     non_overlap_indices = (sub_mask == 0)
     
-    crop1[non_overlap_indices] = 0
-    crop2[non_overlap_indices] = 0
+    crop_1[non_overlap_indices] = 0
+    crop_2[non_overlap_indices] = 0
 
     roi_bbox = (x_min, y_min, x_max, y_max)
     
-    return crop1, crop2, roi_bbox
+    return crop_1, crop_2, roi_bbox
 
-def blend_priority(img1, img2, threshold=10, use_target_mask=False, save_cleaned_source_path=None, erode_kernel_size=0):
+def blend_priority(
+    image_source: np.ndarray, 
+    image_target: np.ndarray, 
+    threshold: int = 10, 
+    use_target_mask: bool = False, 
+    save_cleaned_source_path: Optional[str] = None, 
+    erode_kernel_size: int = 0
+) -> np.ndarray:
     """
     使用灰度值判断, 避免单通道为0的问题
-    :param use_target_mask: 是否利用 img2 的Mask来过滤 img1 (清除warp产生的artifacts)
-    :param save_cleaned_source_path: 如果不为None, 且启用了use_target_mask, 则将清洗后的img1保存到此路径
+    :param use_target_mask: 是否利用 image_target 的Mask来过滤 image_source (清除warp产生的artifacts)
+    :param save_cleaned_source_path: 如果不为None, 且启用了use_target_mask, 则将清洗后的source保存到此路径
     :param erode_kernel_size: 腐蚀Mask的核大小, 用于去除边缘插值产生的杂色. 默认为3.
     """
-    img1_to_process = img1
+    image_to_process = image_source
     if use_target_mask:
-        img1_to_process = img1.copy()
-        gray2 = cv2.cvtColor(img2, cv2.COLOR_BGR2GRAY)
-        mask2 = (gray2 > 1) # Boolean mask, threshold 1 to catch any non-black
-        img1_to_process[~mask2] = 0
+        image_to_process = image_source.copy()
+        gray_target = cv2.cvtColor(image_target, cv2.COLOR_BGR2GRAY)
+        mask_target = (gray_target > 1) # Boolean mask, threshold 1 to catch any non-black
+        image_to_process[~mask_target] = 0
         
         if save_cleaned_source_path:
-            cv2.imwrite(save_cleaned_source_path, img1_to_process)
+            cv2.imwrite(save_cleaned_source_path, image_to_process)
 
     # 转换为灰度图
-    gray = cv2.cvtColor(img1_to_process, cv2.COLOR_BGR2GRAY)
+    gray = cv2.cvtColor(image_to_process, cv2.COLOR_BGR2GRAY)
     mask = (gray > threshold).astype(np.uint8) * 255
     
     # 增加腐蚀操作, 收缩 Mask, 以去除边缘插值引入的灰黑色伪影
@@ -106,8 +114,9 @@ def blend_priority(img1, img2, threshold=10, use_target_mask=False, save_cleaned
         kernel = np.ones((erode_kernel_size, erode_kernel_size), np.uint8)
         mask = cv2.erode(mask, kernel, iterations=1)
     
-    result = img1_to_process.copy()
-    result[mask == 0] = img2[mask == 0]
+    result = image_to_process.copy()
+    # Replace background where mask is 0
+    result[mask == 0] = image_target[mask == 0]
     
     return result
 

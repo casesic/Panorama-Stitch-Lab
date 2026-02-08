@@ -5,7 +5,7 @@ from lib_pano.io.params_read import load_all_K_and_distortion, load_R_and_T, loa
 import cv2 as cv
 import os
 
-def _compute_frustum_corners_cam(K, depth):
+def _compute_frustum_corners_cam(K: np.ndarray, depth: float) -> np.ndarray:
     
     fx = K[0, 0]
     fy = K[1, 1]

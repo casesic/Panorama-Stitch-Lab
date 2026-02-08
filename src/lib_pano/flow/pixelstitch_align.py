@@ -5,7 +5,7 @@ import torch.nn.functional as F
 import numpy as np
 import cv2
 from argparse import Namespace
-
+from typing import Optional
 # =============================================================================
 # Setup Paths for PixelStitch
 # =============================================================================
@@ -25,9 +25,9 @@ except ImportError as e:
     RAFTStitch = None
 
 class PixelStitchAligner:
-    def __init__(self, model_path=None, device=None, args=None):
+    def __init__(self, model_path: Optional[str] = None, device: Optional[str] = None, args: Optional[Namespace] = None) -> None:
         if RAFTStitch is None:
-            raise ImportError("RAFTStitch could not be imported. Please check tools/PixelStitch installation.")
+            raise ImportError('RAFTStitch could not be imported. Please check tools/PixelStitch installation.')
 
         if device is None:
             self.device = 'cuda' if torch.cuda.is_available() else 'cpu'

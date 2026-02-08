@@ -4,6 +4,7 @@ import torch
 import torch.nn.functional as F
 import numpy as np
 import cv2
+from typing import Optional
 from argparse import Namespace
 import warnings
 
@@ -61,9 +62,9 @@ def flow_warp(image_source, flow, mode='bilinear', padding_mode='zeros'):
     return warped
 
 class GMFlowAligner:
-    def __init__(self, model_path=None, device=None, args=None):
+    def __init__(self, model_path: Optional[str] = None, device: Optional[str] = None, args: Optional[Namespace] = None) -> None:
         if GMFlow is None:
-            raise ImportError("GMFlow library not found. Check tools/GMFlow installation.")
+            raise ImportError('GMFlow library not found. Check tools/GMFlow installation.')
 
         if device is None:
             self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
