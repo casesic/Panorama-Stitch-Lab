@@ -75,9 +75,9 @@ def stitch_cumulative(
         img_source=crop_shard, 
         img_target=crop_canvas, 
         return_flow=return_flow,
-        mask_people=False,      # ENABLE MASKING to ignore moving people (can be parameterized if needed)
-        dilate_pixels=30,      # DILATE to cover handheld objects/shadows
-        mask_threshold=0.2,
+        mask_people=True,      # ENABLE MASKING to ignore moving people (can be parameterized if needed)
+        dilate_pixels=20,      # DILATE to cover handheld objects/shadows
+        mask_threshold=0.5,
         bidirectional=use_bidirectional
     )
     
@@ -169,5 +169,13 @@ def stitch_cumulative(
         erode_kernel_size=3, 
         save_cleaned_source_path=save_cleaned_path
     )
+    # updated_canvas = blend_priority(
+    #     warped_shard_full, 
+    #     canvas_to_blend, 
+    #     use_target_mask=False,
+    #     erode_kernel_size=5,   # 凸包边界腐蚀 5px：去除鱼眼外圈灰边，不影响手臂等内部细节
+    #     feather_radius=20,     # 窄过渡带（30px），仅在 shard 边缘做平滑
+    #     save_cleaned_source_path=save_cleaned_path
+    # )
     
     return updated_canvas

@@ -235,6 +235,7 @@ map1(x,y)=(x,y), map2(x,y)=empty OR map1(x,y)=x , map2(x,y)=y
 [OPENCV](https://docs.opencv.org/4.x/d6/d00/tutorial_py_root.html)    
 [NUMPY](https://numpy.org/doc/stable/reference/index.html)    
 2. http://172.23.66.245:10730/CodeOfPython
+3. 用大模型对不确定的代码要先考虑架构
 
 ### 计划
 1. 了解畸变的原理 √
@@ -264,6 +265,10 @@ map1(x,y)=(x,y), map2(x,y)=empty OR map1(x,y)=x , map2(x,y)=y
 
 24. 人像的问题，mask不掉人手上的手机，人像对不齐
 25. 有缝隙的问题在于source向target对齐的时候，边界会出现灰色就不是全黑
+26. 三张图片不可能完全对齐彼此，需要做衡量
+27. 建筑物raft模型的选择应当用raft-kitti.pth如果用其他的效果不是很好
+28. 可能要做一些羽化，让视觉效果呈现的更加舒服
+29. 介绍一下思路，我打算自己写，一个个函数来，我写完了你可以检查
 
 ### toDO
 1. 做双向的光流  √
@@ -271,6 +276,9 @@ map1(x,y)=(x,y), map2(x,y)=empty OR map1(x,y)=x , map2(x,y)=y
 3. pixelStitch试一下把非overlap拼回去 √
 4. 去除黑色缝隙  √
 5. 重建人体  可以尝试从原图人体追踪mask
+
+### toDo
+
 ### 临时数据
 这里的都是经纬图被映射到右边的
 cam24和cam26对齐

@@ -1,6 +1,5 @@
 import config_script 
 from lib_pano import local_setting as ls
-from lib_pano.stitch.test_trans import test_trans
 from lib_pano.calibration.optimize_R import global_optimize_R, multi_local_optimize_R
 from lib_pano.calibration.optimize_ground import optimize_ground
 import os

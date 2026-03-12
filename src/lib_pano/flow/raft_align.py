@@ -128,8 +128,8 @@ class RAFTAligner:
             self.device = device
 
         if model_path is None:
-            # Default to raft-things.pth
-            model_path = os.path.join(RAFT_MODELS_PATH, 'raft-things.pth')
+            # Default to raft-kitti.pth (outdoor/building scenes)
+            model_path = os.path.join(RAFT_MODELS_PATH, 'raft-kitti.pth')
         
         if not os.path.exists(model_path):
             raise FileNotFoundError(f"RAFT model not found at: {model_path}\nPlease download it using tools/RAFT/download_models.sh")

@@ -56,13 +56,13 @@ def load_R_and_T(path_calib: str):
         
         R_prev = R_wor_to_cam_list[-1]
         T_prev = T_wor_to_cam_list[-1]
-        # 主要看q_1_0 是1_>0 还是0_>1
-        # 0_>1
-        # R_world = R@R_prev
-        # T_world = R@T_prev + t
-        # 1_>0 
-        R_world = R_prev @ R  
-        T_world = R_prev @ t + T_prev  
+        # q (T_1_0) 表示 cam0 -> cam1 变换 (0->1)
+        # P_cam1 = R @ P_cam0 + t
+        # P_cami = R_i @ (R_prev @ P_world + T_prev) + t_i
+        #        = (R_i @ R_prev) @ P_world + (R_i @ T_prev + t_i)
+        # 0_>1 正确公式：
+        R_world = R @ R_prev
+        T_world = R @ T_prev + t
         
         R_wor_to_cam_list.append(R_world)
         T_wor_to_cam_list.append(T_world)

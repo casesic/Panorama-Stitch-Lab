@@ -18,8 +18,11 @@ def sphere_to_equirect_coords(xyz: np.ndarray, img_width: int, img_height: int):
     
     assert xyz.shape[-1] == 3 and xyz.ndim == 3         # xyz的shape为(H,W,3)
     
+    # 归一化输入的向量
+    xyz = normalize_vectors(xyz)
     x, y, z = xyz[:, :, 0], xyz[:, :, 1], xyz[:, :, 2]
     # 计算纬度 [-π/2, π/2]
+    y = np.clip(y, -1.0, 1.0) # 修正数值误差，确保 arcsin 输入合法
     lat = np.arcsin(y)
     # 计算经度 [-π, π]
     lon = np.arctan2(x, z)

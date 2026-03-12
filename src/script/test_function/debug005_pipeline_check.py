@@ -2,16 +2,16 @@ import config_script
 from lib_pano import local_setting as ls
 import os
 import numpy as np
-from lib_pano.io.video_process import extract_video_frames
+from lib_pano.io.video_process import extract_video_frames, extract_video_frames_range
 from lib_pano.io.params_read import show_all_params, load_R_and_T, load_R_and_T_2, load_all_K_and_distortion
 from lib_pano.vis.visual_RT import visualize_cameras, circle_center_images, divide_by_y_scopes
-from lib_pano.stitch.omni_radtan_to_sphere import omni_radtan_to_sphere_main
 
-path_video = os.path.join(ls.RAW_VIDEO_DIR, 'origin_5_20251027_110506.mp4')
-output_dir = os.path.join(ls.IMAGE_ORIGIN5_DIR)
-extract_video_frames(path_video, output_dir, frame_index=1)
+
+path_video = os.path.join(ls.RAW_VIDEO_DIR, 'origin_6_20251027_110506_lrv.mp4')
+output_dir = os.path.join(ls.IMAGE_ORIGIN6_DIR)
+extract_video_frames_range(path_video, output_dir, start_frame=0, num_frames=196, output_size=(1280, 1024))
 R_list, T_list = load_R_and_T_2(ls.CAMERA_CALIB_FILE)
-camera_list, K_list, dist_list, xi_list = load_all_K_and_distortion(ls.CAMERA_CALIB_FILE)
+# camera_list, K_list, dist_list, xi_list = load_all_K_and_distortion(ls.CAMERA_CALIB_FILE)
 save_path = os.path.join(ls.DATA_OUTPUT_DIR, 'extrinsics_visualization.png')
 
 
