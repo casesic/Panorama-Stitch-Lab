@@ -14,3 +14,6 @@ tools/
 *.jar
 *.pt
 *.txt
+!tools/SingleFitting/scripts/*.py
+!tools/SingleFitting/single_fitting/*.py
+!tools/SingleFitting/lib_dynamic_hvip/fitting/smplx_seq_forward_module.py

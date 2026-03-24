@@ -12,7 +12,15 @@ def stitch_cumulative(
     step_idx: int = 0, 
     use_mesh_warp: bool = True, 
     distribute_warp: bool = True, 
-    debug_dir: Optional[str] = None
+    debug_dir: Optional[str] = None,
+    mask_people: bool = True,
+    dilate_pixels: int = 20,
+    mask_threshold: float = 0.5,
+    use_bidirectional: bool = True,
+    blend_threshold: int = 1,
+    blend_erode_kernel_size: int = 1,
+    source_valid_mask: Optional[np.ndarray] = None,
+    target_valid_mask: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     """
     Aligns new_shard to canvas using RAFT with masking, then matches and blends.
@@ -27,6 +35,12 @@ def stitch_cumulative(
         distribute_warp (bool, optional): If True, warp both Canvas and Shard towards a middle ground (Bidirectional).
                                           If False, only warp Shard towards Canvas (Unidirectional). Defaults to True.
         debug_dir (str, optional): Directory to save debug images. If None, no debug images are saved. Defaults to None.
+        mask_people (bool, optional): Whether to mask people before RAFT alignment.
+        dilate_pixels (int, optional): Dilation radius for person mask.
+        mask_threshold (float, optional): Person mask threshold.
+        use_bidirectional (bool, optional): Whether to compute bidirectional flow validity.
+        blend_threshold (int, optional): Grayscale threshold for source-valid mask in blending.
+        blend_erode_kernel_size (int, optional): Erode size for blend mask; too large may remove dark clothes.
 
     Returns:
         np.ndarray: The updated canvas with the new shard stitched.
@@ -41,7 +55,15 @@ def stitch_cumulative(
     print(f'\n[Step {step_idx}] Processing overlap...')
     
     # 1. Compute overlap mask between the accumulated canvas and the new image shard
-    overlap_mask = get_roi_overlap_mask(canvas, new_shard)
+    if source_valid_mask is not None and target_valid_mask is not None:
+        src_m = (source_valid_mask > 0).astype(np.uint8) * 255
+        tgt_m = (target_valid_mask > 0).astype(np.uint8) * 255
+        if src_m.shape != tgt_m.shape:
+            h, w = tgt_m.shape[:2]
+            src_m = cv2.resize(src_m, (w, h), interpolation=cv2.INTER_NEAREST)
+        overlap_mask = cv2.bitwise_and(src_m, tgt_m)
+    else:
+        overlap_mask = get_roi_overlap_mask(canvas, new_shard)
     nz_pixels = cv2.countNonZero(overlap_mask)
     print(f'  Overlap pixels: {nz_pixels}')
     
@@ -69,15 +91,14 @@ def stitch_cumulative(
     print('  Running RAFT alignment with Masking...')
     # We need flow if we are doing mesh warp
     return_flow = use_mesh_warp 
-    use_bidirectional = True # Enable bidirectional flow consistency check for robustness
     
     result_tuple = aligner.align_with_masking(
         img_source=crop_shard, 
         img_target=crop_canvas, 
         return_flow=return_flow,
-        mask_people=True,      # ENABLE MASKING to ignore moving people (can be parameterized if needed)
-        dilate_pixels=20,      # DILATE to cover handheld objects/shadows
-        mask_threshold=0.5,
+        mask_people=mask_people,
+        dilate_pixels=dilate_pixels,
+        mask_threshold=mask_threshold,
         bidirectional=use_bidirectional
     )
     
@@ -98,6 +119,7 @@ def stitch_cumulative(
 
     # Prepare for Composition
     warped_shard_full = new_shard # Default: no global warp
+    warped_source_valid_full = source_valid_mask
     # crop_to_blend = aligned_crop_shard # Default: use locally aligned cop (Unused variable)
     
     # Store the canvas to be used for blending (it might be warped below)
@@ -140,6 +162,15 @@ def stitch_cumulative(
             # Warp BOTH
             canvas_to_blend = cv2.remap(canvas, map_x_canvas, map_y_canvas, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT)
             warped_shard_full = cv2.remap(new_shard, map_x_shard, map_y_shard, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT)
+            if source_valid_mask is not None:
+                warped_source_valid_full = cv2.remap(
+                    source_valid_mask.astype(np.uint8),
+                    map_x_shard,
+                    map_y_shard,
+                    interpolation=cv2.INTER_NEAREST,
+                    borderMode=cv2.BORDER_CONSTANT,
+                    borderValue=0,
+                )
             
             if debug_dir:
                 cv2.imwrite(os.path.join(debug_dir, f'step{step_idx}_warped_canvas_full.png'), canvas_to_blend)
@@ -149,6 +180,15 @@ def stitch_cumulative(
             # Unidirectional: Only warp the new shard (Source) to match the Canvas (Target)
             map_x, map_y = mesh_warper.compute_mesh_flow_from_roi(flow_roi, roi_bbox, validity_mask=valid_mask)
             warped_shard_full = mesh_warper.warp_image(new_shard, map_x, map_y)
+            if source_valid_mask is not None:
+                warped_source_valid_full = cv2.remap(
+                    source_valid_mask.astype(np.uint8),
+                    map_x,
+                    map_y,
+                    interpolation=cv2.INTER_NEAREST,
+                    borderMode=cv2.BORDER_CONSTANT,
+                    borderValue=0,
+                )
         
         if debug_dir:
             cv2.imwrite(os.path.join(debug_dir, f'step{step_idx}_warped_shard_full.png'), warped_shard_full)
@@ -165,9 +205,11 @@ def stitch_cumulative(
     updated_canvas = blend_priority(
         warped_shard_full, 
         canvas_to_blend, 
+        threshold=blend_threshold,
         use_target_mask=False, # Do NOT mask by target, strictly use Source validity
-        erode_kernel_size=3, 
-        save_cleaned_source_path=save_cleaned_path
+        erode_kernel_size=blend_erode_kernel_size,
+        save_cleaned_source_path=save_cleaned_path,
+        source_valid_mask=warped_source_valid_full,
     )
     # updated_canvas = blend_priority(
     #     warped_shard_full, 

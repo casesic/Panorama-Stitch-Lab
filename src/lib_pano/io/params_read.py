@@ -4,6 +4,12 @@ import json
 from scipy.spatial.transform import Rotation 
 import numpy as np
 import math
+import cv2 as cv
+
+
+def _is_opencv_yaml(path_calib: str) -> bool:
+    lower = path_calib.lower()
+    return lower.endswith('.yaml') or lower.endswith('.yml')
 
 def load_single_K_and_distortion(path_calib: str, camera_name: str):
     '''
@@ -29,6 +35,77 @@ def load_single_K_and_distortion(path_calib: str, camera_name: str):
         [0, 0, 1]
     ], dtype=np.float32)
     return K_matrix, distortion, xi, model
+
+
+def load_single_K_and_distortion_ds(path_calib: str, camera_name: str):
+    '''
+    从 OpenCV YAML 标定文件读取单个相机的 double sphere(ds) 内参。
+
+    支持如下字段：
+    - camera_model: ds
+    - intrinsics: [fx, fy, cx, cy]
+    - distortion_coeffs: [xi, alpha, ...]
+
+    Returns:
+        K_matrix: (3, 3) float32
+        distortion: (N,) float32, 原始 distortion_coeffs
+        xi: float
+        alpha: float
+        model: str
+    '''
+    fs = cv.FileStorage(path_calib, cv.FILE_STORAGE_READ)
+    node_cam = fs.getNode(camera_name)
+    if node_cam.empty() and camera_name.startswith('camera'):
+        node_cam = fs.getNode('cam' + camera_name[len('camera'):])
+    if node_cam.empty():
+        fs.release()
+        raise ValueError(f'相机名称 {camera_name} 不存在于标定文件中')
+
+    model = node_cam.getNode('camera_model').string()
+    intrinsics = np.asarray(node_cam.getNode('intrinsics').mat(), dtype=np.float32).reshape(-1)
+    distortion = np.asarray(node_cam.getNode('distortion_coeffs').mat(), dtype=np.float32).reshape(-1)
+
+    fx, fy, cx, cy = intrinsics[0], intrinsics[1], intrinsics[2], intrinsics[3]
+    xi, alpha = float(distortion[0]), float(distortion[1])
+
+    K_matrix = np.array([
+        [fx, 0, cx],
+        [0, fy, cy],
+        [0, 0, 1],
+    ], dtype=np.float32)
+
+    fs.release()
+    return K_matrix, distortion, xi, alpha, model
+
+
+def load_extrinsics_from_opencv_yaml(path_calib: str, camera_name_list):
+    """从 OpenCV YAML 读取每个相机的 T(4x4)，返回 WOR_TO_CAM 的 R 和 t 列表。"""
+    fs = cv.FileStorage(path_calib, cv.FILE_STORAGE_READ)
+    if not fs.isOpened():
+        raise FileNotFoundError(path_calib)
+
+    R_list = []
+    T_list = []
+    for camera_name in camera_name_list:
+        node_cam = fs.getNode(camera_name)
+        if node_cam.empty() and camera_name.startswith('camera'):
+            node_cam = fs.getNode('cam' + camera_name[len('camera'):])
+        if node_cam.empty():
+            fs.release()
+            raise ValueError(f'相机名称 {camera_name} 不存在于标定文件中')
+
+        T_mat = np.asarray(node_cam.getNode('T').mat(), dtype=np.float32)
+        if T_mat.shape != (4, 4):
+            fs.release()
+            raise ValueError(f'{camera_name} 的 T 不是 4x4 矩阵')
+
+        R = T_mat[:3, :3]
+        t = T_mat[:3, 3]
+        R_list.append(R)
+        T_list.append(t)
+
+    fs.release()
+    return R_list, T_list
     
 
 def load_R_and_T(path_calib: str):
@@ -138,14 +215,41 @@ def load_opt_R_and_T(path_opt_calib: str):
     
 
 def load_all_K_and_distortion(path_calib: str):
-    # Try to detect if we should use 135 cams (camera1, 3, 5) or 200 cams (camera2, 4, 6)
-    # But for now hardcode or try-catch
+    # OpenCV YAML: DS 标定，支持两相机(cam2/cam4)和三相机(cam2/cam4/cam6)
+    if _is_opencv_yaml(path_calib):
+        fs = cv.FileStorage(path_calib, cv.FILE_STORAGE_READ)
+        if not fs.isOpened():
+            raise FileNotFoundError(path_calib)
+
+        candidate_names = ["cam2", "cam4", "cam6", "camera2", "camera4", "camera6"]
+        camera_name_list = []
+        for name in candidate_names:
+            if not fs.getNode(name).empty():
+                camera_name_list.append(name)
+        fs.release()
+
+        # 两路优先使用 cam2/cam4；否则按发现顺序加载
+        if "cam2" in camera_name_list and "cam4" in camera_name_list:
+            camera_name_list = ["cam2", "cam4"] + [n for n in camera_name_list if n not in {"cam2", "cam4"}]
+
+        K_list = []
+        distortion_list = []
+        xi_list = []
+        model_list = []
+        for camera_name in camera_name_list:
+            K, distortion, xi, _, model = load_single_K_and_distortion_ds(path_calib, camera_name)
+            K_list.append(K)
+            distortion_list.append(distortion)
+            xi_list.append(xi)
+            model_list.append(model)
+        return camera_name_list, K_list, distortion_list, xi_list, model_list
+
+    # JSON: 继续支持原 omni_radtan 三相机流程
     camera_name_list = ["camera2", "camera4", "camera6"]
-    # Quick hack: check if these exist
     with open(path_calib, 'r') as f:
         data = json.load(f)
     if "camera1" in data["camera_configs"]["results"]:
-         camera_name_list = ["camera1", "camera3", "camera5"]
+        camera_name_list = ["camera1", "camera3", "camera5"]
 
     K_list = []
     distortion_list = []
@@ -154,7 +258,7 @@ def load_all_K_and_distortion(path_calib: str):
     for camera_name in camera_name_list:
         K, distortion, xi, model = load_single_K_and_distortion(path_calib, camera_name)
         K_list.append(K)
-        distortion_list.append(distortion)  
+        distortion_list.append(distortion)
         xi_list.append(xi)
         model_list.append(model)
     return camera_name_list, K_list, distortion_list, xi_list, model_list

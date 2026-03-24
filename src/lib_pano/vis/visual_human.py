@@ -100,7 +100,6 @@ def render_silhouette(verts_cam, faces, cam, H, W):
         poly = pts2d.reshape((-1, 1, 2)).astype(np.int32)
         cv2.fillConvexPoly(mask, poly, 255)
         drawn += 1
-    _log(f"  silhouette: 有效面={drawn}/{len(faces)}")
     return mask
 
 

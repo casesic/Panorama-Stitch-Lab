@@ -87,7 +87,8 @@ def blend_priority(
     threshold: int = 10, 
     use_target_mask: bool = False, 
     save_cleaned_source_path: Optional[str] = None, 
-    erode_kernel_size: int = 0
+    erode_kernel_size: int = 0,
+    source_valid_mask: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     """
     使用灰度值判断, 避免单通道为0的问题
@@ -105,13 +106,20 @@ def blend_priority(
         if save_cleaned_source_path:
             cv2.imwrite(save_cleaned_source_path, image_to_process)
 
-    # 转换为灰度图
-    gray = cv2.cvtColor(image_to_process, cv2.COLOR_BGR2GRAY)
-    mask = (gray > threshold).astype(np.uint8) * 255
+    if source_valid_mask is not None:
+        mask = (source_valid_mask > 0).astype(np.uint8) * 255
+    else:
+        # 转换为灰度图
+        gray = cv2.cvtColor(image_to_process, cv2.COLOR_BGR2GRAY)
+        mask = (gray > threshold).astype(np.uint8) * 255
     
     # 增加腐蚀操作, 收缩 Mask, 以去除边缘插值引入的灰黑色伪影
     if erode_kernel_size > 0:
-        kernel = np.ones((erode_kernel_size, erode_kernel_size), np.uint8)
+        # 使用几何有效掩码时，仅沿水平方向腐蚀，避免吞掉图像顶部/底部有效区域。
+        if source_valid_mask is not None:
+            kernel = np.ones((1, erode_kernel_size), np.uint8)
+        else:
+            kernel = np.ones((erode_kernel_size, erode_kernel_size), np.uint8)
         mask = cv2.erode(mask, kernel, iterations=1)
     
     result = image_to_process.copy()

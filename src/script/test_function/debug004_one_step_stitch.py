@@ -1,23 +1,43 @@
+import os
+
+# Windows 下部分依赖会重复加载 OpenMP 运行时，先设置兜底以避免进程直接退出。
+os.environ.setdefault('KMP_DUPLICATE_LIB_OK', 'TRUE')
+
 import config_script
 from lib_pano import local_setting as ls
-import os
-import numpy as np
 from lib_pano.stitch.one_step_stitch import one_step_stitch
-image246_paths = [
-    os.path.join(ls.IMAGE_ORIGIN2_DIR, 'frame_00001_rotate.png'),
-    os.path.join(ls.IMAGE_ORIGIN4_DIR, 'frame_00001_rotate.png'),
-    os.path.join(ls.IMAGE_ORIGIN6_DIR, 'frame_00001_rotate.png'),
-]
-image135_paths = [
-    os.path.join(ls.IMAGE_ORIGIN1_DIR, 'frame_00001_rotate.png'),
-    os.path.join(ls.IMAGE_ORIGIN3_DIR, 'frame_00001_rotate.png'),
-    os.path.join(ls.IMAGE_ORIGIN5_DIR, 'frame_00001_rotate.png'),
-]
-# output_path = os.path.join(ls.DATA_OUTPUT_DIR, 'preview','frame_135_00001_stitched.png')
-# using 135 config
-# Pass 135 calib as both arguments (second one is ignored by logic but must be valid str)
-# one_step_stitch(image135_paths, ls.CAMERA_135_CALIB_FILE, ls.CAMERA_135_CALIB_FILE, output_path)
+import numpy as np
 
-output_path = os.path.join(ls.DATA_OUTPUT_DIR, 'preview','frame_135_00001_stitched.png')
-one_step_stitch(image135_paths, ls.CAMERA_135_CALIB_FILE, ls.CALIB_OPT_FILE, output_path)
+
+def run_ds_two_cam_test(frame_idx: int = 515, pano_size=(1920, 960), shift_right_px: int = 200):
+    """两相机(cam2/cam4) DS 标定的一步合图测试。"""
+    frame_name = f"frame_{frame_idx:05d}.png"
+    image_paths = [
+        os.path.join(ls.IMAGE_20260311_DIR, 'camera2', frame_name),
+        os.path.join(ls.IMAGE_20260311_DIR, 'camera4', frame_name),
+    ]
+
+
+    calib_path = ls.CALIB_20260311_YAML_FILE
+
+    output_dir = os.path.join(ls.DATA_ROOT, 'Output', '20260311_riding', 'preview')
+    os.makedirs(output_dir, exist_ok=True)
+    output_path = os.path.join(output_dir, f'frame_{frame_idx:05d}_cam2_cam4_stitched.png')
+
+    # 对 YAML 路径而言，第三个参数当前不会被使用，传同一路径即可。
+    one_step_stitch(
+    	image_paths,
+    	calib_path,
+    	calib_path,
+    	output_path,
+    	pano_size=pano_size,
+    	shift_right_px=shift_right_px,
+    )
+
+
+    print(f"[OK] panorama saved to: {output_path}")
+
+
+if __name__ == '__main__':
+    run_ds_two_cam_test(frame_idx=515, pano_size=(1920, 960), shift_right_px=640)
 

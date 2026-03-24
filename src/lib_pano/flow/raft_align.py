@@ -263,23 +263,43 @@ class RAFTAligner:
             return warped_img
             
     def align_with_masking(self, img_source, img_target, iters=20, return_flow=False, 
-                          mask_people=True, dilate_pixels=30, mask_threshold=0.2, bidirectional=False):
+                          mask_people=True, dilate_pixels=30, mask_threshold=0.2, bidirectional=False,
+                          custom_mask_source=None, custom_mask_target=None):
         """
-        Align allowing automatic masking of people to prevent ghosting.
+        Align allowing automatic masking of people/custom regions to prevent ghosting.
         Uses background features for alignment.
+
+        Args:
+            custom_mask_source: (H, W) uint8 mask for source image ROI (255 = ignore/inpaint).
+                                 Applied BEFORE people masking.
+            custom_mask_target: (H, W) uint8 mask for target image ROI (255 = ignore/inpaint).
+                                 Applied BEFORE people masking.
         """
-        src_run = img_source
-        dst_run = img_target
-        
+        src_run = img_source.copy()
+        dst_run = img_target.copy()
+
+        # --- Custom region inpainting (e.g. tree branches) ---
+        has_custom_mask = (custom_mask_source is not None or custom_mask_target is not None)
+        if has_custom_mask:
+            print(f"[RAFTAligner] Inpainting custom masked regions before flow estimation...")
+            if custom_mask_source is not None:
+                # Ensure mask is single-channel uint8
+                m_src = custom_mask_source.astype(np.uint8)
+                src_run = cv2.inpaint(src_run, m_src, inpaintRadius=5, flags=cv2.INPAINT_TELEA)
+            if custom_mask_target is not None:
+                m_dst = custom_mask_target.astype(np.uint8)
+                dst_run = cv2.inpaint(dst_run, m_dst, inpaintRadius=5, flags=cv2.INPAINT_TELEA)
+
         if mask_people:
             # Lazy import to avoid circular dependency or requirement if not used
             from lib_pano.vis.masking import remove_person
             print(f"[RAFTAligner] Masking people (dilate={dilate_pixels}, thresh={mask_threshold})...")
-            src_run, _ = remove_person(img_source, device=self.device, 
+            src_run, _ = remove_person(src_run, device=self.device, 
                                       dilate_pixels=dilate_pixels, threshold=mask_threshold)
-            dst_run, _ = remove_person(img_target, device=self.device, 
+            dst_run, _ = remove_person(dst_run, device=self.device, 
                                       dilate_pixels=dilate_pixels, threshold=mask_threshold)
-        # Run RAFT on (possibly masked) images
+
+        # Run RAFT on (possibly masked/inpainted) images
         # We always set return_flow=True here because we might need to warp the ORIGINAL image manually
         # if we masked the input.
         align_result = self.align(src_run, dst_run, iters=iters, return_flow=True, bidirectional=bidirectional)
@@ -289,7 +309,7 @@ class RAFTAligner:
         else:
              warped_masked, flow = align_result
         
-        if not mask_people:
+        if not mask_people and not has_custom_mask:
             # If no masking was done, warped_masked IS the result we want
             if return_flow:
                 if bidirectional:

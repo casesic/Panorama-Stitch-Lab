@@ -1,7 +1,7 @@
 from  typing import List, Tuple, Dict, Any
 import numpy as np
 from lib_pano.io.params_read import load_R_and_T
-from lib_pano.io.feature_filter import load_matches
+from lib_pano.feature.feature_filter import load_matches
 from lib_pano.stitch.pano_stitch import equirect_pixels_to_sphere
 import cv2 as cv
 from scipy.spatial.transform import Rotation 

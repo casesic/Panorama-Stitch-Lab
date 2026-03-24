@@ -6,7 +6,13 @@ from typing import List, Tuple
 import numpy as np
 import cv2
 from lib_pano import local_setting as ls
-from lib_pano.io.params_read import load_all_K_and_distortion, load_R_and_T, load_opt_R_and_T
+from lib_pano.io.params_read import (
+    create_rotation_matrix_y_axis,
+    load_all_K_and_distortion,
+    load_R_and_T,
+    load_opt_R_and_T,
+    load_extrinsics_from_opencv_yaml,
+)
 from lib_pano.camera.camera import get_camera_std_euler_by_R, get_R_by_euler
 
 
@@ -22,32 +28,6 @@ def forward_unified_to_normalized(X: np.ndarray, Y: np.ndarray, Z: np.ndarray, x
     mx = X / s
     my = Y / s
     return mx, my
-
-
-def forward_kb4_to_pixel(X: np.ndarray, Y: np.ndarray, Z: np.ndarray, 
-                         k1: float, k2: float, k3: float, k4: float,
-                         fx: float, fy: float, cx: float, cy: float):
-    """Kannala-Brandt (Equidistant) Model Forward Projection
-    World/Cam coords -> Pixel coords
-    """
-    r = np.sqrt(X*X + Y*Y + Z*Z)
-    theta = np.arccos(Z / (r + 1e-8))
-    phi = np.arctan2(Y, X)
-    
-    theta_2 = theta * theta
-    theta_4 = theta_2 * theta_2
-    theta_6 = theta_4 * theta_2
-    theta_8 = theta_4 * theta_4
-    
-    theta_d = theta * (1.0 + k1 * theta_2 + k2 * theta_4 + k3 * theta_6 + k4 * theta_8)
-    
-    x_dist = theta_d * np.cos(phi)
-    y_dist = theta_d * np.sin(phi)
-    
-    u = fx * x_dist + cx
-    v = fy * y_dist + cy
-    
-    return u, v
 
 
 def forward_ds_to_pixel(X: np.ndarray, Y: np.ndarray, Z: np.ndarray, 
@@ -68,8 +48,6 @@ def forward_ds_to_pixel(X: np.ndarray, Y: np.ndarray, Z: np.ndarray,
     
     d2 = np.sqrt(X*X + Y*Y + z_prime*z_prime)
     denom = alpha * d2 + (1.0 - alpha) * z_prime
-    
-    # Valid check?
     
     u_n = X / (denom + 1e-8)
     v_n = Y / (denom + 1e-8)
@@ -124,9 +102,9 @@ def generate_equirectangular_dirs(H: int, W: int) -> np.ndarray:
     # x = cosph * cos(th) 图像映射到最右边(不使用外参) x=cosph * sin(th):图像映射到中间
     sinph = np.sin(ph)
     cosph = np.cos(ph)
-    z = cosph * np.cos(th)  
+    z = cosph * np.sin(th)  
     y = sinph    # ph=pi/2 y=1
-    x = cosph * np.sin(th)  
+    x = cosph * np.cos(th)  
 
     dirs = np.stack([x, y, z], axis=-1)  # H,W,3
     return dirs
@@ -141,6 +119,7 @@ def remap_and_accumulate(
     Ts: List[np.ndarray],
     models: List[str],  # Added models list
     output_size: Tuple[int, int] = (1024, 512),
+    debug_dir: str = None,
 ):
     """对一组相机进行反向映射并融合：
     - pano_dirs: (H,W,3) 世界坐标下的单位方向向量
@@ -150,8 +129,6 @@ def remap_and_accumulate(
     返回融合后的 BGR uint8 全景图
     """
     H, W = output_size[1], output_size[0]
-    # H = pano_dirs.shape[0] # Overwriting param H? Careful.
-    # W = pano_dirs.shape[1] # Prefer using output_size or shape of dirs if matched.
     H_grid, W_grid = pano_dirs.shape[:2]
 
 
@@ -180,16 +157,9 @@ def remap_and_accumulate(
 
         fx = float(K[0, 0]); fy = float(K[1, 1]); cx = float(K[0, 2]); cy = float(K[1, 2])
         
-        # Decide projection method
-        use_ds = False
-        use_kb = False
-        
-        if 'ds' in model or 'double' in model:
-            use_ds = True
-        elif 'equi' in model or 'kb' in model:
-            use_kb = True
-        elif model == 'ds-none': # Specific case from json
-            use_ds = True
+        # 只支持 double-sphere 和 omni_radtan
+        model_lower = str(model).lower()
+        use_ds = ('ds' in model_lower) or ('double' in model_lower) or (model_lower == 'ds-none')
             
         if use_ds:
              # DS params: usually distortion=[xi, alpha, 0, 0] in that json
@@ -197,11 +167,6 @@ def remap_and_accumulate(
              xi_ds = float(dist[0])
              alpha = float(dist[1])
              # xi from K is usually for Omni, ignore if DS uses dist[0]
-        elif use_kb:
-             k1 = float(dist[0])
-             k2 = float(dist[1])
-             p1 = float(dist[2]) # k3
-             p2 = float(dist[3]) # k4
         else:
              # Default Unified/Omni
              k1 = float(dist[0]) if dist.size > 0 else 0.0
@@ -226,7 +191,7 @@ def remap_and_accumulate(
 
         
         # Valid mask based on Zc
-        if use_ds or use_kb:
+        if use_ds:
             # Allow slightly back
             # But usually we filter by image circle boundary (FOV) later?
             # Let's allow all for now and filter by map_x/map_y range
@@ -240,10 +205,6 @@ def remap_and_accumulate(
         if use_ds:
             map_x_flat, map_y_flat = forward_ds_to_pixel(
                 Xc, Yc, Zc, xi_ds, alpha, fx, fy, cx, cy
-            )
-        elif use_kb:
-            map_x_flat, map_y_flat = forward_kb4_to_pixel(
-                Xc, Yc, Zc, k1, k2, p1, p2, fx, fy, cx, cy
             )
         else:
             # Unified
@@ -260,8 +221,8 @@ def remap_and_accumulate(
         in_bounds = (map_x >= 0) & (map_x <= (iw - 1)) & (map_y >= 0) & (map_y <= (ih - 1))
         
         # Zc Check logic again
-        if use_ds or use_kb:
-            z_valid = Zc.reshape(H_grid, W_grid) > 0
+        if use_ds:
+            z_valid = Zc.reshape(H_grid, W_grid) > -xi_ds
             valid_mask = in_bounds & z_valid
         else:
             z_valid = Zc.reshape(H_grid, W_grid) > 1e-6
@@ -272,20 +233,25 @@ def remap_and_accumulate(
         # 使用 OpenCV remap（双线性插值）拉取颜色，注意输入图像为 BGR
         sampled = cv2.remap(img, map_x, map_y, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
         
-        # Save intermediate sampled images for debugging (requested for 135 mode)
-        debug_path = os.path.join(ls.DATA_OUTPUT_DIR, 'preview', f"debug_sampled_cam_{idx}.png")
-        cv2.imwrite(debug_path, sampled)
-        print(f"Saved debug image: {debug_path}")
+        if debug_dir:
+            os.makedirs(debug_dir, exist_ok=True)
+            sampled_path = os.path.join(debug_dir, f"debug_sampled_cam_{idx}.png")
+            valid_path = os.path.join(debug_dir, f"debug_valid_mask_cam_{idx}.png")
+            cv2.imwrite(sampled_path, sampled)
+            cv2.imwrite(valid_path, (valid_mask.astype(np.uint8) * 255))
+            print(f"Saved debug image: {sampled_path}")
+            print(f"Saved debug mask: {valid_path}")
         
         sampled_f = sampled.astype(np.float64) / 255.0
 
-        # 权重：使用 camera-facing 的 Zc（绝对值/余弦）作为权重（更正面贡献更大）
+        # 权重：以朝向为主，但给有效像素一个最小权重，避免双相机分界线出现黑缝。
         w = np.maximum(0.0, Zc.reshape(H_grid, W_grid))
-        w *= valid_mask.astype(np.float64)
+        min_valid_weight = 1e-3
+        w = np.where(valid_mask, np.maximum(w, min_valid_weight), 0.0)
 
         # 存入栈，用于后续按最大权重选取（接缝合并，硬边界）
         sampled_stack[idx, :, :, :] = sampled_f
-        weight_stack[idx, :, :] = w    
+        weight_stack[idx, :, :] = w
         
     
     # 基于权重栈按像素选择权重最大的相机（接缝合并）
@@ -306,6 +272,13 @@ def remap_and_accumulate(
     pano_out = np.zeros((H_grid, W_grid, 3), dtype=np.uint8)
     pano_out[valid] = (pano_f[valid] * 255.0).astype(np.uint8)
 
+    if debug_dir:
+        best_idx_vis = np.clip((best_idx.astype(np.float32) / max(1, num_cam - 1)) * 255.0, 0, 255).astype(np.uint8)
+        valid_vis = (valid.astype(np.uint8) * 255)
+        cv2.imwrite(os.path.join(debug_dir, "debug_best_idx.png"), best_idx_vis)
+        cv2.imwrite(os.path.join(debug_dir, "debug_final_valid.png"), valid_vis)
+        cv2.imwrite(os.path.join(debug_dir, "debug_pano_before_save.png"), pano_out)
+
     return pano_out
 
 def load_images_for_names(images_path: List[str]):
@@ -323,19 +296,36 @@ def one_step_stitch(images_path: List[str],
                     calib_path: str,
                     calib_opt_path: str,
                     output_path: str,
-                    pano_size: Tuple[int, int] = (1920, 960)):
+                    pano_size: Tuple[int, int] = (1920, 960),
+                    shift_right_px: int = 0):
 
     names, K_list, dist_list, xi_list, model_list = load_all_K_and_distortion(calib_path)
-    
-    # Simple heuristic to switch extrinsic loader
-    if "camera1" in names or "camera3" in names:
-        # Assuming 135 series use the standard kalibr 'chain' format in the main calib file
+
+    # 外参策略：
+    # 1) YAML(DS) 优先从文件中的 T(4x4) 读取；
+    # 2) 若是两相机且缺少可用外参，默认 cam0=I, cam1=Ry(pi)；
+    # 3) JSON 三相机沿用原有 135/246 流程。
+    lower_calib = calib_path.lower()
+    is_yaml = lower_calib.endswith('.yaml') or lower_calib.endswith('.yml')
+    if is_yaml:
+        R_list, t_list = load_extrinsics_from_opencv_yaml(calib_path, names)
+        print(f"[Info] Loaded extrinsics from OpenCV YAML: {calib_path}")
+        # correct
+        R1_eluer = []
+        
+    elif len(names) == 2:
+        print("[Info] Two-camera setup detected, using default Ry(pi) extrinsics.")
+        R_list = [np.eye(3, dtype=np.float32), create_rotation_matrix_y_axis(np.pi)]
+        t_list = [np.zeros(3, dtype=np.float32), np.zeros(3, dtype=np.float32)]
+    elif "camera1" in names or "camera3" in names:
         print(f"[Info] Detected 135 series ({names}), loading extrinsics from {calib_path} using chain format.")
         R_list, t_list = load_R_and_T(calib_path)
     else:
-        # Assuming 246 series use the 'opt' format
         print(f"[Info] Detected 246 series ({names}), loading extrinsics from {calib_opt_path}.")
-        R_list, t_list = load_opt_R_and_T(calib_opt_path)  # Debug
+        R_list, t_list = load_opt_R_and_T(calib_opt_path)
+
+    if len(images_path) != len(K_list):
+        raise ValueError(f"Image count ({len(images_path)}) does not match calibration count ({len(K_list)}): {names}")
     
     
     # R_list = trans_R(R_list)
@@ -347,7 +337,28 @@ def one_step_stitch(images_path: List[str],
     pano_dirs = generate_equirectangular_dirs(H, W)
 
     print("Start remap-and-fuse...")
-    pano = remap_and_accumulate(pano_dirs, images, K_list, dist_list, xi_list, R_list, t_list, model_list, output_size=pano_size)
+    output_dir = os.path.dirname(output_path)
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+
+    pano = remap_and_accumulate(
+        pano_dirs,
+        images,
+        K_list,
+        dist_list,
+        xi_list,
+        R_list,
+        t_list,
+        model_list,
+        output_size=pano_size,
+        debug_dir=output_dir,
+    )
+
+    # Equirect 水平方向循环平移：正值表示内容向右移动。
+    if shift_right_px != 0:
+        pano = np.roll(pano, shift=shift_right_px, axis=1)
+        print(f"[Info] Shift panorama right by {shift_right_px} px")
+
     print(f"Panorama generated, saving to: {output_path}")
     cv2.imwrite(output_path, pano)
 
