@@ -6,7 +6,7 @@ import cv2
 from scipy.spatial.transform import Rotation as R_scipy
 
 from lib_pano.camera.omni_camera import omni_project_np
-from lib_pano.human.smpl_model import export_obj, crop_upper_body
+
 
 # ── 可视化常量 ──────────────────────────────────────────────────
 SKEL_PAIRS_7 = [(0,1),(0,2),(1,2),(1,3),(2,4),(3,5),(4,6)]
@@ -179,78 +179,5 @@ def make_comparison(output_dir: str):
     _log(f"  已保存: step_comparison.png  ({comp.shape[1]}×{comp.shape[0]})")
 
 
-# ── Step 4: 导出 OBJ + Silhouette 可视化 ────────────────────────
-
-def step4_export(s1, s3, smpl, cam, output_dir: str):
-    """导出上半身/全身 OBJ + Silhouette 渲染 + 关节叠加图"""
-    from lib_pano.human.detect import SMPL_ALIGN
-
-    _log("Step 4: 导出优化 OBJ + Silhouette 可视化")
-    verts_cam = s3['verts_cam']   # (6890,3) OpenCV 相机空间
-    uv_all    = s3['uv_all']      # (24,2)
-    img       = s1['img']
-    H, W      = img.shape[:2]
-    lbs_w     = smpl.lbs_weights.cpu().numpy()   # (6890,24)
-    R_cv2gl   = np.array([[1.,0.,0.],[0.,-1.,0.],[0.,0.,-1.]])
-
-    # ── 上半身裁剪（主推荐）────────────────────────
-    verts_ub_cam, faces_ub = crop_upper_body(verts_cam, smpl.faces, lbs_w)
-    verts_ub_view = (R_cv2gl @ verts_ub_cam.T).T
-
-    # 【推荐】上半身 OBJ — MeshLab/Blender 可直接查看 (Y-up)
-    export_obj(verts_ub_view, faces_ub,
-               os.path.join(output_dir, 'step4_upper_view_space.obj'),
-               comment='SMPL upper body, Y-up OpenGL view space. ★ Recommended for MeshLab/Blender.')
-    # 上半身 OBJ — 相机空间（OpenCV）
-    export_obj(verts_ub_cam, faces_ub,
-               os.path.join(output_dir, 'step4_upper_camera_space.obj'),
-               comment='SMPL upper body in OpenCV camera space')
-    # ── 全身 OBJ（备用，下半身不可靠）────────────────
-    export_obj(verts_cam, smpl.faces,
-               os.path.join(output_dir, 'step4_fullbody_camera_space.obj'),
-               comment='SMPL full body in OpenCV camera space (lower body unreliable)')
-
-    # ── Silhouette 渲染（只渲染上半身，结果更干净）────
-    _log("  渲染上半身 silhouette（逐面片，约需数秒）...")
-    sil_mask = render_silhouette(verts_ub_cam, faces_ub, cam, H, W)
-
-    # (1) 纯 silhouette mask（白底，绿=上半身，橙色轮廓）
-    sil_white = np.ones((H, W, 3), dtype=np.uint8) * 255
-    sil_white[sil_mask > 0] = [60, 200, 80]
-    contours, _ = cv2.findContours(sil_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    cv2.drawContours(sil_white, contours, -1, (0, 100, 200), 4)
-    cv2.imwrite(os.path.join(output_dir, 'step4_silhouette_mask.png'), sil_white)
-
-    # (2) 叠加到原图
-    vis_sil = img.copy().astype(np.float32)
-    sil_m   = sil_mask > 0
-    vis_sil[sil_m] = vis_sil[sil_m] * 0.40 + np.array([30, 100, 255], np.float32) * 0.60
-    vis_sil = np.clip(vis_sil, 0, 255).astype(np.uint8)
-    cv2.drawContours(vis_sil, contours, -1, (255, 80, 0), 3)
-
-    # ── 叠加关节点 ────────────────────────────────────
-    vis_full = vis_sil.copy()
-    for i in range(24):
-        u, v = uv_all[i]
-        if 0 <= u < W and 0 <= v < H:
-            cv2.circle(vis_full, (int(u), int(v)), 4, C_GRAY, -1)
-    for i, idx in enumerate(SMPL_ALIGN):
-        u, v = uv_all[idx]
-        if 0 <= u < W and 0 <= v < H:
-            cv2.circle(vis_full, (int(u), int(v)), 8, C_ORANGE, 2)
-    for i in range(7):
-        if s1['valid_mask'][i]:
-            u, v = s1['target_uv'][i]
-            cv2.circle(vis_full, (int(u), int(v)), 8, C_GREEN, 2)
-            cv2.line(vis_full, (int(u), int(v)),
-                     (int(uv_all[SMPL_ALIGN[i], 0]), int(uv_all[SMPL_ALIGN[i], 1])),
-                     C_CYAN, 1)
-    cv2.putText(vis_full, f"Step4: Upper Body  RMSE={s3['rmse']:.1f}px",
-                (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.5, C_WHITE, 2)
-    cv2.putText(vis_full, "Blue silhouette=upper body  Green=RTMPose",
-                (10, 110), cv2.FONT_HERSHEY_SIMPLEX, 1.2, C_WHITE, 2)
-    save_thumb(vis_full, os.path.join(output_dir, 'step4_overlay.png'))
-    _log("  step4_overlay.png / step4_silhouette_mask.png / OBJ × 3 已保存")
-    _log("  ★ 推荐: step4_upper_view_space.obj (Y-up, MeshLab/Blender 直接打开)")
 
     

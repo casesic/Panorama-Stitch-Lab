@@ -10,8 +10,8 @@ from lib_pano.calibration.project_to_equirect import test_main
 FRAME_INDEX = 515
 # test 500
 path_img_0 = os.path.join(ls.IMAGE_20260311_DIR, 'camera2', f'frame_00{FRAME_INDEX}.png')
-output_path_0 = os.path.join(ls.DATA_OUTPUT_DIR, '20260311_riding', 'camera2', f'frame_00{FRAME_INDEX}_equirect.png')
-test_main(ls.CALIB_20260311_YAML_FILE, 'camera2', path_img_0, output_path_0, True)
+output_path_0 = os.path.join(ls.DATA_OUTPUT_DIR, '20260311_riding', 'camera2', f'frame_00{FRAME_INDEX}_equirect_rotate.png')
+test_main(ls.CALIB_20260311_YAML_FILE, 'camera2', path_img_0, output_path_0)
 path_img = os.path.join(ls.IMAGE_20260311_DIR, 'camera4', f'frame_00{FRAME_INDEX}.png')
-output_path = os.path.join(ls.DATA_OUTPUT_DIR, '20260311_riding', 'camera4', f'frame_00{FRAME_INDEX}_equirect.png')
-test_main(ls.CALIB_20260311_YAML_FILE, 'camera4', path_img, output_path, True)
+output_path = os.path.join(ls.DATA_OUTPUT_DIR, '20260311_riding', 'camera4', f'frame_00{FRAME_INDEX}_equirect_rotate.png')
+test_main(ls.CALIB_20260311_YAML_FILE, 'camera4', path_img, output_path)

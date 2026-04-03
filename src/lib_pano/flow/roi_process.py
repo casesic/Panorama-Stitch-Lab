@@ -2,83 +2,57 @@ import cv2
 import numpy as np
 from typing import Optional, Tuple
 
-def get_roi_overlap_mask(image_1: np.ndarray, image_2: np.ndarray, threshold: float = 1e-6) -> np.ndarray:
-    """
-    计算两张图的共同非黑区域（ROI Mask）。
-    假设黑色 (0,0,0) 为无效区域。
-    """
-    # 转灰度
-    gray_1 = cv2.cvtColor(image_1, cv2.COLOR_BGR2GRAY)
-    gray_2 = cv2.cvtColor(image_2, cv2.COLOR_BGR2GRAY)
 
-    # 提取非黑区域 Mask (255=valid, 0=invalid)
-    mask_1 = (gray_1 > threshold).astype(np.uint8) * 255
-    mask_2 = (gray_2 > threshold).astype(np.uint8) * 255
+def _ensure_binary_mask(mask: np.ndarray) -> np.ndarray:
+    return (mask > 0).astype(np.uint8) * 255
 
-    if mask_1.shape != mask_2.shape:
-        # Resize mask_2 to match mask_1 if shape mismatch
-        h1, w1 = mask_1.shape
-        mask_2 = cv2.resize(mask_2, (w1, h1), interpolation=cv2.INTER_NEAREST)
 
-    # 共同重叠区
-    overlap_mask = cv2.bitwise_and(mask_1, mask_2)
-    return overlap_mask
+def soft_overlap_from_masks(
+    mask_1: np.ndarray,
+    mask_2: np.ndarray,
+    extend_y: int = 0,
+) -> np.ndarray:
+    mask_1 = _ensure_binary_mask(mask_1)
+    mask_2 = _ensure_binary_mask(mask_2)
 
-def extract_overlap_roi(image_1: np.ndarray, image_2: np.ndarray, overlap_mask: np.ndarray) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], Optional[Tuple[int, int, int, int]]]:
-    """
-    从两张图中根据 Mask 提取 Bounding Box 的重叠内容。
-    修改：增加 x 轴过滤逻辑。
-    对于每一个 x 坐标 (Column)，如果该列中 Overlap 的有效像素高度 (y 轴投影) 小于图像高度的一半，则认为该列无效。
-    这一步是为了去除上下边缘的噪声或误匹配区域，只保留中间连通性好的重叠带。
-    """
-    h, w = overlap_mask.shape
-    
-    # 1. 计算每一列的非零像素数量
-    col_counts = np.count_nonzero(overlap_mask, axis=0)
-    
-    # 2. 阈值：高度的一半
-    threshold_h = h * 0.5
-    
-    # 3. 找到满足条件的列索引
-    valid_cols = np.where(col_counts >= threshold_h)[0]
-    
-    if len(valid_cols) == 0:
-        # 如果没有满足条件的列，回退到原来的逻辑（只要有像素就算）
-        # 或者直接返回 None
-        print("[FlowUtils] Warning: No columns satisfy vertical density threshold. Fallback to bounding rect.")
-        y_indices, x_indices = np.where(overlap_mask > 0)
-        if len(y_indices) == 0:
-            return None, None, None
-        valid_cols = np.unique(x_indices)
-    
-    # 确定 X 范围
-    x_min = np.min(valid_cols)
-    x_max = np.max(valid_cols)
-    
-    # 4. 在确定的 X 范围内，确定 Y 的范围
-    # 通常取该范围内所有有效像素的 Y 边界
-    roi_mask_sub = overlap_mask[:, x_min:x_max+1]
-    y_indices_sub, _ = np.where(roi_mask_sub > 0)
-    
-    if len(y_indices_sub) == 0:
-         return None, None, None
+    overlap = cv2.bitwise_and(mask_1, mask_2)
 
-    y_min = np.min(y_indices_sub)
-    y_max = np.max(y_indices_sub)
+    overlap_rows = np.any(overlap > 0, axis=1)  # 每行是否有1
+    if not np.any(overlap_rows):
+        return np.zeros_like(overlap)  # 没有交集直接返回空
 
-    crop_1 = image_1[y_min:y_max+1, x_min:x_max+1].copy()
-    crop_2 = image_2[y_min:y_max+1, x_min:x_max+1].copy()
+    row_min = np.argmax(overlap_rows)           # 第一个有交集的行
+    row_max = len(overlap_rows) - np.argmax(overlap_rows[::-1]) - 1  # 最后一个
 
-    sub_mask = overlap_mask[y_min:y_max+1, x_min:x_max+1]
-    
-    # 非重叠区域设为黑色
-    non_overlap_indices = (sub_mask == 0)
-    
-    crop_1[non_overlap_indices] = 0
-    crop_2[non_overlap_indices] = 0
+    row_min_ext = max(0, row_min - extend_y)
+    row_max_ext = min(mask_1.shape[0] - 1, row_max + extend_y)
 
-    roi_bbox = (x_min, y_min, x_max, y_max)
+    result = np.zeros_like(overlap)
+    result[row_min_ext:row_max_ext + 1, :] = 1
+
+    return result
+
+
+def extract_overlap_roi(
+    image_1: np.ndarray,
+    image_2: np.ndarray,
+    overlap_mask: np.ndarray
+) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], Optional[Tuple[int, int, int, int]]]:
     
+    y_indices, x_indices = np.where(overlap_mask > 0)
+    if len(y_indices) == 0:
+        return None, None, None
+    
+    y_min, y_max = np.min(y_indices), np.max(y_indices)
+    x_min, x_max = np.min(x_indices), np.max(x_indices)
+    y_max_exclusive = y_max + 1
+    x_max_exclusive = x_max + 1
+
+    crop_1 = image_1[y_min:y_max_exclusive, x_min:x_max_exclusive].copy()
+    crop_2 = image_2[y_min:y_max_exclusive, x_min:x_max_exclusive].copy()
+
+    roi_bbox = (x_min, y_min, x_max_exclusive, y_max_exclusive)
+
     return crop_1, crop_2, roi_bbox
 
 def blend_priority(
@@ -218,7 +192,8 @@ def compose_final_panorama(target_pano: np.ndarray, source_pano: np.ndarray,
         target_pano: The full target panorama image (base canvas).
         source_pano: The full source panorama image.
         blended_roi: The aligned and blended crop of the overlap region.
-        roi_bbox: (x_min, y_min, x_max, y_max) of the overlap ROI in the full image.
+        roi_bbox: (x_min, y_min, x_max, y_max) of the overlap ROI in the full image,
+            using half-open bounds compatible with image[y_min:y_max, x_min:x_max].
         overlap_mask: Boolean or binary mask of the overlap region on the full image.
         threshold: Threshold for considering a pixel valid (non-black).
 
@@ -244,13 +219,13 @@ def compose_final_panorama(target_pano: np.ndarray, source_pano: np.ndarray,
     x_min, y_min, x_max, y_max = roi_bbox
 
     # 提取 crop 对应的局部 mask
-    roi_mask = overlap_mask[y_min:y_max+1, x_min:x_max+1]
+    roi_mask = overlap_mask[y_min:y_max, x_min:x_max]
     roi_mask_bool = roi_mask > 0
 
     # 校验尺寸一致性
     roi_h_actual, roi_w_actual = blended_roi.shape[:2]
-    target_slice_h = (y_max + 1) - y_min
-    target_slice_w = (x_max + 1) - x_min
+    target_slice_h = y_max - y_min
+    target_slice_w = x_max - x_min
 
     if roi_h_actual != target_slice_h or roi_w_actual != target_slice_w:
         # print("Warning: ROI size mismatch in composition!")
@@ -259,11 +234,11 @@ def compose_final_panorama(target_pano: np.ndarray, source_pano: np.ndarray,
         blended_roi = blended_roi[:min_h, :min_w]
         roi_mask_bool = roi_mask_bool[:min_h, :min_w]
         # 更新 slice 坐标
-        y_max = y_min + min_h - 1
-        x_max = x_min + min_w - 1
+        y_max = y_min + min_h
+        x_max = x_min + min_w
 
     # 在全图的对应位置
-    full_roi_slice = (slice(y_min, y_max+1), slice(x_min, x_max+1))
+    full_roi_slice = (slice(y_min, y_max), slice(x_min, x_max))
 
     # 获取当前全图该区域的引用
     roi_on_canvas = final_pano[full_roi_slice]

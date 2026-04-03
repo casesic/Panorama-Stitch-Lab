@@ -129,7 +129,7 @@ class RAFTAligner:
 
         if model_path is None:
             # Default to raft-kitti.pth (outdoor/building scenes)
-            model_path = os.path.join(RAFT_MODELS_PATH, 'raft-kitti.pth')
+            model_path = os.path.join(RAFT_MODELS_PATH, 'raft-things.pth')
         
         if not os.path.exists(model_path):
             raise FileNotFoundError(f"RAFT model not found at: {model_path}\nPlease download it using tools/RAFT/download_models.sh")
@@ -171,18 +171,9 @@ class RAFTAligner:
         img = torch.from_numpy(img_np).permute(2, 0, 1).float()
         return img[None].to(self.device)
 
-    def align(self, img_source, img_target, iters=20, return_flow=False, bidirectional=False):
+    def align(self, img_source, img_target, iters=20, return_flow=False, bidirectional=False, flow_init_roi=None):
         """
         Align source image to target image using Optical Flow.
-        
-        Args:
-            img_target (np.ndarray): Target image (Base), [H, W, 3], BGR or RGB (consistent).
-            img_source (np.ndarray): Source image (To be warped), [H, W, 3].
-            iters (int): Number of flow iterations.
-            return_flow (bool): If True, return (warped_img, flow). Else return warped_img.
-            bidirectional (bool): If True, compute forward/backward flow and return consistency mask.
-                                  ONLY affects return values if return_flow=True.
-                                  Returns (warped_img, flow, valid_mask)
         
         Returns:
             np.ndarray: Warped source image [H, W, 3]. 
@@ -193,7 +184,19 @@ class RAFTAligner:
             h, w = img_target.shape[:2]
             print(f"[RAFTAligner] Warning: Input size mismatch. Resizing source {img_source.shape[:2]} to target {img_target.shape[:2]}")
             img_source = cv2.resize(img_source, (w, h), interpolation=cv2.INTER_LINEAR)
-
+        
+        # 记录原始尺寸
+        orig_h, orig_w = img_target.shape[:2]
+        # RAFT 输入限制在 1920 宽以内
+        RAFT_MAX_WIDTH = 1920
+        scale = min(1.0, RAFT_MAX_WIDTH / orig_w)
+        if scale < 1.0:
+            raft_h = int(orig_h * scale)
+            raft_w = int(orig_w * scale)
+            img_target = cv2.resize(img_target, (raft_w, raft_h), interpolation=cv2.INTER_LINEAR)
+            img_source = cv2.resize(img_source, (raft_w, raft_h), interpolation=cv2.INTER_LINEAR)
+            print(f"[RAFTAligner] Downscaled input from {orig_w}x{orig_h} to {raft_w}x{raft_h} for RAFT")
+            
         # Convert to tensor
         tensor_target = self.preprocess_image(img_target)
         tensor_source = self.preprocess_image(img_source)
@@ -201,7 +204,9 @@ class RAFTAligner:
         # Pad images to be divisible by 8 and satisfy minimum size
         padder = SafeInputPadder(tensor_target.shape)
         tensor_target, tensor_source = padder.pad(tensor_target, tensor_source)
-
+        
+        # init_flow_roi for human
+        flow_init_tensor = None
         # Compute flow
         with torch.no_grad():
             # eg: source(50, 50) match target(100, 50)  flow (-50, 0)
@@ -209,8 +214,8 @@ class RAFTAligner:
             # flow_warp(source, flow) → new_image
             # new_image content: for each position p, sample from source at [p + flow(p)]
             # result: new_image ≈ target
-            _, flow_up = self.model(tensor_target, tensor_source, iters=iters, test_mode=True)
-            
+            _, flow_up = self.model(tensor_target, tensor_source, flow_init = flow_init_tensor, iters=iters, test_mode=True)
+           
             valid_mask_np = None
             if bidirectional and return_flow:
                 # Calculate reverse flow: Source -> Target (vectors at Source grid pointing to Target)
@@ -231,7 +236,7 @@ class RAFTAligner:
                 diff_norm = torch.norm(diff, dim=1, keepdim=True) # [1, 1, H, W]
                 
                 # Create mask of valid pixels based on consistency threshold
-                consistency_thresh = 3.0
+                consistency_thresh = 20.0
                 valid_mask = (diff_norm < consistency_thresh).float()
                 
                 valid_mask_np = padder.unpad(valid_mask)[0].permute(1, 2, 0).cpu().numpy() # [H, W, 1]
@@ -249,12 +254,22 @@ class RAFTAligner:
         warped_img = warped_source_tensor[0].permute(1, 2, 0).cpu().numpy()
         warped_img = np.nan_to_num(warped_img, nan=0.0, posinf=255.0, neginf=0.0)
         warped_img = np.clip(warped_img, 0, 255).astype(np.uint8)
-
+        
+        if scale < 1.0:
+            warped_img = cv2.resize(warped_img, (orig_w, orig_h), interpolation=cv2.INTER_LINEAR)
+        
         if return_flow:
             flow_np = padder.unpad(flow_up)[0].permute(1, 2, 0).cpu().numpy()
             # Ensure flow is valid
             flow_np = np.nan_to_num(flow_np, nan=0.0, posinf=0.0, neginf=0.0)
-            
+            # 上采样 flow 回原始尺寸
+            if scale < 1.0:
+                flow_np = cv2.resize(flow_np, (orig_w, orig_h), interpolation=cv2.INTER_LINEAR)
+                flow_np = flow_np / scale  # flow 幅度也要还原
+                if valid_mask_np is not None:
+                    valid_mask_np = cv2.resize(valid_mask_np, (orig_w, orig_h), interpolation=cv2.INTER_NEAREST)
+                    
+            print(f"[RAFT output] flow mean mag: {np.linalg.norm(flow_np, axis=2).mean():.2f}")
             if bidirectional:
                 return warped_img, flow_np, valid_mask_np
             else:
@@ -262,8 +277,8 @@ class RAFTAligner:
         else:
             return warped_img
             
-    def align_with_masking(self, img_source, img_target, iters=20, return_flow=False, 
-                          mask_people=True, dilate_pixels=30, mask_threshold=0.2, bidirectional=False,
+    def align_with_masking(self, img_source, img_target, iters=20, return_flow=False,
+                          bidirectional=False, 
                           custom_mask_source=None, custom_mask_target=None):
         """
         Align allowing automatic masking of people/custom regions to prevent ghosting.
@@ -290,15 +305,6 @@ class RAFTAligner:
                 m_dst = custom_mask_target.astype(np.uint8)
                 dst_run = cv2.inpaint(dst_run, m_dst, inpaintRadius=5, flags=cv2.INPAINT_TELEA)
 
-        if mask_people:
-            # Lazy import to avoid circular dependency or requirement if not used
-            from lib_pano.vis.masking import remove_person
-            print(f"[RAFTAligner] Masking people (dilate={dilate_pixels}, thresh={mask_threshold})...")
-            src_run, _ = remove_person(src_run, device=self.device, 
-                                      dilate_pixels=dilate_pixels, threshold=mask_threshold)
-            dst_run, _ = remove_person(dst_run, device=self.device, 
-                                      dilate_pixels=dilate_pixels, threshold=mask_threshold)
-
         # Run RAFT on (possibly masked/inpainted) images
         # We always set return_flow=True here because we might need to warp the ORIGINAL image manually
         # if we masked the input.
@@ -309,7 +315,7 @@ class RAFTAligner:
         else:
              warped_masked, flow = align_result
         
-        if not mask_people and not has_custom_mask:
+        if not has_custom_mask:
             # If no masking was done, warped_masked IS the result we want
             if return_flow:
                 if bidirectional:

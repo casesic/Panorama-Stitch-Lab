@@ -149,6 +149,28 @@ def erp_project_np(points_3d: np.ndarray, width: int, height: int) -> np.ndarray
     v = (0.5 - lat / math.pi) * height
     return np.stack([u, v], axis=-1)
 
+# 专门针对光流和one_step_stitch里做的
+def erp_project_consistent(
+    points_3d: np.ndarray,
+    width: int,
+    height: int,
+    w_offset: float = 0.0,
+) -> np.ndarray:
+    x = points_3d[..., 0]
+    y = points_3d[..., 1]
+    z = points_3d[..., 2]
+    r = np.linalg.norm(points_3d, axis=-1).clip(1e-8)
+    
+    phi = np.arcsin((y / r).clip(-1 + 1e-7, 1 - 1e-7))
+    theta = np.arctan2(z, x)
+    
+    us = (theta / np.pi + 1.0 - w_offset) / 2.0
+    us = us % 1.0
+    vs = phi / np.pi + 0.5
+    
+    u_pixel = us * width
+    v_pixel = vs * height
+    return np.stack([u_pixel, v_pixel], axis=-1)
 
 def world_to_cam4(pts_world: np.ndarray, delta_t: np.ndarray = DEFAULT_DELTA_T) -> np.ndarray:
     return pts_world @ R_CAM4.T - delta_t

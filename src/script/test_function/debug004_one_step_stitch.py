@@ -16,11 +16,15 @@ def run_ds_two_cam_test(frame_idx: int = 515, pano_size=(1920, 960), shift_right
         os.path.join(ls.IMAGE_20260311_DIR, 'camera2', frame_name),
         os.path.join(ls.IMAGE_20260311_DIR, 'camera4', frame_name),
     ]
+    image_paths = [
+        os.path.join(ls.DATA_OUTPUT_DIR, '20260311_riding', 'segmentation', 'cam2', 'segmented_frame_00515.jpg'),
+        os.path.join(ls.DATA_OUTPUT_DIR, '20260311_riding', 'segmentation', 'cam4', 'segmented_frame_00515.jpg'),
+    ]
 
 
     calib_path = ls.CALIB_20260311_YAML_FILE
 
-    output_dir = os.path.join(ls.DATA_ROOT, 'Output', '20260311_riding', 'preview')
+    output_dir = os.path.join(ls.DATA_ROOT, 'Output', '20260311_riding', 'segmentation', 'preview')
     os.makedirs(output_dir, exist_ok=True)
     output_path = os.path.join(output_dir, f'frame_{frame_idx:05d}_cam2_cam4_stitched.png')
 
@@ -39,5 +43,5 @@ def run_ds_two_cam_test(frame_idx: int = 515, pano_size=(1920, 960), shift_right
 
 
 if __name__ == '__main__':
-    run_ds_two_cam_test(frame_idx=515, pano_size=(1920, 960), shift_right_px=640)
+    run_ds_two_cam_test(frame_idx=515, pano_size=(5760, 2880), shift_right_px=0)
 

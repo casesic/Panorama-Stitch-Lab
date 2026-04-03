@@ -58,6 +58,23 @@ def forward_ds_to_pixel(X: np.ndarray, Y: np.ndarray, Z: np.ndarray,
     return u, v
 
 
+def detect_image_circle(img: np.ndarray, threshold: int = 10):
+    """Detect the valid fisheye image circle from a BGR image."""
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    _, binary = cv2.threshold(gray, threshold, 255, cv2.THRESH_BINARY)
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
+
+    contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        h, w = img.shape[:2]
+        return float(w) / 2.0, float(h) / 2.0, float(min(h, w)) / 2.0
+
+    largest_contour = max(contours, key=cv2.contourArea)
+    (center_x, center_y), radius = cv2.minEnclosingCircle(largest_contour)
+    return float(center_x), float(center_y), float(radius)
+
+
 
 def apply_radtan_distortion(mx: np.ndarray, my: np.ndarray, k1: float, k2: float, p1: float, p2: float):
     """对无畸变归一化坐标应用 Radtan 畸变模型，返回畸变后的归一化坐标 (xd, yd)。"""
@@ -93,7 +110,7 @@ def generate_equirectangular_dirs(H: int, W: int) -> np.ndarray:
     # theta = us * (2.0 * np.pi) - np.pi  # 修改这一部分，可以决定从哪里开出来 Z 轴为蓝色  X 轴为红色、Y 轴为绿色
     # 想让-2/3*pi处对应(0,0,1)点 即us=1/6  x=0,y=0,z=1 th=0
     # w_offset = -1.0 / 6.0 
-    w_offset = 0.2
+    w_offset = 0   # 0.2
     theta = (us * 2.0 -1 + w_offset) * np.pi  
     theta = np.where(theta > np.pi, theta - 2.0 * np.pi, theta)
     phi = (vs - 0.5) * np.pi
@@ -166,6 +183,11 @@ def remap_and_accumulate(
              # Double check param interpretation
              xi_ds = float(dist[0])
              alpha = float(dist[1])
+             ccx, ccy, cr = detect_image_circle(img)
+            #  ccx = cx
+            #  ccy = cy
+            #  offset = np.sqrt((cx - det_ccx)**2 + (cy - det_ccy)**2)
+            #  cr = cr - offset
              # xi from K is usually for Omni, ignore if DS uses dist[0]
         else:
              # Default Unified/Omni
@@ -189,19 +211,6 @@ def remap_and_accumulate(
         Yc = dirs_cam[1, :]
         Zc = dirs_cam[2, :]
 
-        
-        # Valid mask based on Zc
-        if use_ds:
-            # Allow slightly back
-            # But usually we filter by image circle boundary (FOV) later?
-            # Let's allow all for now and filter by map_x/map_y range
-            pass
-        else:
-            # Unified old logic
-            facing = Zc > 1e-6
-            if not np.any(facing):
-                continue
-
         if use_ds:
             map_x_flat, map_y_flat = forward_ds_to_pixel(
                 Xc, Yc, Zc, xi_ds, alpha, fx, fy, cx, cy
@@ -216,14 +225,21 @@ def remap_and_accumulate(
         map_x = map_x_flat.reshape(H_grid, W_grid).astype(np.float32)
         map_y = map_y_flat.reshape(H_grid, W_grid).astype(np.float32)
 
+        circle_debug = None
+        if use_ds:
+            if debug_dir is not None:
+                circle_debug = img.copy()
+                cv2.circle(circle_debug, (int(round(ccx)), int(round(ccy))), int(round(cr)), (0, 255, 0), 2)
+
         # mask: 在图像范围内并且朝向相机
         # Check image bounds
         in_bounds = (map_x >= 0) & (map_x <= (iw - 1)) & (map_y >= 0) & (map_y <= (ih - 1))
         
         # Zc Check logic again
         if use_ds:
-            z_valid = Zc.reshape(H_grid, W_grid) > -xi_ds
-            valid_mask = in_bounds & z_valid
+            in_circle = ((map_x - ccx) ** 2 + (map_y - ccy) ** 2) < ((cr * 1.0) ** 2)
+            print(f"Camera {idx}: DS model, detected circle center=({ccx:.1f}, {ccy:.1f}), radius={cr:.1f}")
+            valid_mask = in_bounds & in_circle & (Zc.reshape(H_grid, W_grid) > -(xi_ds+0.1))
         else:
             z_valid = Zc.reshape(H_grid, W_grid) > 1e-6
             valid_mask = in_bounds & z_valid
@@ -239,6 +255,10 @@ def remap_and_accumulate(
             valid_path = os.path.join(debug_dir, f"debug_valid_mask_cam_{idx}.png")
             cv2.imwrite(sampled_path, sampled)
             cv2.imwrite(valid_path, (valid_mask.astype(np.uint8) * 255))
+            if circle_debug is not None:
+                circle_path = os.path.join(debug_dir, f"debug_circle_cam_{idx}.png")
+                cv2.imwrite(circle_path, circle_debug)
+                print(f"Saved debug circle: {circle_path}")
             print(f"Saved debug image: {sampled_path}")
             print(f"Saved debug mask: {valid_path}")
         

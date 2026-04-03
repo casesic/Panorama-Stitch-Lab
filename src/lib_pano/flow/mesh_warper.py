@@ -5,19 +5,22 @@ import torch.nn.functional as F
 from typing import List, Tuple, Optional, Union
 
 class Mesh_Grid_Warper:
-    def __init__(self, full_h: int, full_w: int, grid_size: int = 32) -> None:
+    def __init__(
+        self,
+        full_h: int,
+        full_w: int,
+        grid_size: int = 32,
+        decay_radius: float = 6.0,
+        max_propagation: Optional[float] = 8.0,
+    ) -> None:
         """
         Initialize the Mesh Grid Warper.
-
-        Width and height are needed to pre-calculate the grid dimensions for the 
-        global warp field, ensuring the mesh covers the entire image canvas.
-        The grid size determines the granularity of the warp; a smaller grid allows 
-        for more local deformation control but increases computational cost and 
-        risk of local distortions.
         """
         self.H = full_h
         self.W = full_w
         self.grid_size = grid_size
+        self.decay_radius = decay_radius
+        self.max_propagation = max_propagation
         
         self.grid_h = int(np.ceil(full_h / grid_size))
         self.grid_w = int(np.ceil(full_w / grid_size))
@@ -31,18 +34,8 @@ class Mesh_Grid_Warper:
     ) -> Union[Tuple[np.ndarray, np.ndarray], Tuple[np.ndarray, np.ndarray, np.ndarray]]:
         """
         Infer a global mesh deformation field from local ROI optical flow using Masked Decay.
-
-        Why Masked Decay:
-        Naive warping based strictly on optical flow works well for the overlapping 
-        regions but often causes severe distortion or tearing in non-overlapping areas 
-        where flow is undefined. We use a 'Masked Decay' strategy to smoothly transition 
-        from the active alignment in the overlap region to a rigid identity transform 
-        in the far field. This ensures that the stitched image remains natural-looking 
-        outside the seam, preserving the structure of the original image where no 
-        alignment information is available.
         """
         x_min, y_min, x_max, y_max = roi_bbox
-        
         grid_flow = np.zeros((self.grid_h, self.grid_w, 2), dtype=np.float32)
         
         # Track which grids have valid flow data to guide the extrapolation
@@ -89,9 +82,9 @@ class Mesh_Grid_Warper:
                         grid_mask[gy, gx] = True
 
         # --- Base Flow Construction ---
+        # 对 grid_flow 的每一行，把有效数据向左右两侧延伸填满整行
         base_flow = grid_flow.copy() 
         has_data_rows = np.any(grid_mask, axis=1)
-
         for gy in range(self.grid_h):
             if not has_data_rows[gy]:
                 continue
@@ -105,11 +98,11 @@ class Mesh_Grid_Warper:
 
         valid_row_indices = np.where(has_data_rows)[0]
         if len(valid_row_indices) > 0:
-            if valid_row_indices[0] > 0:
+            if valid_row_indices[0] > 0:   # 顶部填充
                 top_row = base_flow[valid_row_indices[0]]
                 base_flow[:valid_row_indices[0], :] = top_row
             
-            if valid_row_indices[-1] < self.grid_h - 1:
+            if valid_row_indices[-1] < self.grid_h - 1:  # 底部填充
                 bottom_row = base_flow[valid_row_indices[-1]]
                 base_flow[valid_row_indices[-1]+1:, :] = bottom_row
                 
@@ -133,9 +126,9 @@ class Mesh_Grid_Warper:
         else:
             dist_map = cv2.distanceTransform(inv_mask, cv2.DIST_L2, 5) 
         
-        decay_radius = 12.0 
-        
-        weight_mask = np.clip(1.0 - dist_map / decay_radius, 0.0, 1.0)
+        weight_mask = np.clip(1.0 - dist_map / max(self.decay_radius, 1e-6), 0.0, 1.0)
+        if self.max_propagation is not None:
+            weight_mask = np.where(dist_map <= self.max_propagation, weight_mask, 0.0)
         
         weight_mask = weight_mask[..., None] 
 

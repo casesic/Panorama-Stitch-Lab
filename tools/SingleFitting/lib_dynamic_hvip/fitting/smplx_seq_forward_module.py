@@ -28,7 +28,8 @@ from lib_dynamic_hvip.smpl.smpl_lib import (
     forward_smplx_tensor_batch,
 )
 from lib_dynamic_hvip.detection.engine.base_engine import Base_Detect_Engine
-from lib_dynamic_hvip.constants_skeleton import SMPL_ALL_54, COCO_17
+
+
 
 # SMPL-X 关节名 → 索引（前 22 个身体关节 + 手指）
 # joints 输出顺序参考 smplx 官方文档
