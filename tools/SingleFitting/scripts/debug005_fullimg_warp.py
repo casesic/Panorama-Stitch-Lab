@@ -62,14 +62,6 @@ def main() -> None:
     semantic_confidence_roi = np.load(CONFIDENCE_ROI_PATH)
     roi_bbox = load_bbox_txt(ROI_BBOX_PATH)
 
-    if rotated_cam0 is None:
-        raise FileNotFoundError(f"Failed to read canvas image: {ROTATED_CAM0_PATH}")
-    if rotated_cam1 is None:
-        raise FileNotFoundError(f"Failed to read source image: {ROTATED_CAM1_PATH}")
-    if rotated_cam0.shape != rotated_cam1.shape:
-        raise ValueError(
-            f"Canvas/source size mismatch: {rotated_cam0.shape} vs {rotated_cam1.shape}"
-        )
 
     roi_x1, roi_y1, roi_x2, roi_y2 = validate_bbox("roi_bbox", roi_bbox, rotated_cam1.shape)
     roi_h = roi_y2 - roi_y1

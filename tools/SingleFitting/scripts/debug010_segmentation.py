@@ -13,13 +13,18 @@ import numpy as np
 MASK_ALPHA = 0.5
 SEG_COLOR = (0, 120, 255)
 PERSON_CLASS_ID = 0
-PERSON_BBOX_MARGIN = 0.15
+pythonRTMLIB_DEVICE = 'cpu'
+BBOX_YMAX_RATIO = 0.9  # bbox 底部 y 超过图像高度此比例的检测框直接排除
+
+_wholebody_model = None
 
 '''
 python tools/SingleFitting/scripts/debug010_segmentation.py `
-    --image data_process/Input/20260311_riding/camera4/frame_00515.png `
-    --output-dir tools/SingleFitting/outputs/segmentation `
-    --camera cam4 `
+    --video-path Circular_Video/00_send/20260311_riding/VID_20181003_034909_00_982.0.mp4 `
+    --index-start 490 `
+    --num-frames 30 `
+    --output-dir  data_process/Output/20260311_riding/segmentation/ `
+    --camera cam2 `
 '''
 
 
@@ -28,25 +33,51 @@ def parse_args():
     src = p.add_mutually_exclusive_group(required=True)
     src.add_argument("--image", type=Path, default=None)
     src.add_argument("--image-dir", type=Path, default=None)
+    src.add_argument("--video-path", type=Path, default=None)
     p.add_argument("--camera", type=str, default="cam2")
     p.add_argument("--output-dir", type=Path, default=Path("tools\\SingleFitting\\outputs\\segmentation"))
-    p.add_argument("--det-model", type=str, default="yolo11n.pt")
+    p.add_argument("--index-start", type=int, default=0)
+    p.add_argument("--num-frames", type=int, default=1)
     p.add_argument("--sam-model", type=str, default="sam2_b.pt")
     return p.parse_args()
 
 
-def list_image_paths(args) -> list[Path]:
+def load_frames(args) -> list[tuple[str, np.ndarray]]:
+    if args.video_path is not None:
+        cap = cv2.VideoCapture(str(args.video_path))
+        if not cap.isOpened():
+            return []
+
+        cap.set(cv2.CAP_PROP_POS_FRAMES, args.index_start)
+        frames: list[tuple[str, np.ndarray]] = []
+        for i in range(args.num_frames):
+            ok, image_bgr = cap.read()
+            if not ok or image_bgr is None:
+                break
+            stem = f"frame_{args.index_start + i:05d}"
+            frames.append((stem, image_bgr))
+        cap.release()
+        return frames
+
     if args.image is not None:
-        return [args.image]
+        image_bgr = cv2.imread(str(args.image))
+        if image_bgr is None:
+            return []
+        return [(args.image.stem, image_bgr)]
 
     exts = {".jpg", ".jpeg", ".png", ".bmp"}
-    return sorted(p for p in args.image_dir.iterdir() if p.suffix.lower() in exts)
+    frames: list[tuple[str, np.ndarray]] = []
+    for image_path in sorted(p for p in args.image_dir.iterdir() if p.suffix.lower() in exts):
+        image_bgr = cv2.imread(str(image_path))
+        if image_bgr is not None:
+            frames.append((image_path.stem, image_bgr))
+    return frames
 
 
-def load_models(det_model_name: str, sam_model_name: str):
-    from ultralytics import SAM, YOLO
+def load_models(sam_model_name: str):
+    from ultralytics import SAM
 
-    return YOLO(det_model_name), SAM(sam_model_name)
+    return SAM(sam_model_name)
 
 
 def choose_primary_mask(result, image_shape) -> np.ndarray | None:
@@ -68,53 +99,32 @@ def choose_primary_mask(result, image_shape) -> np.ndarray | None:
     return best_mask
 
 
-def expand_bbox(bbox: list[float], image_shape, margin: float = PERSON_BBOX_MARGIN) -> list[float]:
-    h, w = image_shape[:2]
-    x1, y1, x2, y2 = bbox
-    bw = max(1.0, x2 - x1)
-    bh = max(1.0, y2 - y1)
-    mx = bw * margin
-    my = bh * margin
-    return [
-        max(0.0, x1 - mx),
-        max(0.0, y1 - my),
-        min(float(w - 1), x2 + mx),
-        min(float(h - 1), y2 + my),
-    ]
+def detect_person_bbox(image_bgr: np.ndarray, det_model=None) -> list[float] | None:
+    del det_model
 
+    global _wholebody_model
+    if _wholebody_model is None:
+        from rtmlib import Wholebody
 
-def detect_person_bbox(det_model, image_bgr: np.ndarray) -> list[float] | None:
-    results = det_model(image_bgr, verbose=False)
-    if not results:
+        _wholebody_model = Wholebody(device=pythonRTMLIB_DEVICE)
+
+    bboxes = _wholebody_model.det_model(image_bgr)
+    if bboxes is None or len(bboxes) == 0:
         return None
 
-    boxes = results[0].boxes
-    if boxes is None or boxes.xyxy is None or len(boxes) == 0:
-        return None
+    ymax_thresh = BBOX_YMAX_RATIO * image_bgr.shape[0]
+    filtered_bboxes = bboxes[bboxes[:, 3] <= ymax_thresh]
+    candidate_bboxes = filtered_bboxes if len(filtered_bboxes) > 0 else bboxes
 
-    xyxy = boxes.xyxy.detach().cpu().numpy()
-    cls = boxes.cls.detach().cpu().numpy().astype(int) if boxes.cls is not None else None
-    conf = boxes.conf.detach().cpu().numpy() if boxes.conf is not None else None
-
-    best_bbox = None
-    best_score = -1.0
-    for idx, bbox in enumerate(xyxy):
-        if cls is not None and cls[idx] != PERSON_CLASS_ID:
-            continue
-        x1, y1, x2, y2 = bbox.tolist()
-        area = max(0.0, x2 - x1) * max(0.0, y2 - y1)
-        score = area if conf is None else float(conf[idx]) * area
-        if score > best_score:
-            best_score = score
-            best_bbox = [x1, y1, x2, y2]
-    return best_bbox
+    areas = (candidate_bboxes[:, 2] - candidate_bboxes[:, 0]) * (candidate_bboxes[:, 3] - candidate_bboxes[:, 1])
+    best_bbox = candidate_bboxes[np.argmax(areas)]
+    return best_bbox[:4].tolist()
 
 
-def segment_person_mask(det_model, sam_model, image_bgr: np.ndarray) -> tuple[np.ndarray | None, list[float] | None]:
-    person_bbox = detect_person_bbox(det_model, image_bgr)
+def segment_person_mask(sam_model, image_bgr: np.ndarray) -> tuple[np.ndarray | None, list[float] | None]:
+    person_bbox = detect_person_bbox(image_bgr)
     if person_bbox is None:
         return None, None
-    person_bbox = expand_bbox(person_bbox, image_bgr.shape)
 
     image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
     results = sam_model(image_rgb, bboxes=[person_bbox], verbose=False)
@@ -149,31 +159,25 @@ def render_segmentation(
 
 def main():
     args = parse_args()
-    image_paths = list_image_paths(args)
-    if not image_paths:
+    frames = load_frames(args)
+    if not frames:
         print("[warn] No input images found.")
         return 1
 
-    det_model, sam_model = load_models(args.det_model, args.sam_model)
+    sam_model = load_models(args.sam_model)
     camera_dir = args.output_dir / args.camera
     mask_dir = camera_dir / "mask"
     mask_dir.mkdir(parents=True, exist_ok=True)
 
     saved_count = 0
-    for idx, image_path in enumerate(image_paths):
-        image_bgr = cv2.imread(str(image_path))
-        if image_bgr is None:
-            print(f"[warn] Failed to read image: {image_path}")
-            continue
-
-        mask, person_bbox = segment_person_mask(det_model, sam_model, image_bgr)
+    for idx, (stem, image_bgr) in enumerate(frames):
+        mask, person_bbox = segment_person_mask(sam_model, image_bgr)
         if mask is None:
-            print(f"[warn] Failed to get person mask: {image_path}")
+            print(f"[warn] Failed to get person mask: {stem}")
             continue
 
         seg = render_segmentation(image_bgr, mask, prompt_bbox=person_bbox)
 
-        stem = image_path.stem
         mask_path = mask_dir / f"mask_{stem}.png"
         seg_path = mask_dir / f"seg_{stem}.jpg"
 
@@ -181,7 +185,7 @@ def main():
         cv2.imwrite(str(seg_path), seg, [cv2.IMWRITE_JPEG_QUALITY, 92])
 
         saved_count += 1
-        print(f"[{idx + 1}/{len(image_paths)}] saved {mask_path.name}, {seg_path.name}")
+        print(f"[{idx + 1}/{len(frames)}] saved {mask_path.name}, {seg_path.name}")
 
     return 0 if saved_count else 1
 

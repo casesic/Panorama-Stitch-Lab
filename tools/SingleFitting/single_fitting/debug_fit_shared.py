@@ -156,6 +156,7 @@ class BaseSMPLXFitter:
         after_step: Optional[Callable[[], None]] = None,
     ):
         latest_loss = 0.0
+        latest_losses_detail = {}
 
         for stage_name, get_params, max_iter, stage_stop, weight_mult in optimization_stages:
             stage_weights = {k: base_weights[k] * weight_mult.get(k, 1.0) for k in base_weights}
@@ -168,7 +169,7 @@ class BaseSMPLXFitter:
             )
 
             def closure():
-                nonlocal latest_loss
+                nonlocal latest_loss, latest_losses_detail
                 for p in params:
                     p.grad = None
                 optimizer.zero_grad()
@@ -176,6 +177,7 @@ class BaseSMPLXFitter:
                 zero = next(iter(losses_all.values())).new_zeros(1)
                 loss = sum(losses_all.get(k, zero) * stage_weights[k] for k in stage_weights)
                 latest_loss = float(loss.detach().cpu().item())
+                latest_losses_detail = {k: float(v.detach().cpu().item()) for k, v in losses_all.items()}
                 loss.backward()
                 return loss
 
@@ -188,7 +190,12 @@ class BaseSMPLXFitter:
                 if it > 0 and loss_prev - latest_loss < loss_prev * stage_stop:
                     break
                 loss_prev = latest_loss
-                print(f"[{stage_name}] iter={it+1:03d}/{max_iter} total={latest_loss:.4f}")
+                detail_str = "  ".join(
+                    f"{k}={latest_losses_detail.get(k, 0.0) * stage_weights.get(k, 1.0):.4f}"
+                    for k in stage_weights
+                    if stage_weights.get(k, 0.0) > 0
+                )
+                print(f"[{stage_name}] iter={it+1:03d}/{max_iter} total={latest_loss:.4f}  |  {detail_str}")
 
         for attr in ["orient", "transl", "body_pose", "left_hand_pose", "right_hand_pose", "beta"]:
             getattr(smpl_param, attr).requires_grad_(False)
@@ -337,7 +344,7 @@ class SingleCamFisheyeFitter(BaseSMPLXFitter):
             (
                 "stage3_hand",
                 lambda: [smpl_param.orient, smpl_param.transl, smpl_param.body_pose, smpl_param.left_hand_pose, smpl_param.right_hand_pose],
-                60,
+                80,
                 self.stop_ratio * 0.7,
                 {
                     "body_2d_det": 1.5,

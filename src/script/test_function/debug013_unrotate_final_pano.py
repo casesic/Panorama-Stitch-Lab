@@ -33,14 +33,6 @@ def main():
     if pano_rot is None:
         raise FileNotFoundError(f"Missing rotated panorama: {pano_rot_path}")
 
-    # result = estimate_seam_rotation_from_masks(
-    #     mask_a=mask_0,
-    #     mask_b=mask_1,
-    #     boundary_band_px=BOUNDARY_BAND_PX,
-    #     sample_stride=SAMPLE_STRIDE,
-    # )
-
-    # rotation_matrix = result["rotation_matrix"]
     rotation_matrix = np.array([1, 0, 0, 0, 0, 1, 0, -1, 0]).reshape(3, 3)
     rotation_inv = rotation_matrix.T
 

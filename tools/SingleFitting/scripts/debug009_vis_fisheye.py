@@ -4,11 +4,21 @@ Visualize SMPL-X fitting results on fisheye images.
 
 Usage:
   python tools/SingleFitting/scripts/debug009_vis_fisheye.py `
-    --result-pkl tools/SingleFitting/outputs/fisheye_smplx_cam4/fisheye_cam4_s0_i0_0_seq.pkl `
-    --rtm-cache data_process/Output/20260311_riding/single_frame_cache/camera4/rtm_joints_cache_s2_c4.pkl `
+    --result-pkl data_process/Output/20260311_riding/fisheye_smplx/cam2/fisheye_cam2_s0_i0_29_seq.pkl `
+    --rtm-cache data_process/Output/20260311_riding/single_frame_cache/camera2/rtmlib_multi_frame/rtm_joints_cache_s490_529_c2.pkl `
+    --camera cam2 `
+    --index 490 `
+    --video-path Circular_Video/00_send/20260311_riding/VID_20181003_034909_00_982.0.mp4 `
+    --output-dir data_process/Output/20260311_riding/fisheye_smplx/cam2/vis `
+    --mesh
+    
+  python tools/SingleFitting/scripts/debug009_vis_fisheye.py `
+    --result-pkl data_process/Output/20260311_riding/fisheye_smplx/cam4/fisheye_cam4_s0_i22_39_seq.pkl `
+    --rtm-cache data_process/Output/20260311_riding/single_frame_cache/camera4/rtmlib_multi_frame/rtm_joints_cache_s490_529_c4.pkl `
     --camera cam4 `
-    --image-path data_process/Input/20260311_riding/camera4/frame_00515.png `
-    --output-dir tools/SingleFitting/outputs/fisheye_smplx_cam4/vis `
+    --index 512 `
+    --video-path Circular_Video/00_send/20260311_riding/VID_20181003_034909_00_982.1.mp4 `
+    --output-dir data_process/Output/20260311_riding/fisheye_smplx/cam4/vis `
     --mesh
 """
 from __future__ import annotations
@@ -124,8 +134,10 @@ def parse_args():
     p.add_argument("--result-pkl", type=Path, required=True)
     p.add_argument("--rtm-cache", type=Path, required=True)
     p.add_argument("--camera", type=str, default="cam2", choices=["cam2", "cam4"])
-    p.add_argument("--index-start", type=int, default=0)
-    p.add_argument("--image-path", type=Path, required=True)
+    p.add_argument("--index-start", type=int, default=490)
+    p.add_argument("--image-dir", type=Path, default=None, help="帧图像目录")
+    p.add_argument("--video-path", type=Path, default=None, help="视频文件路径，优先级高于 image-dir")
+    p.add_argument("--image-filename-pattern", type=str, default="frame_{:05d}.png")
     p.add_argument("--output-dir", type=Path, default=Path("outputs/fisheye_smplx/vis"))
     p.add_argument("--mesh", action="store_true")
     p.add_argument("--mesh-alpha", type=float, default=0.6)
@@ -146,17 +158,35 @@ def main():
     kp_all = det_raw.array_keypoints if hasattr(det_raw, "array_keypoints") else None
     kp_fmt = det_raw.keypoints_format if hasattr(det_raw, "keypoints_format") else {}
 
-    img_paths = [args.image_path] * len(params)
+    frames = []
+    if args.video_path is not None:
+        cap = cv2.VideoCapture(str(args.video_path))
+        if not cap.isOpened():
+            raise RuntimeError(f"Failed to open video: {args.video_path}")
+        cap.set(cv2.CAP_PROP_POS_FRAMES, args.index_start)
+        for _ in range(len(params)):
+            ok, frame = cap.read()
+            if not ok or frame is None:
+                break
+            frames.append(frame)
+        cap.release()
+    else:
+        if args.image_dir is None:
+            raise ValueError("Either --video-path or --image-dir must be provided.")
+        for i in range(len(params)):
+            frame_idx = args.index_start + i
+            img_path = args.image_dir / args.image_filename_pattern.format(frame_idx)
+            img = cv2.imread(str(img_path))
+            if img is None:
+                print(f"[warn] Failed to read image: {img_path}")
+                continue
+            frames.append(img)
 
     fitter = SingleCamFisheyeFitter(gender="neutral", camera=args.camera)
     args.output_dir.mkdir(parents=True, exist_ok=True)
     video_writer = None
 
-    for fi, (param, img_path) in enumerate(zip(params, img_paths)):
-        img = cv2.imread(str(img_path))
-        if img is None:
-            print(f"[warn] Failed to read image: {img_path}")
-            continue
+    for fi, (param, img) in enumerate(zip(params, frames)):
 
         ri = args.index_start + fi
         kp133 = kp_all[ri] if (kp_all is not None and ri < len(kp_all)) else None
@@ -171,7 +201,7 @@ def main():
             mesh_alpha=args.mesh_alpha,
         )
 
-        stem = img_path.stem if len(params) == 1 else f"{img_path.stem}_{fi:04d}"
+        stem = f"frame_{args.index_start + fi:05d}"
         out_path = args.output_dir / f"vis_{args.camera}_{stem}.jpg"
         cv2.imwrite(str(out_path), vis, [cv2.IMWRITE_JPEG_QUALITY, 92])
         print(f"[{fi + 1}/{len(params)}] -> {out_path}")

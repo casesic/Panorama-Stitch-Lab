@@ -20,7 +20,11 @@ def run_ds_two_cam_test(frame_idx: int = 515, pano_size=(1920, 960), shift_right
         os.path.join(ls.DATA_OUTPUT_DIR, '20260311_riding', 'segmentation', 'cam2', 'segmented_frame_00515.jpg'),
         os.path.join(ls.DATA_OUTPUT_DIR, '20260311_riding', 'segmentation', 'cam4', 'segmented_frame_00515.jpg'),
     ]
-
+    
+    valid_mask_paths = [
+        os.path.join(ls.DATA_OUTPUT_DIR, '20260311_riding', 'segmentation', 'cam2',  f'mask_{frame_name}'),
+        os.path.join(ls.DATA_OUTPUT_DIR, '20260311_riding', 'segmentation', 'cam4',  f'mask_{frame_name}'),
+    ]
 
     calib_path = ls.CALIB_20260311_YAML_FILE
 
@@ -34,6 +38,7 @@ def run_ds_two_cam_test(frame_idx: int = 515, pano_size=(1920, 960), shift_right
     	calib_path,
     	calib_path,
     	output_path,
+        valid_mask_paths=valid_mask_paths,
     	pano_size=pano_size,
     	shift_right_px=shift_right_px,
     )

@@ -1,7 +1,7 @@
 """One-step panorama stitching for three fisheye cameras."""
 import os
 import time
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 import numpy as np
 import cv2
@@ -106,10 +106,6 @@ def generate_equirectangular_dirs(H: int, W: int) -> np.ndarray:
     """
     us = (np.arange(W, dtype=np.float64) ) / W  # [0,1]
     vs = (np.arange(H, dtype=np.float64) ) / H  # [0,1]
-    # 0对应-pi,W对应Pi 我想让pi对应W/2 us=0.5, theta = pi us=0, theta =0
-    # theta = us * (2.0 * np.pi) - np.pi  # 修改这一部分，可以决定从哪里开出来 Z 轴为蓝色  X 轴为红色、Y 轴为绿色
-    # 想让-2/3*pi处对应(0,0,1)点 即us=1/6  x=0,y=0,z=1 th=0
-    # w_offset = -1.0 / 6.0 
     w_offset = 0   # 0.2
     theta = (us * 2.0 -1 + w_offset) * np.pi  
     theta = np.where(theta > np.pi, theta - 2.0 * np.pi, theta)
@@ -135,6 +131,7 @@ def remap_and_accumulate(
     Rs: List[np.ndarray],
     Ts: List[np.ndarray],
     models: List[str],  # Added models list
+    source_valid_masks: Optional[List[Optional[np.ndarray]]] = None,
     output_size: Tuple[int, int] = (1024, 512),
     debug_dir: str = None,
 ):
@@ -157,6 +154,12 @@ def remap_and_accumulate(
     if len(models) < num_cam:
         # Fallback if models not provided correctly
         models = ["unknown"] * num_cam
+    if source_valid_masks is None:
+        source_valid_masks = [None] * num_cam
+    elif len(source_valid_masks) != num_cam:
+        raise ValueError(
+            f"Valid mask count ({len(source_valid_masks)}) does not match image count ({num_cam})."
+        )
 
     sampled_stack = np.zeros((num_cam, H_grid, W_grid, 3), dtype=np.float64)
     weight_stack = np.zeros((num_cam, H_grid, W_grid), dtype=np.float64)
@@ -169,6 +172,7 @@ def remap_and_accumulate(
         R = Rs[idx]
         t = Ts[idx]
         model = models[idx]
+        source_valid_mask = source_valid_masks[idx]
 
         ih, iw = img.shape[:2]
 
@@ -239,10 +243,23 @@ def remap_and_accumulate(
         if use_ds:
             in_circle = ((map_x - ccx) ** 2 + (map_y - ccy) ** 2) < ((cr * 1.0) ** 2)
             print(f"Camera {idx}: DS model, detected circle center=({ccx:.1f}, {ccy:.1f}), radius={cr:.1f}")
-            valid_mask = in_bounds & in_circle & (Zc.reshape(H_grid, W_grid) > -(xi_ds+0.1))
+            valid_mask = in_bounds & in_circle & (Zc.reshape(H_grid, W_grid) > -(xi_ds))
         else:
             z_valid = Zc.reshape(H_grid, W_grid) > 1e-6
             valid_mask = in_bounds & z_valid
+
+        remapped_source_mask = None
+        if source_valid_mask is not None:
+            source_valid_u8 = (source_valid_mask > 0).astype(np.uint8) * 255
+            remapped_source_mask = cv2.remap(
+                source_valid_u8,
+                map_x,
+                map_y,
+                interpolation=cv2.INTER_NEAREST,
+                borderMode=cv2.BORDER_CONSTANT,
+                borderValue=0,
+            )
+            valid_mask = valid_mask & (remapped_source_mask > 0)
 
         map_x[~valid_mask] = -1  # 设置无效点，remap 会跳过
         map_y[~valid_mask] = -1
@@ -261,7 +278,7 @@ def remap_and_accumulate(
                 print(f"Saved debug circle: {circle_path}")
             print(f"Saved debug image: {sampled_path}")
             print(f"Saved debug mask: {valid_path}")
-        
+            
         sampled_f = sampled.astype(np.float64) / 255.0
 
         # 权重：以朝向为主，但给有效像素一个最小权重，避免双相机分界线出现黑缝。
@@ -308,7 +325,23 @@ def load_images_for_names(images_path: List[str]):
         if img is None:
             raise FileNotFoundError(p)
         images.append(img)
-    return images   
+    return images
+
+
+def load_valid_masks_for_names(valid_mask_paths: Optional[List[Optional[str]]]):
+    if valid_mask_paths is None:
+        return None
+
+    valid_masks = []
+    for p in valid_mask_paths:
+        if p is None:
+            valid_masks.append(None)
+            continue
+        mask = cv2.imread(p, cv2.IMREAD_GRAYSCALE)
+        if mask is None:
+            raise FileNotFoundError(p)
+        valid_masks.append(mask > 0)
+    return valid_masks
             
 
 
@@ -316,6 +349,7 @@ def one_step_stitch(images_path: List[str],
                     calib_path: str,
                     calib_opt_path: str,
                     output_path: str,
+                    valid_mask_paths: Optional[List[Optional[str]]] = None,
                     pano_size: Tuple[int, int] = (1920, 960),
                     shift_right_px: int = 0):
 
@@ -346,11 +380,16 @@ def one_step_stitch(images_path: List[str],
 
     if len(images_path) != len(K_list):
         raise ValueError(f"Image count ({len(images_path)}) does not match calibration count ({len(K_list)}): {names}")
+    if valid_mask_paths is not None and len(valid_mask_paths) != len(images_path):
+        raise ValueError(
+            f"Valid mask count ({len(valid_mask_paths)}) does not match image count ({len(images_path)})."
+        )
     
     
     # R_list = trans_R(R_list)
     # 加载图片
     images = load_images_for_names(images_path)
+    valid_masks = load_valid_masks_for_names(valid_mask_paths)
 
     # 生成全景方向
     W, H = pano_size
@@ -370,6 +409,7 @@ def one_step_stitch(images_path: List[str],
         R_list,
         t_list,
         model_list,
+        source_valid_masks=valid_masks,
         output_size=pano_size,
         debug_dir=output_dir,
     )

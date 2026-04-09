@@ -19,6 +19,109 @@ def visualize_flow_bgr(flow: np.ndarray) -> np.ndarray:
         hsv[..., 2] = cv2.normalize(magnitude, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
     return cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
 
+
+def save_alignment_debug(
+    crop_canvas: np.ndarray,
+    crop_shard: np.ndarray,
+    flow_roi: np.ndarray,
+    debug_dir: str,
+    step_idx: int,
+):
+    h, w = flow_roi.shape[:2]
+    grid_y, grid_x = np.mgrid[0:h, 0:w].astype(np.float32)
+    map_x = grid_x + flow_roi[..., 0].astype(np.float32)
+    map_y = grid_y + flow_roi[..., 1].astype(np.float32)
+    warped_crop_shard = cv2.remap(
+        crop_shard,
+        map_x,
+        map_y,
+        interpolation=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=0,
+    )
+
+    before = cv2.addWeighted(crop_canvas, 0.5, crop_shard, 0.5, 0.0)
+    after = cv2.addWeighted(crop_canvas, 0.5, warped_crop_shard, 0.5, 0.0)
+
+    canvas_black = crop_canvas.max(axis=2) < 5
+    shard_black = crop_shard.max(axis=2) < 5
+    warped_shard_black = warped_crop_shard.max(axis=2) < 5
+
+    before[canvas_black] = crop_shard[canvas_black]
+    before[shard_black] = crop_canvas[shard_black]
+    after[canvas_black] = warped_crop_shard[canvas_black]
+    after[warped_shard_black] = crop_canvas[warped_shard_black]
+
+    cv2.imwrite(os.path.join(debug_dir, f"step{step_idx}_blend_before.png"), before)
+    cv2.imwrite(os.path.join(debug_dir, f"step{step_idx}_blend_after.png"), after)
+
+
+def warp_shard_with_roi_flow(
+    new_shard: np.ndarray,
+    flow_roi: np.ndarray,
+    roi_bbox: tuple,
+    source_valid_mask: np.ndarray,
+    feather_size: int = 20,
+):
+    h, w = new_shard.shape[:2]
+    x1, y1, x2, y2 = roi_bbox
+
+    flow_full = np.zeros((h, w, 2), dtype=np.float32)
+    flow_full[y1:y2, x1:x2] = flow_roi.astype(np.float32)
+
+    if feather_size > 0:
+        roi_h = y2 - y1
+        roi_w = x2 - x1
+        roi_weight = np.ones((roi_h, roi_w), dtype=np.float32)
+
+        top_size = min(feather_size, roi_h)
+        if top_size > 0:
+            top_weights = np.linspace(0.0, 1.0, top_size, dtype=np.float32)[:, None]
+            roi_weight[:top_size, :] = np.minimum(roi_weight[:top_size, :], top_weights)
+
+        bottom_size = min(feather_size, roi_h)
+        if bottom_size > 0:
+            bottom_weights = np.linspace(1.0, 0.0, bottom_size, dtype=np.float32)[:, None]
+            roi_weight[-bottom_size:, :] = np.minimum(roi_weight[-bottom_size:, :], bottom_weights)
+
+        left_size = min(feather_size, roi_w)
+        if left_size > 0:
+            left_weights = np.linspace(0.0, 1.0, left_size, dtype=np.float32)[None, :]
+            roi_weight[:, :left_size] = np.minimum(roi_weight[:, :left_size], left_weights)
+
+        right_size = min(feather_size, roi_w)
+        if right_size > 0:
+            right_weights = np.linspace(1.0, 0.0, right_size, dtype=np.float32)[None, :]
+            roi_weight[:, -right_size:] = np.minimum(roi_weight[:, -right_size:], right_weights)
+
+        flow_full[y1:y2, x1:x2] *= roi_weight[..., None]
+
+    grid_x, grid_y = np.meshgrid(np.arange(w, dtype=np.float32), np.arange(h, dtype=np.float32))
+    map_x = (grid_x + flow_full[..., 0]).astype(np.float32)
+    map_y = (grid_y + flow_full[..., 1]).astype(np.float32)
+
+    warped_shard_full = cv2.remap(
+        new_shard,
+        map_x,
+        map_y,
+        interpolation=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=0,
+    )
+
+    warped_source_valid_mask = None
+    if source_valid_mask is not None:
+        warped_source_valid_mask = cv2.remap(
+            source_valid_mask.astype(np.uint8),
+            map_x,
+            map_y,
+            interpolation=cv2.INTER_NEAREST,
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=0,
+        )
+
+    return warped_shard_full, warped_source_valid_mask
+
 def stitch_cumulative(
     canvas: np.ndarray, 
     new_shard: np.ndarray, 
@@ -71,7 +174,6 @@ def stitch_cumulative(
     x1, y1, x2, y2 = roi_bbox
     print(f'  ROI BBox: (x1={x1}, y1={y1}, x2={x2}, y2={y2}), size: {x2-x1} x {y2-y1}')
     
-    cv2.imwrite(os.path.join(debug_dir, f'debug_step{step_idx}_overlap_mask.png'), overlap_mask)
     cv2.imwrite(os.path.join(debug_dir, f'step{step_idx}_crop_shard.png'), crop_shard)
     cv2.imwrite(os.path.join(debug_dir, f'step{step_idx}_crop_canvas.png'), crop_canvas)
    
@@ -95,8 +197,17 @@ def stitch_cumulative(
     else:
         aligned_crop_shard, flow_roi, src_run, dst_run = result_tuple
     
-        cv2.imwrite(os.path.join(debug_dir, f"step{step_idx}_flow_roi_vis.png"),visualize_flow_bgr(flow_roi),)
-        cv2.imwrite(os.path.join(debug_dir, f'step{step_idx}_aligned_shard.png'), aligned_crop_shard)
+    cv2.imwrite(os.path.join(debug_dir, f"step{step_idx}_flow_roi_vis.png"),visualize_flow_bgr(flow_roi),)
+    cv2.imwrite(os.path.join(debug_dir, f'step{step_idx}_aligned_shard.png'), aligned_crop_shard)
+
+    if debug_dir:
+        save_alignment_debug(
+            crop_canvas=crop_canvas,
+            crop_shard=crop_shard,
+            flow_roi=flow_roi,
+            debug_dir=debug_dir,
+            step_idx=step_idx,
+        )
 
     # Prepare for Composition
     warped_shard_full = new_shard # Default: no global warp
@@ -188,6 +299,12 @@ def stitch_cumulative(
         
     else:
         print('  Skipping Mesh Warp (using local RAFT alignment only)...')
+        warped_shard_full, warped_source_valid_full = warp_shard_with_roi_flow(
+            new_shard=new_shard,
+            flow_roi=flow_roi,
+            roi_bbox=roi_bbox,
+            source_valid_mask=source_valid_mask,
+        )
 
     print('  Composing integration (Global Blend)...')
     

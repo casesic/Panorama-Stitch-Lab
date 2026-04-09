@@ -4,11 +4,20 @@ Run SMPL-X fitting on fisheye images.
 
 Usage:
   python tools/SingleFitting/scripts/debug008_run_fisheye.py `
+    --camera cam2 `
+    --smpl54-pkl  data_process/Output/20260311_riding/single_frame_cache/camera2/rtmlib_multi_frame/hmr_s490_529_pose.pkl `
+    --rtm-cache data_process/Output/20260311_riding/single_frame_cache/camera2/rtmlib_multi_frame/rtm_joints_cache_s490_529_c2.pkl `
+    --index-start 0 --num-frames 30 `
+    --output-dir data_process/Output/20260311_riding/fisheye_smplx/cam2
+# 490-529  512-529 for cam4
+  python tools/SingleFitting/scripts/debug008_run_fisheye.py `
     --camera cam4 `
-    --smpl54-pkl  data_process/Output/20260311_riding/single_frame_cache/camera4/hmr_s2_pose.pkl `
-    --rtm-cache data_process/Output/20260311_riding/single_frame_cache/camera4/rtm_joints_cache_s2_c4.pkl `
-    --index-start 0 --num-frames 1 `
-    --output-dir tools/SingleFitting/outputs/fisheye_smplx_cam4
+    --smpl54-pkl  data_process/Output/20260311_riding/single_frame_cache/camera4/rtmlib_multi_frame/hmr_s490_529_pose.pkl `
+    --rtm-cache data_process/Output/20260311_riding/single_frame_cache/camera4/rtmlib_multi_frame/rtm_joints_cache_s490_529_c4.pkl `
+    --index-start 22 `
+    --num-frames 18 `
+    --output-dir data_process/Output/20260311_riding/fisheye_smplx/cam4
+  
 """
 from __future__ import annotations
 
@@ -39,7 +48,7 @@ def parse_args():
     p.add_argument("--smpl54-pkl", type=Path, default=None)
     p.add_argument("--rtm-cache", type=Path, required=True)
     p.add_argument("--hand-cache", type=Path, default=None)
-    p.add_argument("--output-dir", type=Path, default=REPO_ROOT / "outputs" / "fisheye_smplx_cam4")
+    p.add_argument("--output-dir", type=Path, default=REPO_ROOT / "outputs" / "fisheye_smplx_cam2")
     p.add_argument("--image-size", type=int, default=2880)
     return p.parse_args()
 

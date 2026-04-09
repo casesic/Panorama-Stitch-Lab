@@ -10,15 +10,17 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+VIDEO_PATH = Path(r"Circular_Video\00_send\20260311_riding\VID_20181003_034909_00_982.1.mp4")
+MASK_DIR = Path(r"data_process\Output\20260311_riding\segmentation\cam4\mask")
+OUTPUT_DIR = Path(r"data_process\Output\20260311_riding\segmentation\cam4\seg")
+INDEX_START = 512
+NUM_FRAMES = 18
+MASK_FILENAME_PATTERN = "mask_frame_{:05d}.png"
+OUTPUT_FILENAME_PATTERN = "segmented_frame_{:05d}.jpg"
 
-def apply_human_mask(img_path, mask_path, output_path):
-    img_path = Path(img_path)
+def apply_human_mask(image: np.ndarray, mask_path, output_path):
     mask_path = Path(mask_path)
     output_path = Path(output_path)
-
-    image = cv2.imread(str(img_path), cv2.IMREAD_COLOR)
-    if image is None:
-        raise FileNotFoundError(f"Failed to read image: {img_path}")
 
     mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
     if mask is None:
@@ -44,14 +46,33 @@ def apply_human_mask(img_path, mask_path, output_path):
 
 
 def main():
-    img_path = Path(r"data_process\Input\20260311_riding\camera4\frame_00515.png")
-    mask_path = Path(r"tools\SingleFitting\outputs\segmentation\cam4\mask\mask_frame_00515.png")
-    output_path = Path(r"tools\SingleFitting\outputs\segmentation\cam4\seg\segmented_frame_00515.jpg")
+    cap = cv2.VideoCapture(str(VIDEO_PATH))
+    cap.set(cv2.CAP_PROP_POS_FRAMES, INDEX_START)
 
-    pixel_count, pixel_ratio = apply_human_mask(img_path, mask_path, output_path)
-    print(f"Saved segmented image to: {output_path}")
-    print(f"Mask covered pixels: {pixel_count}")
-    print(f"Mask covered ratio : {pixel_ratio:.6f} ({pixel_ratio * 100:.2f}%)")
+    processed_count = 0
+    for i in range(NUM_FRAMES):
+        ok, frame = cap.read()
+        if not ok or frame is None:
+            print(f"[warn] Failed to read video frame: {INDEX_START + i}")
+            break
+
+        frame_index = INDEX_START + i
+        mask_path = MASK_DIR / MASK_FILENAME_PATTERN.format(frame_index)
+        output_path = OUTPUT_DIR / OUTPUT_FILENAME_PATTERN.format(frame_index)
+
+        if not mask_path.exists():
+            print(f"[warn] Missing mask: {mask_path}")
+            continue
+
+        pixel_count, pixel_ratio = apply_human_mask(frame, mask_path, output_path)
+        processed_count += 1
+        print(
+            f"[{i + 1}/{NUM_FRAMES}] saved {output_path}  "
+            f"pixels={pixel_count}  ratio={pixel_ratio:.6f} ({pixel_ratio * 100:.2f}%)"
+        )
+
+    cap.release()
+    print(f"Processed {processed_count} frame(s) in total.")
     return 0
 
 

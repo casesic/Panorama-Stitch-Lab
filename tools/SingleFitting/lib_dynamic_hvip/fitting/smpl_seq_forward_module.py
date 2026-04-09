@@ -115,6 +115,7 @@ class SMPL_Seq_Forward_Module():
             self.transl = torch.zeros(num_batch, 3)
             # self.latent = torch.zeros(num_batch, 32)
             self.pose = torch.zeros(num_batch, 69)
+            self.valid = torch.ones(num_batch, dtype=torch.bool)
             self.scale = torch.ones(1,)
 
             if dim_shape == 10:

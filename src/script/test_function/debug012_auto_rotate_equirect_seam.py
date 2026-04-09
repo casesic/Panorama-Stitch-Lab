@@ -6,20 +6,8 @@ import numpy as np
 import config_script
 import lib_pano.local_setting as ls
 from lib_pano.calibration.rotate_equirect import (
-    estimate_seam_rotation_from_masks,
     rotate_equirectangular_image,
 )
-
-
-BOUNDARY_BAND_PX = 25
-SAMPLE_STRIDE = 4
-
-
-def _overlay_points(base_img: np.ndarray, points_xy: np.ndarray, color):
-    vis = base_img.copy()
-    for x, y in points_xy.astype(int):
-        cv2.circle(vis, (int(x), int(y)), 1, color, -1)
-    return vis
 
 
 def main():

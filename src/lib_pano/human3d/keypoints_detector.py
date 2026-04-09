@@ -14,6 +14,8 @@ from lib_pano.vis.visual_human import render_silhouette
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+BBOX_YMAX_RATIO = 0.9  # bbox 底部 y 超过图像高度此比例的检测框直接排除
+
 
 # ---------------------------------------------------------------------------
 # 通用工具
@@ -188,9 +190,15 @@ class WholePoseDetector:
                 None, 0.0, None, self.keypoints_format
             )
 
-        areas     = (bboxes[:, 2] - bboxes[:, 0]) * (bboxes[:, 3] - bboxes[:, 1])
-        best_bbox = bboxes[np.argmax(areas)]
         h, w      = image.shape[:2]
+        ymax_thresh = h * BBOX_YMAX_RATIO
+        filtered_bboxes = bboxes[bboxes[:, 3] <= ymax_thresh]
+        if len(filtered_bboxes) > 0:
+            areas = (filtered_bboxes[:, 2] - filtered_bboxes[:, 0]) * (filtered_bboxes[:, 3] - filtered_bboxes[:, 1])
+            best_bbox = filtered_bboxes[np.argmax(areas)]
+        else:
+            areas = (bboxes[:, 2] - bboxes[:, 0]) * (bboxes[:, 3] - bboxes[:, 1])
+            best_bbox = bboxes[np.argmax(areas)]
 
         kpts, scores = self.body_model.pose_model(
             image, bboxes=np.array([best_bbox])
@@ -228,9 +236,15 @@ class PoseDetector:
                 None, 0.0, None, self.keypoints_format
             )
 
-        areas     = (bboxes[:, 2] - bboxes[:, 0]) * (bboxes[:, 3] - bboxes[:, 1])
-        best_bbox = bboxes[np.argmax(areas)]
         h, w      = image.shape[:2]
+        ymax_thresh = h * BBOX_YMAX_RATIO
+        filtered_bboxes = bboxes[bboxes[:, 3] <= ymax_thresh]
+        if len(filtered_bboxes) > 0:
+            areas = (filtered_bboxes[:, 2] - filtered_bboxes[:, 0]) * (filtered_bboxes[:, 3] - filtered_bboxes[:, 1])
+            best_bbox = filtered_bboxes[np.argmax(areas)]
+        else:
+            areas = (bboxes[:, 2] - bboxes[:, 0]) * (bboxes[:, 3] - bboxes[:, 1])
+            best_bbox = bboxes[np.argmax(areas)]
 
         kpts, scores = self.body_model.pose_model(
             image, bboxes=np.array([best_bbox])
