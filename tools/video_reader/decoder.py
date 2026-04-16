@@ -9,7 +9,7 @@ from typing import Iterator
 import av
 import numpy as np
 
-from utils import frame_to_pts, pts_to_frame
+from tools.video_reader.utils import frame_to_pts, pts_to_frame
 
 
 @dataclass(slots=True)

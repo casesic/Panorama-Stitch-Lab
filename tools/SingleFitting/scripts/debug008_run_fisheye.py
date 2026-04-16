@@ -33,7 +33,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from single_fitting.debug_fit_shared import SingleCamFisheyeFitter, init_smplx_from_smpl54_seq
+from single_fitting.fitting import SingleCamFisheyeFitter, init_smplx_from_smpl54_seq
 from single_fitting.debug_shared import DS_PARAMS, load_pickle, load_rtm_cache
 
 SMPLX_Fisheye_Fitter = SingleCamFisheyeFitter
@@ -55,7 +55,6 @@ def parse_args():
 
 def run():
     args = parse_args()
-    from lib_dynamic_hvip.fitting.smplx_seq_forward_module import SMPLX_Seq_Forward_Module
     from lib_dynamic_hvip.fitting.smpl_seq_forward_module import SMPL_Seq_Forward_Module as SMPLFitter
 
     index_end = args.index_start + args.num_frames
@@ -71,7 +70,7 @@ def run():
     if args.smpl54_pkl is not None and args.smpl54_pkl.exists():
         smpl54 = load_pickle(args.smpl54_pkl)
         if isinstance(smpl54, SMPLFitter.SMPL_Param_Seq):
-            smplx_init = init_smplx_from_smpl54_seq(smpl54, index_seq, SMPLFitter, SMPLX_Seq_Forward_Module)
+            smplx_init = init_smplx_from_smpl54_seq(smpl54, index_seq)
 
     fitter = SingleCamFisheyeFitter(gender="neutral", camera=args.camera)
     result = fitter.fit(

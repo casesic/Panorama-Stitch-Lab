@@ -9,7 +9,7 @@ from typing import Callable
 import cv2
 import numpy as np
 
-from config import SAVE_FILENAME_FORMAT, SAVER_THREAD_COUNT
+from tools.video_reader.config import SAVE_FILENAME_FORMAT, SAVER_THREAD_COUNT
 
 
 class FrameSaver:

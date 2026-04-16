@@ -43,7 +43,7 @@ from single_fitting.debug_shared import (
     load_pickle,
     normalize_keypoints_format,
 )
-from single_fitting.debug_fit_shared import SingleCamFisheyeFitter, forward_param_to_numpy, get_model_faces, unpack_smplx_result
+from single_fitting.fitting import SingleCamFisheyeFitter, unpack_smplx_result
 from single_fitting.debug_vis_shared import draw_pts, draw_skel, render_mesh_shading
 
 SMPLX_LHAND = list(range(25, 40))
@@ -104,11 +104,11 @@ def visualize_frame(
             draw_pts(vis, kp133[LHAND_IDX, :2], conf=kp133[LHAND_IDX, 2], thresh=thresh, r=4, color=(0, 220, 255))
             draw_pts(vis, kp133[RHAND_IDX, :2], conf=kp133[RHAND_IDX, 2], thresh=thresh, r=4, color=(255, 220, 0))
 
-    verts, joints_all, joints_body = forward_param_to_numpy(fitter, smplx_param)
+    verts, joints_all, joints_body = fitter.forward_param_to_numpy(smplx_param)
 
     faces = None
     if draw_mesh:
-        faces = get_model_faces(fitter)
+        faces = fitter.get_model_faces()
         vis = render_mesh_shading(vis, verts, faces, ds_params=DS_PARAMS, alpha=mesh_alpha)
 
     kp_names = set(normalize_keypoints_format(kp_fmt).keys())
@@ -208,8 +208,8 @@ def main():
 
         if args.save_obj:
             if faces_out is None:
-                verts_out, _, _ = forward_param_to_numpy(fitter, param)
-                faces_out = get_model_faces(fitter)
+                verts_out, _, _ = fitter.forward_param_to_numpy(param)
+                faces_out = fitter.get_model_faces()
             save_obj(args.output_dir / f"mesh_{args.camera}_{stem}.obj", verts_out, faces_out)
 
         if args.save_video:

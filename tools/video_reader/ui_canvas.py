@@ -7,8 +7,8 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QPixmap, QResizeEvent
 from PySide6.QtWidgets import QLabel
 
-from config import CANVAS_MIN_HEIGHT, CANVAS_MIN_WIDTH
-from utils import ndarray_to_qimage
+from tools.video_reader.config import CANVAS_MIN_HEIGHT, CANVAS_MIN_WIDTH
+from tools.video_reader.utils import ndarray_to_qimage
 
 
 class VideoCanvas(QLabel):

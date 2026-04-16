@@ -8,10 +8,10 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QCloseEvent, QKeySequence, QShortcut
 from PySide6.QtWidgets import QFileDialog, QMainWindow, QVBoxLayout, QWidget
 
-from config import WINDOW_TITLE
-from controller import PlaybackController
-from ui_canvas import VideoCanvas
-from ui_controlbar import ControlBar
+from tools.video_reader.config import WINDOW_TITLE
+from tools.video_reader.controller import PlaybackController
+from tools.video_reader.ui_canvas import VideoCanvas
+from tools.video_reader.ui_controlbar import ControlBar
 
 
 class MainWindow(QMainWindow):

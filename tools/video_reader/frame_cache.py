@@ -7,7 +7,7 @@ import threading
 
 import numpy as np
 
-from config import CACHE_MAX_SIZE
+from tools.video_reader.config import CACHE_MAX_SIZE
 
 
 class FrameCache:

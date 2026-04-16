@@ -6,9 +6,9 @@ import queue
 import threading
 import time
 
-from config import PREFETCH_BACKWARD, PREFETCH_DROP_DISTANCE, PREFETCH_FORWARD
-from decoder import VideoDecoder
-from frame_cache import FrameCache
+from tools.video_reader.config import PREFETCH_BACKWARD, PREFETCH_DROP_DISTANCE, PREFETCH_FORWARD
+from tools.video_reader.decoder import VideoDecoder
+from tools.video_reader.frame_cache import FrameCache
 
 
 class FrameProvider:

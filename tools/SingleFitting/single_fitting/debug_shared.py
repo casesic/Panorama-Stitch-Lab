@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
+from lib_dynamic_hvip.fitting.smpl_seq_forward_module import SMPL_Seq_Forward_Module as SMPLFitter
 
 DS_PARAMS = {
     "xi": 0.02541467,
@@ -62,8 +63,8 @@ def normalize_keypoints_format(kp_fmt: Dict[str, int]) -> Dict[str, int]:
     return {COCO_NAME_MAP.get(k, k): v for k, v in kp_fmt.items()}
 
 
-def build_smpl_init_seq(smpl_fitter_cls: Any, smpl_batch_seq: Any, index_seq: Sequence[int]):
-    smpl_seq_init = smpl_fitter_cls.SMPL_Param_Seq(num_batch=len(index_seq))
+def build_smpl_init_seq(smpl_batch_seq: Any, index_seq: Sequence[int]):
+    smpl_seq_init = SMPLFitter.SMPL_Param_Seq(num_batch=len(index_seq))
     for seq_idx, frame_idx in enumerate(index_seq):
         smpl_seq_init.orient[seq_idx] = smpl_batch_seq.orient[frame_idx]
         smpl_seq_init.pose[seq_idx] = smpl_batch_seq.pose[frame_idx]

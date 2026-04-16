@@ -7,11 +7,11 @@ from pathlib import Path
 import numpy as np
 from PySide6.QtCore import QObject, Signal
 
-from config import DEFAULT_STEP_SIZE
-from decoder import VideoDecoder, VideoInfo
-from frame_cache import FrameCache
-from frame_provider import FrameProvider
-from frame_saver import FrameSaver
+from tools.video_reader.config import DEFAULT_STEP_SIZE
+from tools.video_reader.decoder import VideoDecoder, VideoInfo
+from tools.video_reader.frame_cache import FrameCache
+from tools.video_reader.frame_provider import FrameProvider
+from tools.video_reader.frame_saver import FrameSaver
 
 
 class PlaybackController(QObject):
