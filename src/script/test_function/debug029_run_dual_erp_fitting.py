@@ -12,7 +12,7 @@ from tqdm import tqdm
 
 import config_script
 
-
+# 据优化结果来看，都是在cam2坐标系下优化的
 def _ensure_paths() -> Path:
     repo_root = Path(__file__).resolve().parents[3]
     sf_root = repo_root / "tools" / "SingleFitting"
@@ -190,8 +190,8 @@ def _build_smpl_init_from_single_frame_pkl(pkl_path: Path):
     smpl_init.orient = src["orient"].clone()
     smpl_init.transl = src["transl"].clone()
     smpl_init.pose = src["pose"].clone()
-    smpl_init.beta = src["beta"].clone()
-    smpl_init.scale = src["scale"].clone()
+    smpl_init.beta = src["beta"].clone().reshape(-1)
+    smpl_init.scale = src["scale"].clone().reshape(-1)[:1]
     smpl_init.valid = src.get("valid", torch.ones(num_batch, dtype=torch.bool)).clone()
     return smpl_init
 
@@ -242,10 +242,11 @@ def load_det_result(
 
 
 def load_smplx_init(frame_idx: int, hmr_dir: Path, cam_id: str):
-    pkl_path = hmr_dir / cam_id / f"hmr_s{frame_idx}_pose.pkl"
+    cam_suffix = "c2" if cam_id == "cam2" else "c4"
+    pkl_path = hmr_dir / cam_id / f"hmr_s{frame_idx:05d}_{cam_suffix}.pkl"
     if not pkl_path.exists():
         return None
-
+    
     smpl_seq = _build_smpl_init_from_single_frame_pkl(pkl_path)
     return init_smplx_from_smpl54_seq(smpl_seq, [0])
 
@@ -399,5 +400,5 @@ python src\script\test_function\debug029_run_dual_erp_fitting.py `
   --hmr_dir data_process\Output\20260311_riding\hmr_cache `
   --output_dir data_process\Output\20260311_riding\fitting\dual_cam `
   --invalid_detections data_process\Output\20260311_riding\invalid_detections.json `
-  --start_frame 513 --end_frame 519
+  --start_frame 513 --end_frame 518
 '''

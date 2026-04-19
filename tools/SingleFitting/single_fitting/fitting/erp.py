@@ -12,6 +12,7 @@ from .base import BaseSMPLXFitter
 class ERPFitter(BaseSMPLXFitter):
     def __init__(self, gender: str = "neutral"):
         super().__init__(gender=gender)
+        self.conf_thresh = 0.35
         self.fps = 30.0
         self.max_speed_mps = 3.0
         self.shape_norm_bound = 0.9
@@ -94,7 +95,8 @@ class ERPFitter(BaseSMPLXFitter):
             proj = joints_2d_all[:, idx_s, :]
             det = keypoints_detected[:, idx_k, :]
             loss_body = torch.norm(proj - det[:, :, :2], dim=2)
-            losses["body_2d_det"] = (loss_body * det[:, :, 2] * w_t.unsqueeze(0)).sum(dim=1).mean()
+            conf_mask = (det[:, :, 2] > self.conf_thresh).float()
+            losses["body_2d_det"] = (loss_body * det[:, :, 2] * conf_mask * w_t.unsqueeze(0)).sum(dim=1).mean()
 
         if hand_keypoints_detected is not None:
             losses["hand_2d_det"] = self._hand_joint_loss(joints_2d_all, hand_keypoints_detected)
@@ -128,10 +130,10 @@ class ERPFitter(BaseSMPLXFitter):
             "hand_2d_det": n_frame * 0.5,
             "loss_pose_prior": n_frame * 0.05,
             "loss_hand_prior": n_frame * 0.02,
-            "loss_shape_prior": n_frame * 6.0,
-            "loss_shape_bound": n_frame * 20.0,
-            "loss_shape_anchor": n_frame * 30.0,
-            "loss_shape_norm": n_frame * 15.0,
+            "loss_shape_prior": n_frame * 1.0,
+            "loss_shape_bound": n_frame * 1.0,
+            "loss_shape_anchor": n_frame * 1.0,
+            "loss_shape_norm": n_frame * 1.0,
             "loss_transl_diff": n_frame * 0.0,
             "loss_pose_diff": n_frame * 0.0,
         }
@@ -164,10 +166,10 @@ class ERPFitter(BaseSMPLXFitter):
                     "hand_2d_det": 0.0,
                     "loss_pose_prior": 1.0,
                     "loss_hand_prior": 0.0,
-                    "loss_shape_prior": 3.0,
-                    "loss_shape_bound": 12.0,
-                    "loss_shape_anchor": 16.0,
-                    "loss_shape_norm": 8.0,
+                    "loss_shape_prior": 1.0,
+                    "loss_shape_bound": 1.0,
+                    "loss_shape_anchor": 1.0,
+                    "loss_shape_norm": 1.0,
                     "loss_transl_diff": 1.0,
                     "loss_pose_diff": 1.0,
                 },

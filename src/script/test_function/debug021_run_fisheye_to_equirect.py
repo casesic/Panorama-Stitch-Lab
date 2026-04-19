@@ -28,6 +28,11 @@ ROTATION_MATRIX = np.array(
     [1, 0, 0, 0, 0, 1, 0, -1, 0],
     dtype=np.float64,
 ).reshape(3, 3)
+R_EXTRINSIC_CAM2 = np.eye(3, dtype=np.float64)
+R_EXTRINSIC_CAM4 = np.array(
+    [-1.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 1.0],
+    dtype=np.float64,
+).reshape(3, 3)
 
 
 def parse_args() -> argparse.Namespace:
@@ -57,6 +62,11 @@ def parse_args() -> argparse.Namespace:
         choices=["old", "new"],
         default="old",
         help="Camera parameter group to use.",
+    )
+    parser.add_argument(
+        "--apply_extrinsic",
+        action="store_true",
+        help="Apply camera extrinsic rotation before fisheye projection.",
     )
     return parser.parse_args()
 
@@ -90,6 +100,7 @@ def build_equirect_lut(
     width: int = ERP_WIDTH,
     height: int = ERP_HEIGHT,
     chunk_rows: int = 128,
+    R_extrinsic: np.ndarray | None = None,
     desc: str = "Building LUT",
 ) -> tuple[np.ndarray, np.ndarray]:
     """Build an equirect-to-fisheye remap LUT once for a given camera."""
@@ -122,7 +133,10 @@ def build_equirect_lut(
             ],
             axis=-1,
         )
-        ray_rot = ray.reshape(-1, 3) @ ROTATION_MATRIX
+        if R_extrinsic is not None:
+            ray_rot = ray.reshape(-1, 3) @ R_extrinsic.T @ ROTATION_MATRIX.T
+        else:
+            ray_rot = ray.reshape(-1, 3) @ ROTATION_MATRIX.T
         fisheye_pixels, valid_mask = project(ray_rot, ds_params)
 
         pixels_chunk = fisheye_pixels.reshape(row_end - row_start, width, 2)
@@ -208,7 +222,7 @@ def main() -> None:
     reviewed_path = Path(args.reviewed)
     output_dir = Path(args.output_dir)
     fisheye_dir = Path(args.fisheye_dir)
-    equirect_dir = output_dir / "equirect"
+    equirect_dir = output_dir
     cam2_dir = equirect_dir / "cam2"
     cam4_dir = equirect_dir / "cam4"
     cam2_dir.mkdir(parents=True, exist_ok=True)
@@ -217,10 +231,12 @@ def main() -> None:
     frame_indices = load_reviewed_frame_indices(reviewed_path)
 
     cam2_params, cam4_params = _select_camera_params(args.camera)
+    r_ext_cam2 = R_EXTRINSIC_CAM2 if args.apply_extrinsic else None
+    r_ext_cam4 = R_EXTRINSIC_CAM4 if args.apply_extrinsic else None
     print(f"Building cam2 LUT with '{args.camera}' camera parameters...")
-    cam2_lut = build_equirect_lut(cam2_params, desc="Building cam2 LUT")
+    cam2_lut = build_equirect_lut(cam2_params, R_extrinsic=r_ext_cam2, desc="Building cam2 LUT")
     print(f"Building cam4 LUT with '{args.camera}' camera parameters...")
-    cam4_lut = build_equirect_lut(cam4_params, desc="Building cam4 LUT")
+    cam4_lut = build_equirect_lut(cam4_params, R_extrinsic=r_ext_cam4, desc="Building cam4 LUT")
 
     total_frames = len(frame_indices)
     with tqdm(total=total_frames, desc="Exporting equirect frames", unit="frame") as progress:
@@ -237,3 +253,12 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+r'''
+python src\script\test_function\debug021_run_fisheye_to_equirect.py `
+  --reviewed data_process\Input\20260311_riding\review.json `
+  --fisheye_dir data_process\Output\20260311_riding\image\fisheye `
+  --output_dir data_process\Output\20260311_riding\image\equirect `
+  --camera old `
+  --apply_extrinsic
+'''

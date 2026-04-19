@@ -20,6 +20,8 @@ MASK_ALPHA = 0.5
 SEG_COLOR = (0, 120, 255)
 
 
+
+
 def _ensure_paths() -> Path:
     """Ensure the SingleFitting package is importable."""
     repo_root = Path(__file__).resolve().parents[3]
@@ -48,6 +50,12 @@ def parse_args() -> argparse.Namespace:
         type=str,
         required=True,
         help="RTM result root directory containing cam2/ and cam4/ subdirectories",
+    )
+    parser.add_argument(
+        "--bbox_dir",
+        type=str,
+        required=True,
+        help="crop bbox json 所在目录（即包含 cam2_bboxes.json 和 cam4_bboxes.json 的目录）",
     )
     parser.add_argument(
         "--sam_model",
@@ -81,7 +89,7 @@ def choose_primary_mask(result, image_shape) -> np.ndarray | None:
 def render_segmentation(
     image_bgr: np.ndarray,
     mask: np.ndarray,
-    prompt_bbox: list[float] | None = None,
+    positive_points: list[list[int]] | None = None,
     alpha: float = MASK_ALPHA,
     color: tuple[int, int, int] = SEG_COLOR,
 ) -> np.ndarray:
@@ -96,9 +104,10 @@ def render_segmentation(
 
     contours, _ = cv2.findContours(mask.astype(np.uint8) * 255, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     cv2.drawContours(seg, contours, -1, (0, 255, 255), 2)
-    if prompt_bbox is not None:
-        x1, y1, x2, y2 = [int(v) for v in prompt_bbox]
-        cv2.rectangle(seg, (x1, y1), (x2, y2), (0, 255, 0), 2)
+    if positive_points is not None:
+        for x, y in positive_points:
+            cv2.circle(seg, (int(x), int(y)), 5, (0, 255, 0), -1, lineType=cv2.LINE_AA)
+            cv2.circle(seg, (int(x), int(y)), 8, (255, 255, 255), 1, lineType=cv2.LINE_AA)
     return seg
 
 
@@ -108,15 +117,20 @@ def load_models(sam_model_name: str):
     return SAM(sam_model_name)
 
 
-def _load_bbox_dict(json_path: Path) -> dict[str, list[int]]:
-    with json_path.open("r", encoding="utf-8") as file:
-        data = json.load(file)
-    if not isinstance(data, dict):
-        raise ValueError(f"bbox json must contain a dict: {json_path}")
-    return data
+def load_bbox_dict(bbox_dir: Path) -> tuple[dict[str, list[int]], dict[str, list[int]]]:
+    with (bbox_dir / "cam2_bboxes.json").open("r", encoding="utf-8") as file:
+        cam2_bboxes = json.load(file)
+    with (bbox_dir / "cam4_bboxes.json").open("r", encoding="utf-8") as file:
+        cam4_bboxes = json.load(file)
+
+    if not isinstance(cam2_bboxes, dict):
+        raise ValueError(f"bbox json must contain a dict: {bbox_dir / 'cam2_bboxes.json'}")
+    if not isinstance(cam4_bboxes, dict):
+        raise ValueError(f"bbox json must contain a dict: {bbox_dir / 'cam4_bboxes.json'}")
+    return cam2_bboxes, cam4_bboxes
 
 
-def segment_with_bbox_prompt(
+def segment_with_keypoint_prompt(
     sam_model,
     image_bgr: np.ndarray,
     positive_points: list[list[int]],
@@ -163,27 +177,28 @@ def _process_camera_frame(
         print(f"Warning: invalid RTM detection, skipping {camera_name} frame {frame_idx:05d}")
         return
 
-    x1, y1, _, _ = [int(v) for v in bbox_xyxy]
-    keypoints_full = np.asarray(det_seq.array_keypoints[0], dtype=np.float32)
-    keypoints_crop = keypoints_full.copy()
-    keypoints_crop[:, 0] -= float(x1)
-    keypoints_crop[:, 1] -= float(y1)
-
     h, w = image_bgr.shape[:2]
-    body_keypoints = keypoints_crop[:17]
+    x1, y1, x2, y2 = [int(v) for v in bbox_xyxy]
+    del x2, y2
+    body_keypoints = np.asarray(det_seq.array_keypoints[0], dtype=np.float32)[:17]
     valid_points: list[list[int]] = []
     for x, y, conf in body_keypoints:
-        if conf <= 0.3:
+        if conf <= 0.6:
             continue
-        if not (0 <= x < w and 0 <= y < h):
+        x_local = x - x1
+        y_local = y - y1
+        if not (0 <= x_local < w and 0 <= y_local < h):
             continue
-        valid_points.append([int(round(x)), int(round(y))])
+        pixel = image_bgr[int(round(y_local)), int(round(x_local))]
+        if int(pixel[0]) < 10 and int(pixel[1]) < 10 and int(pixel[2]) < 10:
+            continue
+        valid_points.append([int(round(x_local)), int(round(y_local))])
 
     if not valid_points:
         print(f"Warning: no valid RTM body keypoints, skipping {camera_name} frame {frame_idx:05d}")
         return
 
-    mask = segment_with_bbox_prompt(sam_model, image_bgr, positive_points=valid_points)
+    mask = segment_with_keypoint_prompt(sam_model, image_bgr, positive_points=valid_points)
     if mask is None:
         print(f"Warning: failed to segment human, skipping {camera_name} frame {frame_idx:05d}")
         return
@@ -202,7 +217,7 @@ def _process_camera_frame(
     rgba_image[~mask, 3] = 0
     cv2.imwrite(str(rgba_dir / f"{frame_idx:05d}.png"), rgba_image)
 
-    vis_image = render_segmentation(image_bgr, mask)
+    vis_image = render_segmentation(image_bgr, mask, positive_points=valid_points)
     cv2.imwrite(
         str(vis_dir / f"{frame_idx:05d}.jpg"),
         vis_image,
@@ -217,11 +232,11 @@ def main() -> None:
     crop_dir = Path(args.crop_dir)
     output_dir = Path(args.output_dir)
     rtm_dir = Path(args.rtm_dir)
+    bbox_dir = Path(args.bbox_dir)
     reviewed_path = Path(args.reviewed)
 
     reviewed_pairs = load_reviewed_entries(reviewed_path)
-    cam2_bboxes = _load_bbox_dict(crop_dir / "cam2_bboxes.json")
-    cam4_bboxes = _load_bbox_dict(crop_dir / "cam4_bboxes.json")
+    cam2_bboxes, cam4_bboxes = load_bbox_dict(bbox_dir)
     sam_model = load_models(args.sam_model)
 
     total_steps = len(reviewed_pairs) * 2
@@ -254,3 +269,12 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+'''
+python src\script\test_function\debug027_segment_human_erp.py `
+  --crop_dir data_process\Output\20260311_riding\image\equirect_crop `
+  --rtm_dir data_process\Output\20260311_riding\rtm_cache\equirect `
+  --bbox_dir data_process\Output\20260311_riding\image\equirect_crop `
+  --output_dir data_process\Output\20260311_riding\seg `
+  --reviewed data_process\Input\20260311_riding\review.json
+'''

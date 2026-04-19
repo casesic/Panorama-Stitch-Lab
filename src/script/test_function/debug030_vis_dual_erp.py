@@ -32,7 +32,7 @@ from single_fitting.fitting import ERPFitter, unpack_smplx_result
 
 R_CAM2 = torch.tensor([1, 0, 0, 0, 0, 1, 0, -1, 0], dtype=torch.float32).reshape(3, 3)
 R_CAM4 = torch.tensor([-1, 0, 0, 0, 1, 0, 0, 0, -1], dtype=torch.float32).reshape(3, 3)
-R_CAM4_PROJ = R_CAM2 @ R_CAM4  # M1 @ R_cam4，用于cam4经纬图投影
+R_CAM4_PROJ = R_CAM2@R_CAM4  # M1 @ R_cam4，用于cam4经纬图投影 single_erp 不用乘R_cam4  dual_erp需要乘
 
 SMPLX_LHAND = list(range(25, 40))
 SMPLX_RHAND = list(range(40, 55))
@@ -317,7 +317,7 @@ if __name__ == "__main__":
 r'''
 python src\script\test_function\debug030_vis_dual_erp.py `
   --result_dir data_process\Output\20260311_riding\fitting\dual_cam `
-  --segment 513_519 `
+  --segment 513_518 `
   --rtm_dir data_process\Output\20260311_riding\rtm_cache\equirect `
   --image_dir data_process\Output\20260311_riding\image\equirect `
   --output_dir data_process\Output\20260311_riding\vis\dual_erp `

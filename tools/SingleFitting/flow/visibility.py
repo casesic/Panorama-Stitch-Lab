@@ -13,9 +13,18 @@ def project_verts_to_rotated_erp(
     erp_h: int,
     erp_w: int,
 ) -> np.ndarray:
-    verts_rotated = verts_world @ rotation_matrix
-    pts_2d = erp_project_consistent(verts_rotated, erp_w, erp_h)
-    return pts_2d
+    import math
+
+    verts_rotated = verts_world @ rotation_matrix.T
+    x = verts_rotated[:, 0]
+    y = verts_rotated[:, 1]
+    z = verts_rotated[:, 2]
+    r = np.linalg.norm(verts_rotated, axis=1).clip(1e-6)
+    lon = np.arctan2(x, z)
+    lat = np.arcsin((-y / r).clip(-1 + 1e-6, 1 - 1e-6))
+    u = (lon / (2.0 * math.pi) + 0.5) * erp_w
+    v = (0.5 - lat / math.pi) * erp_h
+    return np.stack([u, v], axis=1)
 
 
 def compute_semantic_flow(
@@ -184,6 +193,41 @@ def get_visible_vertices(
     )
 
     visible_mask = np.zeros(verts_cam.shape[0], dtype=bool)
+    if not np.any(in_bounds):
+        return pts_2d, visible_mask
+
+    valid_rows = px[in_bounds, 1]
+    valid_cols = px[in_bounds, 0]
+    sampled_depth = depth_map[valid_rows, valid_cols]
+    covered = np.isfinite(sampled_depth)
+    depth_match = np.zeros_like(covered, dtype=bool)
+    depth_match[covered] = (vert_depth[in_bounds][covered] - sampled_depth[covered]) < depth_tol
+
+    visible_mask[in_bounds] = covered & depth_match
+    return pts_2d, visible_mask
+
+
+def get_visible_vertices_erp(
+    verts_world: np.ndarray,
+    faces: np.ndarray,
+    rotation_matrix: np.ndarray,
+    erp_h: int,
+    erp_w: int,
+    depth_tol: float = 0.01,
+) -> tuple[np.ndarray, np.ndarray]:
+    pts_2d = project_verts_to_rotated_erp(verts_world, rotation_matrix, erp_h, erp_w)
+    vert_depth = np.linalg.norm(verts_world, axis=1)
+    depth_map, _, _ = rasterize_mesh_from_2d(pts_2d, vert_depth, faces, erp_h, erp_w)
+    px = np.rint(pts_2d).astype(np.int32)
+
+    in_bounds = (
+        (px[:, 0] >= 0)
+        & (px[:, 0] < erp_w)
+        & (px[:, 1] >= 0)
+        & (px[:, 1] < erp_h)
+    )
+
+    visible_mask = np.zeros(verts_world.shape[0], dtype=bool)
     if not np.any(in_bounds):
         return pts_2d, visible_mask
 

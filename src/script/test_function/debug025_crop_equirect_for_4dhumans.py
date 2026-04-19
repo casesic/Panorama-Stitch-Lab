@@ -74,7 +74,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--padding",
         type=int,
-        default=70,
+        default=80,
         help="Padding in pixels around the mapped equirect bbox.",
     )
     parser.add_argument(
@@ -191,19 +191,12 @@ def map_fisheye_bbox_to_equirect(
     x1 = max(0, int(np.floor(np.min(pts_erp[:, 0]) - padding)))
     y1 = max(0, int(np.floor(np.min(pts_erp[:, 1]) - padding)))
     x2 = min(erp_w, int(np.ceil(np.max(pts_erp[:, 0]) + padding)))
-    y2 = min(erp_h, int(np.ceil(np.max(pts_erp[:, 1]) + padding)))
+    y2 = min(erp_h, int(np.ceil(np.max(pts_erp[:, 1]) - padding)))
 
     x2 = max(x1 + 1, x2)
     y2 = max(y1 + 1, y2)
     x2 = min(erp_w, x2)
     y2 = min(erp_h, y2)
-    # print(f"fisheye bbox: xmin={xmin:.1f} ymin={ymin:.1f} xmax={xmax:.1f} ymax={ymax:.1f}")
-    # print(f"valid points: {valid_mask.sum()} / {len(valid_mask)}")
-    # print(
-    #     f"erp pts range: x=[{pts_erp[:,0].min():.1f}, {pts_erp[:,0].max():.1f}] "
-    #     f"y=[{pts_erp[:,1].min():.1f}, {pts_erp[:,1].max():.1f}]"
-    # )
-    # print(f"crop bbox: x1={x1} y1={y1} x2={x2} y2={y2}")
     return x1, y1, x2, y2
 
 
@@ -353,6 +346,7 @@ def main() -> None:
     rtm_dir = Path(args.rtm_dir)
     equirect_dir = Path(args.equirect_dir)
     output_dir = Path(args.output_dir)
+    os.makedirs(output_dir, exist_ok=True)
     invalid_path = Path(args.invalid_detections) if args.invalid_detections is not None else None
 
     frame_indices = load_reviewed_frame_indices(reviewed_path)

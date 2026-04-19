@@ -26,12 +26,14 @@ _NON_SHAPE_LOSS_KEYS = (
     "loss_pose_diff",
     "loss_pose_prior",
     "loss_hand_prior",
+    "loss_pose_anchor",
 )
 
 
 class DualCamERPFitter(BaseSMPLXFitter):
     def __init__(self, gender: str = "neutral", R_cam4: torch.Tensor | None = None):
         super().__init__(gender=gender)
+        self.conf_thresh = 0.0
         self.fps = 30.0
         self.max_speed_mps = 3.0
         self.shape_norm_bound = 0.9
@@ -91,7 +93,7 @@ class DualCamERPFitter(BaseSMPLXFitter):
     def _project_cam4(self, points_3d: torch.Tensor, W: int, H: int) -> torch.Tensor:
         R_cam4 = self.R_cam4.to(points_3d.device, dtype=points_3d.dtype)
         R_rot = ROTATION_MATRIX.to(points_3d.device, dtype=points_3d.dtype)
-        pts_cam4 = points_3d @ R_cam4.T
+        pts_cam4 = points_3d @ R_cam4.T  # points_3d: N*3  (3*3 @3*N)^T = N*3 @(3*3).T 
         return self._project_erp(pts_cam4 @ R_rot.T, W, H)
 
     def _init_params(
@@ -115,6 +117,8 @@ class DualCamERPFitter(BaseSMPLXFitter):
 
         smpl_c2 = self._prepare_smplx_param_for_optimization(smpl_c2)
         smpl_c4 = self._prepare_smplx_param_for_optimization(smpl_c4)
+        smpl_c2.scale = smpl_c2.scale.reshape(-1)[:1].clone().detach()
+        smpl_c4.scale = smpl_c4.scale.reshape(-1)[:1].clone().detach()
 
         beta_c2 = getattr(smpl_c2, "beta", None)
         beta_c4 = getattr(smpl_c4, "beta", None)
@@ -126,6 +130,7 @@ class DualCamERPFitter(BaseSMPLXFitter):
             beta_init = beta_c2.clone().detach()
         else:
             beta_init = 0.5 * (beta_c2.clone().detach() + beta_c4.clone().detach())
+        beta_init = beta_init.reshape(-1)
         shared_beta = nn.Parameter(beta_init)
         return smpl_c2, smpl_c4, shared_beta
 
@@ -159,7 +164,8 @@ class DualCamERPFitter(BaseSMPLXFitter):
             proj = joints_2d_all[:, idx_s, :]
             det = dets_tensor[:, idx_k, :]
             loss_body = torch.norm(proj - det[:, :, :2], dim=2)
-            losses["body_2d_det"] = (loss_body * det[:, :, 2] * w_t.unsqueeze(0)).sum(dim=1).mean()
+            conf_mask = (det[:, :, 2] > self.conf_thresh).float()
+            losses["body_2d_det"] = (loss_body * det[:, :, 2] * conf_mask * w_t.unsqueeze(0)).sum(dim=1).mean()
 
         return losses, joints_2d_all
 
@@ -213,6 +219,8 @@ class DualCamERPFitter(BaseSMPLXFitter):
             image_size=image_size,
         )
         shape_anchor = shared_beta.clone().detach()
+        pose_anchor_c2 = smpl_c2.body_pose.clone().detach()
+        pose_anchor_c4 = smpl_c4.body_pose.clone().detach()
 
         base_weights = {
             "body_2d_det_c2": n_frame * 1.0,
@@ -221,6 +229,8 @@ class DualCamERPFitter(BaseSMPLXFitter):
             "loss_pose_prior_c4": n_frame * 0.05,
             "loss_hand_prior_c2": n_frame * 0.02,
             "loss_hand_prior_c4": n_frame * 0.02,
+            "loss_pose_anchor_c2": n_frame * 1.0,
+            "loss_pose_anchor_c4": n_frame * 1.0,
             "loss_transl_diff_c2": n_frame * 0.0,
             "loss_transl_diff_c4": n_frame * 0.0,
             "loss_pose_diff_c2": n_frame * 0.0,
@@ -243,13 +253,15 @@ class DualCamERPFitter(BaseSMPLXFitter):
                     "loss_pose_prior_c4": 0.0,
                     "loss_hand_prior_c2": 0.0,
                     "loss_hand_prior_c4": 0.0,
+                    "loss_pose_anchor_c2": 0.0,
+                    "loss_pose_anchor_c4": 0.0,
                     "loss_transl_diff_c2": 1.0,
                     "loss_transl_diff_c4": 1.0,
                     "loss_pose_diff_c2": 0.0,
                     "loss_pose_diff_c4": 0.0,
                     "loss_shape_prior": 0.0,
                     "loss_shape_bound": 0.0,
-                    "loss_shape_anchor": 1.0,
+                    "loss_shape_anchor": 0.1,
                     "loss_shape_norm": 0.0,
                 },
             ),
@@ -273,50 +285,54 @@ class DualCamERPFitter(BaseSMPLXFitter):
                     "loss_pose_prior_c4": 1.0,
                     "loss_hand_prior_c2": 0.0,
                     "loss_hand_prior_c4": 0.0,
+                    "loss_pose_anchor_c2": 3.0,
+                    "loss_pose_anchor_c4": 3.0,
                     "loss_transl_diff_c2": 1.0,
                     "loss_transl_diff_c4": 1.0,
                     "loss_pose_diff_c2": 1.0,
                     "loss_pose_diff_c4": 1.0,
-                    "loss_shape_prior": 3.0,
-                    "loss_shape_bound": 12.0,
-                    "loss_shape_anchor": 16.0,
-                    "loss_shape_norm": 8.0,
+                    "loss_shape_prior": 0.1,
+                    "loss_shape_bound": 1.0,
+                    "loss_shape_anchor": 0.1,
+                    "loss_shape_norm": 1.0,
                 },
             ),
-            (
-                "stage3_hand",
-                lambda: [
-                    smpl_c2.orient,
-                    smpl_c2.transl,
-                    smpl_c2.body_pose,
-                    smpl_c2.left_hand_pose,
-                    smpl_c2.right_hand_pose,
-                    smpl_c4.orient,
-                    smpl_c4.transl,
-                    smpl_c4.body_pose,
-                    smpl_c4.left_hand_pose,
-                    smpl_c4.right_hand_pose,
-                    shared_beta,
-                ],
-                60,
-                self.stop_ratio * 0.7,
-                {
-                    "body_2d_det_c2": 1.5,
-                    "body_2d_det_c4": 1.5,
-                    "loss_pose_prior_c2": 0.5,
-                    "loss_pose_prior_c4": 0.5,
-                    "loss_hand_prior_c2": 1.0,
-                    "loss_hand_prior_c4": 1.0,
-                    "loss_transl_diff_c2": 1.0,
-                    "loss_transl_diff_c4": 1.0,
-                    "loss_pose_diff_c2": 0.8,
-                    "loss_pose_diff_c4": 0.8,
-                    "loss_shape_prior": 0.0,
-                    "loss_shape_bound": 0.0,
-                    "loss_shape_anchor": 0.0,
-                    "loss_shape_norm": 0.0,
-                },
-            ),
+            # (
+            #     "stage3_hand",
+            #     lambda: [
+            #         smpl_c2.orient,
+            #         smpl_c2.transl,
+            #         smpl_c2.body_pose,
+            #         smpl_c2.left_hand_pose,
+            #         smpl_c2.right_hand_pose,
+            #         smpl_c4.orient,
+            #         smpl_c4.transl,
+            #         smpl_c4.body_pose,
+            #         smpl_c4.left_hand_pose,
+            #         smpl_c4.right_hand_pose,
+            #         shared_beta,
+            #     ],
+            #     60,
+            #     self.stop_ratio * 0.7,
+            #     {
+            #         "body_2d_det_c2": 1.5,
+            #         "body_2d_det_c4": 1.5,
+            #         "loss_pose_prior_c2": 0.5,
+            #         "loss_pose_prior_c4": 0.5,
+            #         "loss_hand_prior_c2": 1.0,
+            #         "loss_hand_prior_c4": 1.0,
+            #         "loss_pose_anchor_c2": 0.5,
+            #         "loss_pose_anchor_c4": 0.5,
+            #         "loss_transl_diff_c2": 1.0,
+            #         "loss_transl_diff_c4": 1.0,
+            #         "loss_pose_diff_c2": 0.8,
+            #         "loss_pose_diff_c4": 0.8,
+            #         "loss_shape_prior": 0.0,
+            #         "loss_shape_bound": 0.0,
+            #         "loss_shape_anchor": 0.0,
+            #         "loss_shape_norm": 0.0,
+            #     },
+            # ),
         ]
 
         def make_loss_fn():
@@ -358,8 +374,12 @@ class DualCamERPFitter(BaseSMPLXFitter):
                 H=erp_h,
             )
 
-            reg_c2 = self._common_regularization_losses(smpl_c2, shape_anchor, n_frame)
-            reg_c4 = self._common_regularization_losses(smpl_c4, shape_anchor, n_frame)
+            reg_c2 = self._common_regularization_losses(
+                smpl_c2, shape_anchor, n_frame, pose_anchor=pose_anchor_c2
+            )
+            reg_c4 = self._common_regularization_losses(
+                smpl_c4, shape_anchor, n_frame, pose_anchor=pose_anchor_c4
+            )
             losses_all = {
                 "body_2d_det_c2": losses_c2.get("body_2d_det", joints_c2.new_zeros(())),
                 "body_2d_det_c4": losses_c4.get("body_2d_det", joints_c4.new_zeros(())),

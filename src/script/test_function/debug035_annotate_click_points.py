@@ -12,7 +12,7 @@ from PySide6.QtGui import QCloseEvent, QImage, QKeyEvent, QMouseEvent, QPixmap
 from PySide6.QtWidgets import QApplication, QLabel, QMainWindow, QMessageBox, QSizePolicy
 
 
-MAX_DISPLAY_SIZE = 800
+MAX_DISPLAY_SIZE = 400
 DOT_COLOR = (0, 0, 255)
 DOT_RADIUS = 8
 DOT_THICKNESS = -1

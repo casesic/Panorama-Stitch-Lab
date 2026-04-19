@@ -50,19 +50,26 @@ class RotatedERPFitter(ERPFitter):
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Batch-run ERPFitter on reviewed cam2 equirect frames.")
+    parser = argparse.ArgumentParser(description="Batch-run ERPFitter on reviewed equirect frames.")
     parser.add_argument("--reviewed", type=str, required=True, help="Path to reviewed.json.")
+    parser.add_argument(
+        "--cam_id",
+        type=str,
+        default="cam2",
+        choices=("cam2", "cam4"),
+        help="Camera id to process.",
+    )
     parser.add_argument(
         "--rtm_dir",
         type=str,
         required=True,
-        help="frame_cache root directory containing cam2 RTM pkls.",
+        help="frame_cache root directory containing camera RTM pkls.",
     )
     parser.add_argument(
         "--hmr_dir",
         type=str,
         required=True,
-        help="4D-Humans pkl root directory containing cam2 HMR pkls.",
+        help="4D-Humans pkl root directory containing camera HMR pkls.",
     )
     parser.add_argument("--output_dir", type=str, required=True, help="Output root directory.")
     parser.add_argument(
@@ -169,9 +176,14 @@ def load_invalid_frames(invalid_path: Path | None) -> set[int]:
     return _extract_frame_indices_from_obj(data)
 
 
-def infer_keypoints_format_and_dim(frame_indices: list[int], rtm_dir: Path) -> tuple[dict[str, int], int]:
+def infer_keypoints_format_and_dim(
+    frame_indices: list[int],
+    rtm_dir: Path,
+    cam_id: str,
+) -> tuple[dict[str, int], int]:
+    cam_suffix = "c2" if cam_id == "cam2" else "c4"
     for frame_idx in frame_indices:
-        pkl_path = rtm_dir / "cam2" / f"rtm_s{frame_idx:05d}_c2.pkl"
+        pkl_path = rtm_dir / cam_id / f"rtm_s{frame_idx:05d}_{cam_suffix}.pkl"
         if not pkl_path.exists():
             continue
         with pkl_path.open("rb") as file:
@@ -179,7 +191,7 @@ def infer_keypoints_format_and_dim(frame_indices: list[int], rtm_dir: Path) -> t
         keypoints_format = dict(seq.keypoints_format)
         num_keypoints = int(seq.array_keypoints.shape[1])
         return keypoints_format, num_keypoints
-    raise RuntimeError("Failed to infer keypoints_format from RTM pkls for reviewed frames")
+    raise RuntimeError(f"Failed to infer keypoints_format from RTM pkls for {cam_id} reviewed frames")
 
 
 def _build_smpl_init_from_single_frame_pkl(pkl_path: Path):
@@ -194,6 +206,8 @@ def _build_smpl_init_from_single_frame_pkl(pkl_path: Path):
         src = pickle.load(file)
 
     if isinstance(src, SMPLFitter.SMPL_Param_Seq):
+        src.beta = src.beta.clone().reshape(-1)
+        src.scale = src.scale.clone().reshape(-1)[:1]
         return src
     if not isinstance(src, dict):
         raise TypeError(f"Unsupported HMR pkl object type: {type(src)}")
@@ -206,8 +220,8 @@ def _build_smpl_init_from_single_frame_pkl(pkl_path: Path):
     smpl_init.orient = src["orient"].clone()
     smpl_init.transl = src["transl"].clone()
     smpl_init.pose = src["pose"].clone()
-    smpl_init.beta = src["beta"].clone()
-    smpl_init.scale = src["scale"].clone()
+    smpl_init.beta = src["beta"].clone().reshape(-1)
+    smpl_init.scale = src["scale"].clone().reshape(-1)[:1]
     smpl_init.valid = src.get("valid", torch.ones(num_batch, dtype=torch.bool)).clone()
     return smpl_init
 
@@ -218,6 +232,7 @@ def load_det_result(
     invalid_frames: set[int],
     default_keypoints_format: dict[str, int],
     num_keypoints: int,
+    cam_id: str,
 ) -> Result_Single_Human_Single_Frame:
     zero_keypoints = None
     if num_keypoints > 0:
@@ -233,7 +248,8 @@ def load_det_result(
             keypoints_format=default_keypoints_format,
         )
 
-    pkl_path = rtm_dir / "cam2" / f"rtm_s{frame_idx:05d}_c2.pkl"
+    cam_suffix = "c2" if cam_id == "cam2" else "c4"
+    pkl_path = rtm_dir / cam_id / f"rtm_s{frame_idx:05d}_{cam_suffix}.pkl"
     if not pkl_path.exists():
         return Result_Single_Human_Single_Frame(
             bbox=None,
@@ -255,8 +271,9 @@ def load_det_result(
     return det
 
 
-def load_smplx_init(frame_idx: int, hmr_dir: Path):
-    pkl_path = hmr_dir / "cam2" / f"hmr_s{frame_idx}_pose.pkl"
+def load_smplx_init(frame_idx: int, hmr_dir: Path, cam_id: str):
+    cam_suffix = "c2" if cam_id == "cam2" else "c4"
+    pkl_path = hmr_dir / cam_id / f"hmr_s{frame_idx:05d}_{cam_suffix}.pkl"
     if not pkl_path.exists():
         return None
 
@@ -291,19 +308,21 @@ def save_segment_result(
     output_dir: Path,
     frame_idxs: list[int],
     valid_frame_count: int,
+    cam_id: str,
 ) -> None:
     start = frame_idxs[0]
     end = frame_idxs[-1]
-    cam2_dir = output_dir / "cam2"
-    cam2_dir.mkdir(parents=True, exist_ok=True)
+    cam_dir = output_dir / cam_id
+    cam_dir.mkdir(parents=True, exist_ok=True)
 
-    seq_path = cam2_dir / f"seg_{start}_{end}_seq.pkl"
-    meta_path = cam2_dir / f"seg_{start}_{end}_meta.json"
+    seq_path = cam_dir / f"seg_{start}_{end}_seq.pkl"
+    meta_path = cam_dir / f"seg_{start}_{end}_meta.json"
 
     with seq_path.open("wb") as file:
         pickle.dump(result, file)
 
     meta = {
+        "camera": cam_id,
         "start": start,
         "end": end,
         "frame_idxs": frame_idxs,
@@ -318,6 +337,7 @@ def main() -> None:
     args = parse_args()
 
     reviewed_path = Path(args.reviewed)
+    cam_id = args.cam_id
     rtm_dir = Path(args.rtm_dir)
     hmr_dir = Path(args.hmr_dir)
     output_dir = Path(args.output_dir)
@@ -326,7 +346,7 @@ def main() -> None:
     frame_indices = load_reviewed_frame_indices(reviewed_path)
     segments = split_frame_segments(frame_indices)
     invalid_frames = load_invalid_frames(invalid_path)
-    default_keypoints_format, num_keypoints = infer_keypoints_format_and_dim(frame_indices, rtm_dir)
+    default_keypoints_format, num_keypoints = infer_keypoints_format_and_dim(frame_indices, rtm_dir, cam_id)
 
     if args.start_frame is not None:
         segments = [frame_idxs for frame_idxs in segments if frame_idxs[-1] >= args.start_frame]
@@ -335,7 +355,7 @@ def main() -> None:
 
     fitter = RotatedERPFitter(gender="neutral")
 
-    for frame_idxs in tqdm(segments, desc="ERPFitter cam2", unit="segment"):
+    for frame_idxs in tqdm(segments, desc=f"ERPFitter {cam_id}", unit="segment"):
         det_list = [
             load_det_result(
                 frame_idx,
@@ -343,10 +363,11 @@ def main() -> None:
                 invalid_frames,
                 default_keypoints_format=default_keypoints_format,
                 num_keypoints=num_keypoints,
+                cam_id=cam_id,
             )
             for frame_idx in frame_idxs
         ]
-        smplx_list = [load_smplx_init(frame_idx, hmr_dir) for frame_idx in frame_idxs]
+        smplx_list = [load_smplx_init(frame_idx, hmr_dir, cam_id) for frame_idx in frame_idxs]
         smplx_init = build_segment_smplx_init(smplx_list)
 
         valid_frame_count = sum(1 for det in det_list if bool(det.flag_valid))
@@ -361,15 +382,16 @@ def main() -> None:
             image_size=(args.image_width, args.image_height),
             smpl_param_init=smplx_init,
         )
-        save_segment_result(result, output_dir, frame_idxs, valid_frame_count)
+        save_segment_result(result, output_dir, frame_idxs, valid_frame_count, cam_id)
 
 
 if __name__ == "__main__":
     main()
 
-'''
+r'''
 python src\script\test_function\debug023_run_erp_fitting.py `
   --reviewed data_process\Input\20260311_riding\review.json `
+  --cam_id cam2 `
   --rtm_dir data_process\Output\20260311_riding\rtm_cache\equirect `
   --hmr_dir data_process\Output\20260311_riding\hmr_cache `
   --output_dir data_process\Output\20260311_riding\fitting `

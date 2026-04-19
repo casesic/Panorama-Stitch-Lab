@@ -17,6 +17,9 @@ SCRIPT_BY_STEP: dict[str, str] = {
     "025": "debug025_crop_equirect_for_4dhumans.py",
     "026": "debug026_run_rtmlib_erp.py",
     "027": "debug027_segment_human_erp.py",
+    "034": "debug034_generate_review.py",
+    "035": "debug035_annotate_click_points.py",
+    "036": "debug036_detect_fisheye_bbox_direct.py",
 }
 
 SUPPORTED_STEPS = tuple(SCRIPT_BY_STEP.keys())
@@ -24,7 +27,7 @@ SUPPORTED_STEPS = tuple(SCRIPT_BY_STEP.keys())
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Batch run selected debug020-027 pipeline steps for multiple datasets."
+        description="Batch run selected debug020-027/debug034-debug036 pipeline steps for multiple datasets."
     )
     parser.add_argument(
         "--config",
@@ -36,7 +39,7 @@ def parse_args() -> argparse.Namespace:
         "--steps",
         type=str,
         required=True,
-        help="Comma-separated step ids, e.g. 020,021,022,025,026,027",
+        help="Comma-separated step ids, e.g. 034,020,021,035,022,036,025,026,027",
     )
     parser.add_argument(
         "--datasets",
@@ -103,9 +106,20 @@ def _require_field(dataset_name: str, dataset_config: dict[str, Any], field_name
     raise ValueError(f"Dataset '{dataset_name}' field '{field_name}' must be a non-empty string.")
 
 
+def _default_seg_path_from_reviewed(reviewed: str) -> str:
+    return str(Path(reviewed).with_name("seg.json"))
+
+
 def build_step_args(step: str, dataset_name: str, dataset_config: dict[str, Any]) -> list[str]:
     reviewed = _require_field(dataset_name, dataset_config, "reviewed")
 
+    if step == "034":
+        return [
+            "--seg",
+            _default_seg_path_from_reviewed(reviewed),
+            "--output",
+            reviewed,
+        ]
     if step == "020":
         return [
             "--reviewed",
@@ -134,6 +148,28 @@ def build_step_args(step: str, dataset_name: str, dataset_config: dict[str, Any]
             _require_field(dataset_name, dataset_config, "rtm_fisheye_dir"),
             "--camera_group",
             _require_field(dataset_name, dataset_config, "camera"),
+            "--device",
+            _require_field(dataset_name, dataset_config, "device"),
+        ]
+        _append_optional_arg(cmd, dataset_config, "click_points")
+        return cmd
+    if step == "035":
+        return [
+            "--reviewed",
+            reviewed,
+            "--fisheye_dir",
+            _require_field(dataset_name, dataset_config, "fisheye_dir"),
+            "--output",
+            _require_field(dataset_name, dataset_config, "click_points"),
+        ]
+    if step == "036":
+        cmd = [
+            "--reviewed",
+            reviewed,
+            "--input_dir",
+            _require_field(dataset_name, dataset_config, "fisheye_dir"),
+            "--output_dir",
+            _require_field(dataset_name, dataset_config, "rtm_fisheye_dir"),
             "--device",
             _require_field(dataset_name, dataset_config, "device"),
         ]

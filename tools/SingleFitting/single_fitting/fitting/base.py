@@ -123,7 +123,13 @@ class BaseSMPLXFitter:
             total_loss = total_loss + (loss_l + loss_r) * config.weight
         return total_loss * self.hand_overall_weight
 
-    def _common_regularization_losses(self, smpl_param, shape_anchor, n_frame: int) -> Dict[str, torch.Tensor]:
+    def _common_regularization_losses(
+        self,
+        smpl_param,
+        shape_anchor,
+        n_frame: int,
+        pose_anchor: torch.Tensor | None = None,
+    ) -> Dict[str, torch.Tensor]:
         losses_all = {}
         if n_frame > 1:
             t_diff = smpl_param.transl[1:] - smpl_param.transl[:-1]
@@ -146,6 +152,12 @@ class BaseSMPLXFitter:
         )
         losses_all["loss_shape_anchor"] = torch.mean((smpl_param.beta - shape_anchor) ** 2)
         losses_all["loss_shape_norm"] = torch.relu(torch.norm(smpl_param.beta) - self.shape_norm_bound) ** 2
+        if pose_anchor is not None:
+            losses_all["loss_pose_anchor"] = torch.mean((smpl_param.body_pose - pose_anchor) ** 2)
+        else:
+            losses_all["loss_pose_anchor"] = torch.zeros(
+                (), dtype=smpl_param.body_pose.dtype, device=smpl_param.body_pose.device
+            )
         return losses_all
 
     def _run_optimization(
