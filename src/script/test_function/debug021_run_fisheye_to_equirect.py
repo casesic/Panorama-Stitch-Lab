@@ -258,7 +258,7 @@ r'''
 python src\script\test_function\debug021_run_fisheye_to_equirect.py `
   --reviewed data_process\Input\20260311_riding\review.json `
   --fisheye_dir data_process\Output\20260311_riding\image\fisheye `
-  --output_dir data_process\Output\20260311_riding\image\equirect `
+  --output_dir data_process\Output\20260311_riding\image\equirect_rotate `
   --camera old `
   --apply_extrinsic
 '''

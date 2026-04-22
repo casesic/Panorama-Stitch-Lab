@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
 import cv2
 import numpy as np
 import os
+import torch
 import config_script
 os.environ.setdefault('KMP_DUPLICATE_LIB_OK', 'TRUE')
 
@@ -23,12 +25,19 @@ REPO_ROOT = _ensure_paths()
 
 from flow.visibility import (
     compute_semantic_flow,
+    get_smplx_batch,
     get_visible_vertices_erp,
-    load_smplx_faces_and_verts,
     project_verts_to_rotated_erp,
 )
-ROTATION_MATRIX = np.array([1, 0, 0, 0, 0, 1, 0, -1, 0], dtype=np.float64).reshape(3, 3)
-R_CAM4_NP = np.array([-1, 0, 0, 0, 1, 0, 0, 0, -1], dtype=np.float64).reshape(3, 3)
+from lib_dynamic_hvip.smpl.smpl_lib import forward_smplx_tensor_batch
+from single_fitting.debug_shared import load_pickle
+R_CAM2 = torch.tensor([1, 0, 0, 0, 0, 1, 0, -1, 0], dtype=torch.float32).reshape(3, 3)
+R_CAM4 = torch.tensor([-1, 0, 0, 0, 1, 0, 0, 0, -1], dtype=torch.float32).reshape(3, 3)
+R_CAM4_PROJ = R_CAM2   # 用于 cam4 投影
+
+R_CAM2_NP = R_CAM2.numpy()
+R_CAM4_PROJ_NP = R_CAM4_PROJ.numpy()
+IDENTITY_NP = np.eye(3, dtype=np.float64)
 
 
 def parse_args() -> argparse.Namespace:
@@ -36,8 +45,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--fitting_dir", type=str, required=True, help="DualCamERPFitter output root containing cam2/ and cam4/")
     parser.add_argument("--image_dir", type=str, required=True, help="Equirect image root containing cam2/ and cam4/")
     parser.add_argument("--output_dir", type=str, required=True, help="Output root directory.")
-    parser.add_argument("--start_frame", type=int, required=True, help="Start frame index, inclusive.")
-    parser.add_argument("--end_frame", type=int, required=True, help="End frame index, inclusive.")
+    parser.add_argument("--invalid_json", type=str, default=None, help="Path to invalid.json from debug030.")
+    parser.add_argument("--start_frame", type=int, required=False, default=None, help="Start frame index, inclusive.")
+    parser.add_argument("--end_frame", type=int, required=False, default=None, help="End frame index, inclusive.")
     parser.add_argument("--save_vis", action="store_true", help="Save visualization results.")
     return parser.parse_args()
 
@@ -58,12 +68,51 @@ def find_segment_pkl(fitting_dir: Path, frame_idx: int):
     return None, None, None
 
 
-def load_verts_for_frame(pkl_path: Path, frame_idx: int, segment_start: int, gender: str):
-    verts_all, faces = load_smplx_faces_and_verts(str(pkl_path), gender=gender)
-    frame_offset = frame_idx - segment_start
-    if frame_offset < 0 or frame_offset >= len(verts_all):
-        raise IndexError(f"Frame {frame_idx} out of range for segment {pkl_path.name}")
-    return verts_all[frame_offset], faces
+def load_all_verts(
+    pkl_path: Path,
+    model,
+    n_expand_beta: int | None = None,
+) -> np.ndarray:
+    smplx_param = load_pickle(pkl_path)
+    n_frame = n_expand_beta if n_expand_beta is not None else smplx_param.num_batch
+    with torch.no_grad():
+        verts_t, _, _ = forward_smplx_tensor_batch(
+            smplx_model=model,
+            global_orient=smplx_param.orient,
+            body_pose=smplx_param.body_pose,
+            left_hand_pose=smplx_param.left_hand_pose,
+            right_hand_pose=smplx_param.right_hand_pose,
+            betas=smplx_param.beta.unsqueeze(0).expand(n_frame, -1),
+            transl=smplx_param.transl,
+            scale=smplx_param.scale.expand(n_frame),
+        )
+    return verts_t.detach().cpu().numpy()
+
+
+def load_invalid_frames(invalid_json_path: Path | None) -> set[int]:
+    if invalid_json_path is None or not invalid_json_path.exists():
+        return set()
+
+    with invalid_json_path.open("r", encoding="utf-8") as file:
+        invalid_json = json.load(file)
+
+    cam2_frames = invalid_json.get("cam2", {}).get("equirect", [])
+    cam4_frames = invalid_json.get("cam4", {}).get("equirect", [])
+    return set(cam2_frames) | set(cam4_frames)
+
+
+def discover_frame_indices(fitting_dir: Path) -> list[int]:
+    cam2_dir = fitting_dir / "cam2"
+    pattern = re.compile(r"^seg_(\d+)_(\d+)_seq\.pkl$")
+    frame_indices: set[int] = set()
+    for pkl_path in cam2_dir.glob("seg_*_*_seq.pkl"):
+        match = pattern.match(pkl_path.name)
+        if match is None:
+            continue
+        start_frame = int(match.group(1))
+        end_frame = int(match.group(2))
+        frame_indices.update(range(start_frame, end_frame + 1))
+    return sorted(frame_indices)
 
 
 def compute_human_bbox(pts_list, erp_h, erp_w, padding=30):
@@ -154,28 +203,29 @@ def process_frame(
     if img_cam4 is None:
         return {"frame_idx": frame_idx, "valid": False, "reason": "missing_cam4"}
 
-    verts_unified_c2 = verts_c2
-    verts_unified_c4 = verts_c4 @ R_CAM4_NP.T
-    verts_unified_c4 = verts_c4
+    verts_unified_c2 = verts_c2 @ R_CAM2_NP.T
+    verts_unified_c4 = verts_c4 @ R_CAM4_PROJ_NP.T
 
     erp_h, erp_w = img_cam2.shape[:2]
-    pts_2d_cam2 = project_verts_to_rotated_erp(verts_unified_c2, ROTATION_MATRIX, erp_h, erp_w)
-    pts_2d_cam4 = project_verts_to_rotated_erp(verts_unified_c4, ROTATION_MATRIX, erp_h, erp_w)
+    pts_2d_cam2 = project_verts_to_rotated_erp(verts_unified_c2, IDENTITY_NP, erp_h, erp_w)
+    pts_2d_cam4 = project_verts_to_rotated_erp(verts_unified_c4, IDENTITY_NP, erp_h, erp_w)
     human_bbox = compute_human_bbox([pts_2d_cam2, pts_2d_cam4], erp_h, erp_w)
 
     _, visible_mask_c2 = get_visible_vertices_erp(
         verts_world=verts_unified_c2,
         faces=faces,
-        rotation_matrix=ROTATION_MATRIX,
+        rotation_matrix=IDENTITY_NP,
         erp_h=erp_h,
         erp_w=erp_w,
+        roi_bbox=human_bbox,
     )
     _, visible_mask_c4 = get_visible_vertices_erp(
         verts_world=verts_unified_c4,
         faces=faces,
-        rotation_matrix=ROTATION_MATRIX,
+        rotation_matrix=IDENTITY_NP,
         erp_h=erp_h,
         erp_w=erp_w,
+        roi_bbox=human_bbox,
     )
 
     flow_c2c4, conf_c2c4 = compute_semantic_flow(
@@ -184,7 +234,7 @@ def process_frame(
         faces=faces,
         erp_h=erp_h,
         erp_w=erp_w,
-        rotation_matrix=ROTATION_MATRIX,
+        rotation_matrix=IDENTITY_NP,
         roi_bbox=human_bbox,
         visible_mask_B=visible_mask_c2,
     )
@@ -194,7 +244,7 @@ def process_frame(
         faces=faces,
         erp_h=erp_h,
         erp_w=erp_w,
-        rotation_matrix=ROTATION_MATRIX,
+        rotation_matrix=IDENTITY_NP,
         roi_bbox=human_bbox,
         visible_mask_B=visible_mask_c4,
     )
@@ -235,10 +285,25 @@ def main() -> None:
     fitting_dir = Path(args.fitting_dir)
     image_dir = Path(args.image_dir)
     output_dir = Path(args.output_dir)
+    invalid_frames = load_invalid_frames(Path(args.invalid_json) if args.invalid_json else None)
     output_dir.mkdir(parents=True, exist_ok=True)
+    smplx_model = get_smplx_batch(gender="neutral")
+    faces = smplx_model.faces.numpy() if hasattr(smplx_model.faces, "numpy") else np.asarray(smplx_model.faces)
+    faces = np.asarray(faces, dtype=int)
+    frame_indices = discover_frame_indices(fitting_dir)
+    if args.start_frame is not None:
+        frame_indices = [i for i in frame_indices if i >= args.start_frame]
+    if args.end_frame is not None:
+        frame_indices = [i for i in frame_indices if i <= args.end_frame]
 
     meta = []
-    for frame_idx in range(args.start_frame, args.end_frame + 1):
+    _segment_cache: dict[Path, np.ndarray] = {}
+    for frame_idx in frame_indices:
+        if frame_idx in invalid_frames:
+            meta.append({"frame_idx": frame_idx, "valid": False, "reason": "invalid_detection"})
+            print(f"[frame {frame_idx:05d}] invalid_detection, skipping")
+            continue
+
         pkl_path_c2, pkl_path_c4, segment_start = find_segment_pkl(fitting_dir, frame_idx)
         if pkl_path_c2 is None or pkl_path_c4 is None or segment_start is None:
             result = {"frame_idx": frame_idx, "valid": False, "reason": "no_segment"}
@@ -247,10 +312,19 @@ def main() -> None:
             continue
 
         try:
-            verts_c2, faces = load_verts_for_frame(pkl_path_c2, frame_idx, segment_start, gender="neutral")
-            verts_c4, faces_cam4 = load_verts_for_frame(pkl_path_c4, frame_idx, segment_start, gender="neutral")
-            if not np.array_equal(faces, faces_cam4):
-                raise ValueError("SMPL-X faces mismatch between cam2 and cam4 PKL inputs")
+            if pkl_path_c2 not in _segment_cache:
+                _segment_cache[pkl_path_c2] = load_all_verts(pkl_path_c2, smplx_model)
+            if pkl_path_c4 not in _segment_cache:
+                _segment_cache[pkl_path_c4] = load_all_verts(pkl_path_c4, smplx_model)
+            frame_offset = frame_idx - segment_start
+            verts_all_c2 = _segment_cache[pkl_path_c2]
+            verts_all_c4 = _segment_cache[pkl_path_c4]
+            if frame_offset < 0 or frame_offset >= len(verts_all_c2):
+                raise IndexError(f"Frame {frame_idx} out of range for segment {pkl_path_c2.name}")
+            if frame_offset < 0 or frame_offset >= len(verts_all_c4):
+                raise IndexError(f"Frame {frame_idx} out of range for segment {pkl_path_c4.name}")
+            verts_c2 = verts_all_c2[frame_offset]
+            verts_c4 = verts_all_c4[frame_offset]
             result = process_frame(
                 frame_idx=frame_idx,
                 verts_c2=verts_c2,
@@ -293,6 +367,7 @@ python src\script\test_function\debug031_batch_semantic_flow.py `
   --image_dir data_process\Output\20260311_riding\image\equirect_rotate `
   --output_dir data_process\Output\20260311_riding\semantic_flow `
   --start_frame 513 `
-  --end_frame 519 `
+  --end_frame 518 `
+  --invalid_json data_process\Output\20260311_riding\vis\dual_erp\invalid.json `
   --save_vis
 '''

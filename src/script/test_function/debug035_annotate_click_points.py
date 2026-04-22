@@ -421,3 +421,11 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+r'''
+python src\script\test_function\debug035_annotate_click_points.py `
+  --reviewed data_process\Input\20260311_riding\review.json `
+  --fisheye_dir data_process\Output\20260311_riding\image\fisheye `
+  --output data_process/Output/20260311_riding/click_points.json
+'''

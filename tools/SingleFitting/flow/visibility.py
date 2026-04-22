@@ -40,44 +40,50 @@ def compute_semantic_flow(
     pts_2d_A = project_verts_to_rotated_erp(verts_world_A, rotation_matrix, erp_h, erp_w)
     pts_2d_B = project_verts_to_rotated_erp(verts_world_B, rotation_matrix, erp_h, erp_w)
     depths_A = np.linalg.norm(verts_world_A, axis=1)
-    # 稠密化
-    _, face_id_map, bary_map = rasterize_mesh_from_2d(pts_2d_A, depths_A, faces, erp_h, erp_w)
+    _, face_id_map, bary_map = rasterize_mesh_from_2d(
+        pts_2d_A,
+        depths_A,
+        faces,
+        erp_h,
+        erp_w,
+        roi_bbox=roi_bbox,
+    )
 
     x1, y1, x2, y2 = roi_bbox
-    face_id_roi = face_id_map[y1:y2, x1:x2]  # (roi_h, roi_w)
-    bary_roi = bary_map[y1:y2, x1:x2]        # (roi_h, roi_w, 3)
+    face_id_roi = face_id_map
+    bary_roi = bary_map
 
     roi_h = y2 - y1
     roi_w = x2 - x1
     flow_roi = np.zeros((roi_h, roi_w, 2), dtype=np.float64)
     confidence_roi = np.zeros((roi_h, roi_w), dtype=np.uint8)
 
-    valid = face_id_roi != -1  # find pixels that fall on  human body splice
+    valid = face_id_roi != -1
     if not np.any(valid):
         return flow_roi, confidence_roi
 
-    face_ids = face_id_roi[valid]  # (N, 0)  N effective pixels 
-    v_ids = faces[face_ids]   # (N, 3) N pixel corresponds to a face, and each face has 3 vertex indices
+    face_ids = face_id_roi[valid]
+    v_ids = faces[face_ids]
     bary = bary_roi[valid]
 
     pts_B = (
         bary[:, [0]] * pts_2d_B[v_ids[:, 0]]
         + bary[:, [1]] * pts_2d_B[v_ids[:, 1]]
         + bary[:, [2]] * pts_2d_B[v_ids[:, 2]]
-    )  # (N, 2)
+    )
     pts_A = (
         bary[:, [0]] * pts_2d_A[v_ids[:, 0]]
         + bary[:, [1]] * pts_2d_A[v_ids[:, 1]]
         + bary[:, [2]] * pts_2d_A[v_ids[:, 2]]
-    )  # (N, 2)
-    flow = pts_B - pts_A  # (N, 2)
-    flow_roi[valid] = flow  # (roi_h, roi_w, 2)
+    )
+    flow = pts_B - pts_A
+    flow_roi[valid] = flow
 
     vis_faces = visible_mask_B[v_ids]
-    all_visible = np.all(vis_faces, axis=1)  # (N, )
-    confidence = np.ones(face_ids.shape[0], dtype=np.uint8)  # (N, )
+    all_visible = np.all(vis_faces, axis=1)
+    confidence = np.ones(face_ids.shape[0], dtype=np.uint8)
     confidence[all_visible] = 2
-    confidence_roi[valid] = confidence  # (roi_h, roi_w)
+    confidence_roi[valid] = confidence
 
     return flow_roi, confidence_roi
 
@@ -88,10 +94,18 @@ def rasterize_mesh_from_2d(
     faces: np.ndarray,
     image_h: int,
     image_w: int,
+    roi_bbox: tuple[int, int, int, int] | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    depth_map = np.full((image_h, image_w), np.inf, dtype=np.float64)
-    face_id_map = np.full((image_h, image_w), -1, dtype=np.int32)
-    bary_map = np.zeros((image_h, image_w, 3), dtype=np.float64)
+    if roi_bbox is None:
+        x1, y1, x2, y2 = 0, 0, image_w, image_h
+    else:
+        x1, y1, x2, y2 = roi_bbox
+
+    roi_w = x2 - x1
+    roi_h = y2 - y1
+    depth_map = np.full((roi_h, roi_w), np.inf, dtype=np.float64)
+    face_id_map = np.full((roi_h, roi_w), -1, dtype=np.int32)
+    bary_map = np.zeros((roi_h, roi_w, 3), dtype=np.float64)
 
     for face_idx, face in enumerate(faces):
         tri_2d = pts_2d[face]
@@ -100,10 +114,10 @@ def rasterize_mesh_from_2d(
         if np.ptp(tri_2d[:, 0]) > image_w // 2:
             continue
 
-        min_u = max(0, int(np.ceil(np.min(tri_2d[:, 0]))))
-        max_u = min(image_w - 1, int(np.floor(np.max(tri_2d[:, 0]))))
-        min_v = max(0, int(np.ceil(np.min(tri_2d[:, 1]))))
-        max_v = min(image_h - 1, int(np.floor(np.max(tri_2d[:, 1]))))
+        min_u = max(x1, int(np.ceil(np.min(tri_2d[:, 0]))))
+        max_u = min(x2 - 1, int(np.floor(np.max(tri_2d[:, 0]))))
+        min_v = max(y1, int(np.ceil(np.min(tri_2d[:, 1]))))
+        max_v = min(y2 - 1, int(np.floor(np.max(tri_2d[:, 1]))))
         if min_u > max_u or min_v > max_v:
             continue
 
@@ -138,15 +152,19 @@ def rasterize_mesh_from_2d(
             continue
 
         d_interp = lambda1 * tri_depth[0] + lambda2 * tri_depth[1] + lambda3 * tri_depth[2]
-        patch_depth = depth_map[min_v : max_v + 1, min_u : max_u + 1]
+        min_u_local = min_u - x1
+        max_u_local = max_u - x1
+        min_v_local = min_v - y1
+        max_v_local = max_v - y1
+        patch_depth = depth_map[min_v_local : max_v_local + 1, min_u_local : max_u_local + 1]
         update_mask = valid & (d_interp < patch_depth)
         if not np.any(update_mask):
             continue
 
         patch_depth[update_mask] = d_interp[update_mask]
-        face_id_patch = face_id_map[min_v : max_v + 1, min_u : max_u + 1]
+        face_id_patch = face_id_map[min_v_local : max_v_local + 1, min_u_local : max_u_local + 1]
         face_id_patch[update_mask] = face_idx
-        bary_patch = bary_map[min_v : max_v + 1, min_u : max_u + 1]
+        bary_patch = bary_map[min_v_local : max_v_local + 1, min_u_local : max_u_local + 1]
         bary_patch[update_mask, 0] = lambda1[update_mask]
         bary_patch[update_mask, 1] = lambda2[update_mask]
         bary_patch[update_mask, 2] = lambda3[update_mask]
@@ -214,25 +232,38 @@ def get_visible_vertices_erp(
     erp_h: int,
     erp_w: int,
     depth_tol: float = 0.01,
+    roi_bbox: tuple[int, int, int, int] | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     pts_2d = project_verts_to_rotated_erp(verts_world, rotation_matrix, erp_h, erp_w)
     vert_depth = np.linalg.norm(verts_world, axis=1)
-    depth_map, _, _ = rasterize_mesh_from_2d(pts_2d, vert_depth, faces, erp_h, erp_w)
+    depth_map, _, _ = rasterize_mesh_from_2d(
+        pts_2d,
+        vert_depth,
+        faces,
+        erp_h,
+        erp_w,
+        roi_bbox=roi_bbox,
+    )
     px = np.rint(pts_2d).astype(np.int32)
 
+    if roi_bbox is None:
+        x1, y1, x2, y2 = 0, 0, erp_w, erp_h
+    else:
+        x1, y1, x2, y2 = roi_bbox
+
     in_bounds = (
-        (px[:, 0] >= 0)
-        & (px[:, 0] < erp_w)
-        & (px[:, 1] >= 0)
-        & (px[:, 1] < erp_h)
+        (px[:, 0] >= x1)
+        & (px[:, 0] < x2)
+        & (px[:, 1] >= y1)
+        & (px[:, 1] < y2)
     )
 
     visible_mask = np.zeros(verts_world.shape[0], dtype=bool)
     if not np.any(in_bounds):
         return pts_2d, visible_mask
 
-    valid_rows = px[in_bounds, 1]
-    valid_cols = px[in_bounds, 0]
+    valid_rows = px[in_bounds, 1] - y1
+    valid_cols = px[in_bounds, 0] - x1
     sampled_depth = depth_map[valid_rows, valid_cols]
     covered = np.isfinite(sampled_depth)
     depth_match = np.zeros_like(covered, dtype=bool)

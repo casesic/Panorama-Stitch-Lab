@@ -68,17 +68,15 @@ def parse_args() -> argparse.Namespace:
 
 
 def choose_primary_mask(result, image_shape) -> np.ndarray | None:
-    if result.masks is None or result.masks.data is None or len(result.masks.data) == 0:
+    masks = _extract_result_masks(result, image_shape)
+    if not masks:
         return None
 
-    masks = result.masks.data.detach().cpu().numpy().astype(bool)
     h, w = image_shape[:2]
     best_mask = None
     best_area = -1
 
     for mask in masks:
-        if mask.shape != (h, w):
-            mask = cv2.resize(mask.astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST).astype(bool)
         area = int(mask.sum())
         if area > best_area:
             best_area = area
@@ -86,9 +84,24 @@ def choose_primary_mask(result, image_shape) -> np.ndarray | None:
     return best_mask
 
 
+def _extract_result_masks(result, image_shape) -> list[np.ndarray]:
+    if result.masks is None or result.masks.data is None or len(result.masks.data) == 0:
+        return []
+
+    raw_masks = result.masks.data.detach().cpu().numpy().astype(bool)
+    h, w = image_shape[:2]
+    masks: list[np.ndarray] = []
+    for mask in raw_masks:
+        if mask.shape != (h, w):
+            mask = cv2.resize(mask.astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST).astype(bool)
+        masks.append(mask)
+    return masks
+
+
 def render_segmentation(
     image_bgr: np.ndarray,
     mask: np.ndarray,
+    all_masks: list[np.ndarray] | None = None,
     positive_points: list[list[int]] | None = None,
     alpha: float = MASK_ALPHA,
     color: tuple[int, int, int] = SEG_COLOR,
@@ -98,9 +111,21 @@ def render_segmentation(
         mask = cv2.resize(mask.astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST).astype(bool)
 
     seg = image_bgr.copy()
-    overlay = seg.copy()
-    overlay[mask] = color
-    seg = cv2.addWeighted(overlay, alpha, seg, 1 - alpha, 0)
+    mask_palette = [
+        (0, 120, 255),
+        (0, 255, 0),
+        (255, 0, 0),
+        (255, 180, 0),
+        (180, 0, 255),
+        (0, 255, 255),
+    ]
+    masks_to_draw = all_masks if all_masks else [mask]
+    for index, mask_item in enumerate(masks_to_draw):
+        if mask_item.shape != (h, w):
+            mask_item = cv2.resize(mask_item.astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST).astype(bool)
+        overlay = seg.copy()
+        overlay[mask_item] = mask_palette[index % len(mask_palette)]
+        seg = cv2.addWeighted(overlay, alpha, seg, 1 - alpha, 0)
 
     contours, _ = cv2.findContours(mask.astype(np.uint8) * 255, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     cv2.drawContours(seg, contours, -1, (0, 255, 255), 2)
@@ -134,14 +159,15 @@ def segment_with_keypoint_prompt(
     sam_model,
     image_bgr: np.ndarray,
     positive_points: list[list[int]],
-) -> np.ndarray | None:
+) -> tuple[np.ndarray | None, list[np.ndarray]]:
     image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
     points = positive_points
     labels = [1] * len(positive_points)
     results = sam_model(image_rgb, points=points, labels=labels, verbose=False)
     if not results:
-        return None
-    return choose_primary_mask(results[0], image_bgr.shape)
+        return None, []
+    all_masks = _extract_result_masks(results[0], image_bgr.shape)
+    return choose_primary_mask(results[0], image_bgr.shape), all_masks
 
 
 def _process_camera_frame(
@@ -198,7 +224,7 @@ def _process_camera_frame(
         print(f"Warning: no valid RTM body keypoints, skipping {camera_name} frame {frame_idx:05d}")
         return
 
-    mask = segment_with_keypoint_prompt(sam_model, image_bgr, positive_points=valid_points)
+    mask, all_masks = segment_with_keypoint_prompt(sam_model, image_bgr, positive_points=valid_points)
     if mask is None:
         print(f"Warning: failed to segment human, skipping {camera_name} frame {frame_idx:05d}")
         return
@@ -217,7 +243,7 @@ def _process_camera_frame(
     rgba_image[~mask, 3] = 0
     cv2.imwrite(str(rgba_dir / f"{frame_idx:05d}.png"), rgba_image)
 
-    vis_image = render_segmentation(image_bgr, mask, positive_points=valid_points)
+    vis_image = render_segmentation(image_bgr, mask, all_masks=all_masks, positive_points=valid_points)
     cv2.imwrite(
         str(vis_dir / f"{frame_idx:05d}.jpg"),
         vis_image,
@@ -272,9 +298,9 @@ if __name__ == "__main__":
 
 '''
 python src\script\test_function\debug027_segment_human_erp.py `
-  --crop_dir data_process\Output\20260311_riding\image\equirect_crop `
-  --rtm_dir data_process\Output\20260311_riding\rtm_cache\equirect `
-  --bbox_dir data_process\Output\20260311_riding\image\equirect_crop `
-  --output_dir data_process\Output\20260311_riding\seg `
+  --crop_dir data_process\Output\20260311_riding\image\equirect_rotate_crop `
+  --rtm_dir data_process\Output\20260311_riding\rtm_cache\equirect_rotate `
+  --bbox_dir data_process\Output\20260311_riding\image\equirect_rotate_crop `
+  --output_dir data_process\Output\20260311_riding\seg\equirect_rotate_crop `
   --reviewed data_process\Input\20260311_riding\review.json
 '''

@@ -33,7 +33,7 @@ _NON_SHAPE_LOSS_KEYS = (
 class DualCamERPFitter(BaseSMPLXFitter):
     def __init__(self, gender: str = "neutral", R_cam4: torch.Tensor | None = None):
         super().__init__(gender=gender)
-        self.conf_thresh = 0.0
+        self.conf_thresh = 0.57
         self.fps = 30.0
         self.max_speed_mps = 3.0
         self.shape_norm_bound = 0.9
@@ -132,7 +132,12 @@ class DualCamERPFitter(BaseSMPLXFitter):
             beta_init = 0.5 * (beta_c2.clone().detach() + beta_c4.clone().detach())
         beta_init = beta_init.reshape(-1)
         shared_beta = nn.Parameter(beta_init)
-        return smpl_c2, smpl_c4, shared_beta
+
+        bp_c2 = smpl_c2.body_pose.clone().detach()
+        bp_c4 = smpl_c4.body_pose.clone().detach()
+        shared_body_pose_init = 0.5 * (bp_c2 + bp_c4)
+        shared_body_pose = nn.Parameter(shared_body_pose_init)
+        return smpl_c2, smpl_c4, shared_beta, shared_body_pose
 
     def _compute_loss_2d_with_proj(
         self,
@@ -172,13 +177,14 @@ class DualCamERPFitter(BaseSMPLXFitter):
     def _shape_regularization_losses(
         self,
         shared_beta: torch.Tensor,
+        shared_body_pose: torch.Tensor,
         shape_anchor: torch.Tensor,
         ref_param,
         n_frame: int,
     ):
         proxy = SimpleNamespace(
             transl=ref_param.transl,
-            body_pose=ref_param.body_pose,
+            body_pose=shared_body_pose,
             left_hand_pose=ref_param.left_hand_pose,
             right_hand_pose=ref_param.right_hand_pose,
             beta=shared_beta,
@@ -211,7 +217,7 @@ class DualCamERPFitter(BaseSMPLXFitter):
         key_fmt_c2 = cam2_dets[0].keypoints_format
         key_fmt_c4 = cam4_dets[0].keypoints_format
 
-        smpl_c2, smpl_c4, shared_beta = self._init_params(
+        smpl_c2, smpl_c4, shared_beta, shared_body_pose = self._init_params(
             smplx_init_c2=smplx_init_c2,
             smplx_init_c4=smplx_init_c4,
             kp_tensor_c2=kp_tensor_c2,
@@ -219,8 +225,7 @@ class DualCamERPFitter(BaseSMPLXFitter):
             image_size=image_size,
         )
         shape_anchor = shared_beta.clone().detach()
-        pose_anchor_c2 = smpl_c2.body_pose.clone().detach()
-        pose_anchor_c4 = smpl_c4.body_pose.clone().detach()
+        pose_anchor = shared_body_pose.clone().detach()
 
         base_weights = {
             "body_2d_det_c2": n_frame * 1.0,
@@ -270,10 +275,9 @@ class DualCamERPFitter(BaseSMPLXFitter):
                 lambda: [
                     smpl_c2.orient,
                     smpl_c2.transl,
-                    smpl_c2.body_pose,
                     smpl_c4.orient,
                     smpl_c4.transl,
-                    smpl_c4.body_pose,
+                    shared_body_pose,
                     shared_beta,
                 ],
                 60,
@@ -339,7 +343,9 @@ class DualCamERPFitter(BaseSMPLXFitter):
             _, joints_c2, _ = forward_smplx_tensor_batch(
                 smplx_model=model,
                 global_orient=smpl_c2.orient,
-                body_pose=smpl_c2.body_pose,
+                body_pose=shared_body_pose.unsqueeze(0).expand(n_frame, -1)
+                if shared_body_pose.dim() == 1
+                else shared_body_pose,
                 left_hand_pose=smpl_c2.left_hand_pose,
                 right_hand_pose=smpl_c2.right_hand_pose,
                 betas=shared_beta.unsqueeze(0).expand(n_frame, -1),
@@ -349,7 +355,9 @@ class DualCamERPFitter(BaseSMPLXFitter):
             _, joints_c4, _ = forward_smplx_tensor_batch(
                 smplx_model=model,
                 global_orient=smpl_c4.orient,
-                body_pose=smpl_c4.body_pose,
+                body_pose=shared_body_pose.unsqueeze(0).expand(n_frame, -1)
+                if shared_body_pose.dim() == 1
+                else shared_body_pose,
                 left_hand_pose=smpl_c4.left_hand_pose,
                 right_hand_pose=smpl_c4.right_hand_pose,
                 betas=shared_beta.unsqueeze(0).expand(n_frame, -1),
@@ -369,16 +377,30 @@ class DualCamERPFitter(BaseSMPLXFitter):
                 joints_all=joints_c4,
                 dets_tensor=kp_tensor_c4,
                 keypoints_format=key_fmt_c4,
-                project_fn=self._project_cam4,
+                project_fn=self._project_cam2,
                 W=erp_w,
                 H=erp_h,
             )
 
+            proxy_c2 = SimpleNamespace(
+                transl=smpl_c2.transl,
+                body_pose=shared_body_pose,
+                left_hand_pose=smpl_c2.left_hand_pose,
+                right_hand_pose=smpl_c2.right_hand_pose,
+                beta=shared_beta,
+            )
+            proxy_c4 = SimpleNamespace(
+                transl=smpl_c4.transl,
+                body_pose=shared_body_pose,
+                left_hand_pose=smpl_c4.left_hand_pose,
+                right_hand_pose=smpl_c4.right_hand_pose,
+                beta=shared_beta,
+            )
             reg_c2 = self._common_regularization_losses(
-                smpl_c2, shape_anchor, n_frame, pose_anchor=pose_anchor_c2
+                proxy_c2, shape_anchor, n_frame, pose_anchor=pose_anchor
             )
             reg_c4 = self._common_regularization_losses(
-                smpl_c4, shape_anchor, n_frame, pose_anchor=pose_anchor_c4
+                proxy_c4, shape_anchor, n_frame, pose_anchor=pose_anchor
             )
             losses_all = {
                 "body_2d_det_c2": losses_c2.get("body_2d_det", joints_c2.new_zeros(())),
@@ -386,7 +408,9 @@ class DualCamERPFitter(BaseSMPLXFitter):
             }
             losses_all.update(self._suffix_non_shape_losses(reg_c2, "c2"))
             losses_all.update(self._suffix_non_shape_losses(reg_c4, "c4"))
-            losses_all.update(self._shape_regularization_losses(shared_beta, shape_anchor, smpl_c2, n_frame))
+            losses_all.update(
+                self._shape_regularization_losses(shared_beta, shared_body_pose, shape_anchor, smpl_c2, n_frame)
+            )
             return losses_all
 
         latest_loss = 0.0
@@ -431,11 +455,14 @@ class DualCamERPFitter(BaseSMPLXFitter):
                 print(f"[{stage_name}] iter={it+1:03d}/{max_iter} total={latest_loss:.4f}  |  {detail_str}")
 
         for smpl_param in (smpl_c2, smpl_c4):
-            for attr in ["orient", "transl", "body_pose", "left_hand_pose", "right_hand_pose", "beta"]:
+            for attr in ["orient", "transl", "left_hand_pose", "right_hand_pose", "beta"]:
                 getattr(smpl_param, attr).requires_grad_(False)
         shared_beta.requires_grad_(False)
+        shared_body_pose.requires_grad_(False)
 
         shared_beta_final = shared_beta.detach().clone()
         smpl_c2.beta = shared_beta_final.clone()
         smpl_c4.beta = shared_beta_final.clone()
+        smpl_c2.body_pose = shared_body_pose.detach().clone()
+        smpl_c4.body_pose = shared_body_pose.detach().clone()
         return smpl_c2, smpl_c4, shared_beta_final

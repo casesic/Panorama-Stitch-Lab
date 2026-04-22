@@ -236,3 +236,12 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+r'''
+python src\script\test_function\debug026_run_rtmlib_erp.py `
+  --reviewed data_process\Input\20260311_riding\review.json `
+  --crop_dir data_process\Output\20260311_riding\image\equirect_rotate_crop `
+  --output_dir data_process\Output\20260311_riding\rtm_cache\equirect_rotate `
+  --device cuda
+'''

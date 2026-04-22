@@ -31,7 +31,7 @@ from single_fitting.fitting import ERPFitter, unpack_smplx_result
 
 R_CAM2 = torch.tensor([1, 0, 0, 0, 0, 1, 0, -1, 0], dtype=torch.float32).reshape(3, 3)
 R_CAM4 = torch.tensor([-1, 0, 0, 0, 1, 0, 0, 0, -1], dtype=torch.float32).reshape(3, 3)
-R_CAM4_PROJ = R_CAM2 @ R_CAM4
+R_CAM4_PROJ = R_CAM2 @ R_CAM4  # R_CAM4的使用需要看情况
 
 SMPLX_LHAND = list(range(25, 40))
 SMPLX_RHAND = list(range(40, 55))

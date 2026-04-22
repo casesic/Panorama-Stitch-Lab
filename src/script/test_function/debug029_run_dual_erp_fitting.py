@@ -77,6 +77,12 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Only process segments whose start frame is <= this frame index.",
     )
+    parser.add_argument(
+        "--max_segment_len",
+        type=int,
+        default=0,
+        help="将超过此长度的段切成子段，0表示不限制（默认0）。",
+    )
     return parser.parse_args()
 
 
@@ -109,6 +115,20 @@ def split_frame_segments(frame_indices: list[int], gap_threshold: int = 2) -> li
         else:
             segments[-1].append(frame_idx)
     return segments
+
+
+def split_long_segments(
+    segments: list[list[int]],
+    max_len: int,
+) -> list[list[int]]:
+    """将超过 max_len 帧的段切成等长子段。"""
+    if max_len <= 0:
+        return segments
+    result: list[list[int]] = []
+    for seg in segments:
+        for i in range(0, len(seg), max_len):
+            result.append(seg[i:i + max_len])
+    return result
 
 
 def _extract_frame_indices_from_obj(obj: Any) -> set[int]:
@@ -326,6 +346,9 @@ def main() -> None:
 
     frame_indices = load_reviewed_frame_indices(reviewed_path)
     segments = split_frame_segments(frame_indices)
+    if args.max_segment_len > 0:
+        segments = split_long_segments(segments, args.max_segment_len)
+        print(f"切段后共 {len(segments)} 段，最大段长 {args.max_segment_len}")
     invalid_frames = load_invalid_frames(invalid_path)
     default_keypoints_format_c2, num_keypoints_c2 = infer_keypoints_format_and_dim(frame_indices, rtm_dir, "cam2")
     default_keypoints_format_c4, num_keypoints_c4 = infer_keypoints_format_and_dim(frame_indices, rtm_dir, "cam4")
@@ -396,7 +419,15 @@ if __name__ == "__main__":
 r'''
 python src\script\test_function\debug029_run_dual_erp_fitting.py `
   --reviewed data_process\Input\20260311_riding\review.json `
-  --rtm_dir data_process\Output\20260311_riding\rtm_cache\equirect `
+  --rtm_dir data_process\Output\20260311_riding\rtm_cache\equirect_rotate `
+  --hmr_dir data_process\Output\20260311_riding\hmr_cache `
+  --output_dir data_process\Output\20260311_riding\fitting\dual_cam `
+  --invalid_detections data_process\Output\20260311_riding\invalid_detections.json `
+  --max_segment_len 10
+
+python src\script\test_function\debug029_run_dual_erp_fitting.py `
+  --reviewed data_process\Input\20260311_riding\review.json `
+  --rtm_dir data_process\Output\20260311_riding\rtm_cache\equirect_rotate `
   --hmr_dir data_process\Output\20260311_riding\hmr_cache `
   --output_dir data_process\Output\20260311_riding\fitting\dual_cam `
   --invalid_detections data_process\Output\20260311_riding\invalid_detections.json `

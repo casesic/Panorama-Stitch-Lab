@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Callable, Optional
@@ -32,7 +34,7 @@ from single_fitting.fitting import ERPFitter, unpack_smplx_result
 
 R_CAM2 = torch.tensor([1, 0, 0, 0, 0, 1, 0, -1, 0], dtype=torch.float32).reshape(3, 3)
 R_CAM4 = torch.tensor([-1, 0, 0, 0, 1, 0, 0, 0, -1], dtype=torch.float32).reshape(3, 3)
-R_CAM4_PROJ = R_CAM2@R_CAM4  # M1 @ R_cam4，用于cam4经纬图投影 single_erp 不用乘R_cam4  dual_erp需要乘
+R_CAM4_PROJ = R_CAM2  # M1 @ R_cam4，用于cam4经纬图投影 single_erp 不用乘R_cam4  dual_erp需要乘
 
 SMPLX_LHAND = list(range(25, 40))
 SMPLX_RHAND = list(range(40, 55))
@@ -87,7 +89,7 @@ def project_cam4(points_3d: torch.Tensor, W: int, H: int) -> torch.Tensor:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Visualize dual-camera ERP fitting results from debug029 outputs.")
     parser.add_argument("--result_dir", type=Path, required=True, help="debug029 output root containing cam2/ and cam4/")
-    parser.add_argument("--segment", type=str, required=True, help="Segment range in start_end format, e.g. 513_519")
+    parser.add_argument("--segment", type=str, required=False, default=None, help="Segment range in start_end format, e.g. 513_519")
     parser.add_argument("--rtm_dir", type=Path, required=True, help="RTM pkl root containing cam2/ and cam4/")
     parser.add_argument("--image_dir", type=Path, required=True, help="Equirect image root containing cam2/ and cam4/")
     parser.add_argument("--output_dir", type=Path, default=Path("outputs/erp_vis_dual"), help="Output directory")
@@ -110,6 +112,22 @@ def parse_segment_range(segment: str) -> tuple[int, int]:
     if start_frame > end_frame:
         raise ValueError(f"segment start must be <= end: {segment}")
     return start_frame, end_frame
+
+
+def discover_segments(result_dir: Path) -> list[str]:
+    cam2_dir = result_dir / "cam2"
+    pattern = re.compile(r"^seg_(\d+)_(\d+)_seq\.pkl$")
+    discovered: list[tuple[int, str]] = []
+    for pkl_path in cam2_dir.glob("seg_*_seq.pkl"):
+        match = pattern.match(pkl_path.name)
+        if match is None:
+            continue
+        start_frame = int(match.group(1))
+        segment = f"{match.group(1)}_{match.group(2)}"
+        discovered.append((start_frame, segment))
+
+    discovered.sort(key=lambda item: item[0])
+    return [segment for _, segment in discovered]
 
 
 def load_rtm_keypoints(rtm_pkl_path: Path) -> tuple[Optional[np.ndarray], dict]:
@@ -156,13 +174,6 @@ def visualize_frame(
     mesh_alpha: float = 0.6,
 ) -> tuple[np.ndarray, np.ndarray, Optional[np.ndarray]]:
     vis = img.copy()
-    if kp133 is not None:
-        body17 = kp133[:17]
-        draw_skel(vis, body17[:, :2], COCO_PAIRS, conf=body17[:, 2], thresh=thresh, color=(0, 200, 0))
-        draw_pts(vis, body17[:, :2], conf=body17[:, 2], thresh=thresh, r=6, color=(0, 230, 0))
-        if kp133.shape[0] >= 133:
-            draw_pts(vis, kp133[LHAND_IDX, :2], conf=kp133[LHAND_IDX, 2], thresh=thresh, r=4, color=(0, 220, 255))
-            draw_pts(vis, kp133[RHAND_IDX, :2], conf=kp133[RHAND_IDX, 2], thresh=thresh, r=4, color=(255, 220, 0))
 
     verts, joints_all, joints_body = fitter.forward_param_to_numpy(smplx_param)
     verts = np.asarray(verts, dtype=np.float32)
@@ -221,93 +232,114 @@ def visualize_frame(
 
 def main() -> int:
     args = parse_args()
-    start_frame, end_frame = parse_segment_range(args.segment)
-    frame_indices = list(range(start_frame, end_frame + 1))
-
-    result_pkl_cam2 = args.result_dir / "cam2" / f"seg_{args.segment}_seq.pkl"
-    result_pkl_cam4 = args.result_dir / "cam4" / f"seg_{args.segment}_seq.pkl"
-    result_cam2 = load_pickle(result_pkl_cam2)
-    result_cam4 = load_pickle(result_pkl_cam4)
-    params_cam2 = unpack_smplx_result(result_cam2)
-    params_cam4 = unpack_smplx_result(result_cam4)
-
-    total = min(len(frame_indices), len(params_cam2), len(params_cam4))
-    if total < len(frame_indices):
-        print(
-            f"[warn] Param count mismatch with frame count; using the first {total} frames."
-        )
+    segments = [args.segment] if args.segment is not None else discover_segments(args.result_dir)
+    if not segments:
+        print(f"[warn] No segments found under: {args.result_dir / 'cam2'}")
+        return 0
 
     fitter = ERPFitter(gender="neutral")
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
+    invalid_cam2: list[int] = []
+    invalid_cam4: list[int] = []
     video_writer = None
-    for idx in range(total):
-        frame_idx = frame_indices[idx]
+    for segment in segments:
+        start_frame, end_frame = parse_segment_range(segment)
+        frame_indices = list(range(start_frame, end_frame + 1))
 
-        image_path_c2 = args.image_dir / "cam2" / f"{frame_idx:05d}.jpg"
-        image_path_c4 = args.image_dir / "cam4" / f"{frame_idx:05d}.jpg"
-        img_c2 = cv2.imread(str(image_path_c2))
-        img_c4 = cv2.imread(str(image_path_c4))
-        if img_c2 is None:
-            print(f"[warn] Failed to read image: {image_path_c2}")
-            continue
-        if img_c4 is None:
-            print(f"[warn] Failed to read image: {image_path_c4}")
-            continue
+        result_pkl_cam2 = args.result_dir / "cam2" / f"seg_{segment}_seq.pkl"
+        result_pkl_cam4 = args.result_dir / "cam4" / f"seg_{segment}_seq.pkl"
+        result_cam2 = load_pickle(result_pkl_cam2)
+        result_cam4 = load_pickle(result_pkl_cam4)
+        params_cam2 = unpack_smplx_result(result_cam2)
+        params_cam4 = unpack_smplx_result(result_cam4)
 
-        rtm_pkl_path_c2 = args.rtm_dir / "cam2" / f"rtm_s{frame_idx:05d}_c2.pkl"
-        rtm_pkl_path_c4 = args.rtm_dir / "cam4" / f"rtm_s{frame_idx:05d}_c4.pkl"
-        kp133_c2, kp_fmt_c2 = load_rtm_keypoints(rtm_pkl_path_c2)
-        kp133_c4, kp_fmt_c4 = load_rtm_keypoints(rtm_pkl_path_c4)
+        total = min(len(frame_indices), len(params_cam2), len(params_cam4))
+        if total < len(frame_indices):
+            print(
+                f"[warn] Param count mismatch with frame count for segment {segment}; using the first {total} frames."
+            )
 
-        vis_c2, _, _ = visualize_frame(
-            img=img_c2,
-            smplx_param=params_cam2[idx],
-            kp133=kp133_c2,
-            kp_fmt=kp_fmt_c2,
-            fitter=fitter,
-            image_width=args.image_width,
-            image_height=args.image_height,
-            project_fn=project_cam2,
-            draw_mesh=args.mesh,
-            thresh=args.conf_thresh,
-            mesh_alpha=args.mesh_alpha,
-        )
-        vis_c4, _, _ = visualize_frame(
-            img=img_c4,
-            smplx_param=params_cam4[idx],
-            kp133=kp133_c4,
-            kp_fmt=kp_fmt_c4,
-            fitter=fitter,
-            image_width=args.image_width,
-            image_height=args.image_height,
-            project_fn=project_cam4,
-            draw_mesh=args.mesh,
-            thresh=args.conf_thresh,
-            mesh_alpha=args.mesh_alpha,
-        )
+        for idx in range(total):
+            frame_idx = frame_indices[idx]
 
-        vis_dual = np.concatenate([vis_c2, vis_c4], axis=0)
-        if args.scale != 1.0:
-            vis_dual = cv2.resize(vis_dual, None, fx=args.scale, fy=args.scale, interpolation=cv2.INTER_AREA)
+            image_path_c2 = args.image_dir / "cam2" / f"{frame_idx:05d}.jpg"
+            image_path_c4 = args.image_dir / "cam4" / f"{frame_idx:05d}.jpg"
+            img_c2 = cv2.imread(str(image_path_c2))
+            img_c4 = cv2.imread(str(image_path_c4))
+            rtm_pkl_path_c2 = args.rtm_dir / "cam2" / f"rtm_s{frame_idx:05d}_c2.pkl"
+            rtm_pkl_path_c4 = args.rtm_dir / "cam4" / f"rtm_s{frame_idx:05d}_c4.pkl"
 
-        out_path = args.output_dir / f"vis_dual_{frame_idx:05d}.jpg"
-        cv2.imwrite(str(out_path), vis_dual, [cv2.IMWRITE_JPEG_QUALITY, 92])
-        print(f"[{idx + 1}/{total}] -> {out_path}")
+            if img_c2 is None or not rtm_pkl_path_c2.exists():
+                invalid_cam2.append(frame_idx)
+            if img_c4 is None or not rtm_pkl_path_c4.exists():
+                invalid_cam4.append(frame_idx)
 
-        if args.save_video:
-            if video_writer is None:
-                h, w = vis_dual.shape[:2]
-                video_writer = cv2.VideoWriter(
-                    str(args.output_dir / "vis_dual.mp4"),
-                    cv2.VideoWriter_fourcc(*"mp4v"),
-                    args.fps,
-                    (w, h),
-                )
-            video_writer.write(vis_dual)
+            if img_c2 is None:
+                print(f"[warn] Failed to read image: {image_path_c2}")
+                continue
+            if img_c4 is None:
+                print(f"[warn] Failed to read image: {image_path_c4}")
+                continue
+
+            kp133_c2, kp_fmt_c2 = load_rtm_keypoints(rtm_pkl_path_c2)
+            kp133_c4, kp_fmt_c4 = load_rtm_keypoints(rtm_pkl_path_c4)
+
+            vis_c2, _, _ = visualize_frame(
+                img=img_c2,
+                smplx_param=params_cam2[idx],
+                kp133=kp133_c2,
+                kp_fmt=kp_fmt_c2,
+                fitter=fitter,
+                image_width=args.image_width,
+                image_height=args.image_height,
+                project_fn=project_cam2,
+                draw_mesh=args.mesh,
+                thresh=args.conf_thresh,
+                mesh_alpha=args.mesh_alpha,
+            )
+            vis_c4, _, _ = visualize_frame(
+                img=img_c4,
+                smplx_param=params_cam4[idx],
+                kp133=kp133_c4,
+                kp_fmt=kp_fmt_c4,
+                fitter=fitter,
+                image_width=args.image_width,
+                image_height=args.image_height,
+                project_fn=project_cam4,
+                draw_mesh=args.mesh,
+                thresh=args.conf_thresh,
+                mesh_alpha=args.mesh_alpha,
+            )
+
+            vis_dual = np.concatenate([vis_c2, vis_c4], axis=0)
+            if args.scale != 1.0:
+                vis_dual = cv2.resize(vis_dual, None, fx=args.scale, fy=args.scale, interpolation=cv2.INTER_AREA)
+
+            out_path = args.output_dir / f"vis_dual_{frame_idx:05d}.jpg"
+            cv2.imwrite(str(out_path), vis_dual, [cv2.IMWRITE_JPEG_QUALITY, 92])
+            print(f"[{segment} {idx + 1}/{total}] -> {out_path}")
+
+            if args.save_video:
+                if video_writer is None:
+                    h, w = vis_dual.shape[:2]
+                    video_writer = cv2.VideoWriter(
+                        str(args.output_dir / "vis_dual.mp4"),
+                        cv2.VideoWriter_fourcc(*"mp4v"),
+                        args.fps,
+                        (w, h),
+                    )
+                video_writer.write(vis_dual)
 
     if video_writer is not None:
         video_writer.release()
+
+    invalid_json = {
+        "cam2": {"equirect": sorted(set(invalid_cam2))},
+        "cam4": {"equirect": sorted(set(invalid_cam4))},
+    }
+    with (args.output_dir / "invalid.json").open("w", encoding="utf-8") as f:
+        json.dump(invalid_json, f, ensure_ascii=False, indent=2)
     return 0
 
 
@@ -318,8 +350,8 @@ r'''
 python src\script\test_function\debug030_vis_dual_erp.py `
   --result_dir data_process\Output\20260311_riding\fitting\dual_cam `
   --segment 513_518 `
-  --rtm_dir data_process\Output\20260311_riding\rtm_cache\equirect `
-  --image_dir data_process\Output\20260311_riding\image\equirect `
+  --rtm_dir data_process\Output\20260311_riding\rtm_cache\equirect_rotate `
+  --image_dir data_process\Output\20260311_riding\image\equirect_rotate `
   --output_dir data_process\Output\20260311_riding\vis\dual_erp `
   --mesh  --scale 0.5
 '''
