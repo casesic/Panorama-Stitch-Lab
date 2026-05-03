@@ -10,6 +10,7 @@ from lib_pano.flow.roi_process import (
     compute_landed_source_valid_mask,
     compute_photometric_mask,
     build_flow_seed_mask,
+    build_flow_weight_map,
 )
 from lib_pano.flow.warp_strategy import apply_warp, WarpStrategy, MeshConfig, DistanceConfig
 from lib_pano.flow.seam_repair import repair_seam
@@ -33,6 +34,9 @@ def stitch_with_flow(
     seam_band_radius: int = 15,
     inpaint_radius: int = 3,
     photometric_threshold: int = 30,
+    photo_sigma: float = 60.0,
+    landed_invalid_multiplier: float = 0.10,
+    raft_invalid_multiplier: float = 0.35,
     debug_dir: Optional[str] = None,
 ) -> Tuple[np.ndarray, np.ndarray]:
     writer = DebugWriter(debug_dir=debug_dir, enabled=debug_dir is not None)
@@ -52,6 +56,7 @@ def stitch_with_flow(
 
     source_valid_roi = crop_mask_by_bbox(source_valid_mask, roi_bbox)
     target_valid_roi = crop_mask_by_bbox(target_valid_mask, roi_bbox)
+    support_roi_roi = crop_mask_by_bbox(support_roi_mask, roi_bbox)
     writer.write_mask('source_valid_roi.png', source_valid_roi)
     writer.write_mask('target_valid_roi.png', target_valid_roi)
 
@@ -60,7 +65,7 @@ def stitch_with_flow(
     writer.write_alignment_debug(crop_source, crop_target, flow_roi)
 
     source_valid_at_landed = compute_landed_source_valid_mask(flow_roi, source_valid_roi)
-    photometric_mask, warped_source_by_raft = compute_photometric_mask(
+    photometric_mask, warped_source_by_raft, photometric_error = compute_photometric_mask(
         crop_source,
         crop_target,
         flow_roi,
@@ -72,12 +77,24 @@ def stitch_with_flow(
         raft_valid_mask=raft_valid_mask,
         photometric_mask=photometric_mask,
     )
+    flow_weight_map = build_flow_weight_map(
+        target_valid_roi=target_valid_roi,
+        source_valid_at_landed=source_valid_at_landed,
+        raft_valid_mask=raft_valid_mask,
+        photometric_error=photometric_error,
+        photometric_mask=photometric_mask,
+        support_roi_roi=support_roi_roi,
+        photo_sigma=photo_sigma,
+        landed_invalid_multiplier=landed_invalid_multiplier,
+        raft_invalid_multiplier=raft_invalid_multiplier,
+    )
 
     writer.write_mask('source_valid_at_landed.png', source_valid_at_landed)
     if raft_valid_mask is not None:
         writer.write_mask('raft_valid_mask.png', raft_valid_mask)
     writer.write_mask('photometric_mask.png', photometric_mask)
     writer.write_mask('final_flow_seed_mask.png', flow_seed_mask)
+    writer.write_mask('flow_weight_map.png', flow_weight_map)
     writer._save('warped_source_by_raft.png', warped_source_by_raft)
 
     warp_result = apply_warp(
@@ -85,12 +102,13 @@ def stitch_with_flow(
         img_target=img_target,
         flow_roi=flow_roi,
         roi_bbox=roi_bbox,
-        valid_mask=flow_seed_mask,
+        valid_mask=target_valid_roi,
         strategy=strategy,
         source_valid_mask=source_valid_mask,
         target_valid_mask=target_valid_mask,
         mesh_config=mesh_config,
         distance_config=distance_config,
+        weight_map=flow_weight_map,
     )
     writer.write_warp_result(warp_result)
 

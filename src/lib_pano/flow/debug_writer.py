@@ -41,6 +41,12 @@ class DebugWriter:
         mask_to_save = mask
         if mask_to_save.dtype == np.bool_:
             mask_to_save = mask_to_save.astype(np.uint8) * 255
+        elif np.issubdtype(mask_to_save.dtype, np.floating):
+            finite_mask = np.nan_to_num(mask_to_save, nan=0.0, posinf=1.0, neginf=0.0)
+            if finite_mask.max() <= 1.0:
+                mask_to_save = np.clip(finite_mask * 255.0, 0.0, 255.0).astype(np.uint8)
+            else:
+                mask_to_save = np.clip(finite_mask, 0.0, 255.0).astype(np.uint8)
         else:
             mask_to_save = mask_to_save.astype(np.uint8)
             if mask_to_save.max() <= 1:

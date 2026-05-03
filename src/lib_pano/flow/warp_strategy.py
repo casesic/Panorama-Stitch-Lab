@@ -15,6 +15,9 @@ class MeshConfig:
     min_valid_ratio: float = 0.3
     invalid_cell_strategy: str = 'interpolate'
     feather_width: float = 20.0
+    min_weight: float = 0.05
+    min_weight_ratio: float = 0.02
+    use_weighted_sampling: bool = True
 
 
 @dataclass
@@ -54,6 +57,9 @@ def _build_mesh_warper(img_shape: tuple, mesh_config: MeshConfig) -> MeshWarpFie
         min_valid_ratio=mesh_config.min_valid_ratio,
         invalid_cell_strategy=mesh_config.invalid_cell_strategy,
         feather_width=mesh_config.feather_width,
+        use_weighted_sampling=mesh_config.use_weighted_sampling,
+        min_weight=mesh_config.min_weight,
+        min_weight_ratio=mesh_config.min_weight_ratio,
     )
 
 
@@ -78,10 +84,14 @@ def _warp_unidirectional(
     flow_roi: np.ndarray,
     roi_bbox: tuple,
     valid_mask: Optional[np.ndarray],
+    weight_map: Optional[np.ndarray],
     source_valid_mask: Optional[np.ndarray],
     target_valid_mask: Optional[np.ndarray],
 ) -> WarpResult:
-    map_x, map_y, full_flow = warper.compute(flow_roi, roi_bbox, valid_mask)
+    if isinstance(warper, MeshWarpField):
+        map_x, map_y, full_flow = warper.compute(flow_roi, roi_bbox, valid_mask, weight_map=weight_map)
+    else:
+        map_x, map_y, full_flow = warper.compute(flow_roi, roi_bbox, valid_mask)
 
     warped_source = cv2.remap(
         img_source,
@@ -121,10 +131,14 @@ def _warp_bidirectional(
     flow_roi: np.ndarray,
     roi_bbox: tuple,
     valid_mask: Optional[np.ndarray],
+    weight_map: Optional[np.ndarray],
     source_valid_mask: Optional[np.ndarray],
     target_valid_mask: Optional[np.ndarray],
 ) -> WarpResult:
-    _, _, full_flow = warper.compute(flow_roi, roi_bbox, valid_mask)
+    if isinstance(warper, MeshWarpField):
+        _, _, full_flow = warper.compute(flow_roi, roi_bbox, valid_mask, weight_map=weight_map)
+    else:
+        _, _, full_flow = warper.compute(flow_roi, roi_bbox, valid_mask)
     flow_mid = full_flow * 0.5
 
     h, w = img_source.shape[:2]
@@ -193,6 +207,7 @@ def apply_warp(
     target_valid_mask: Optional[np.ndarray] = None,
     mesh_config: MeshConfig = MeshConfig(),
     distance_config: DistanceConfig = DistanceConfig(),
+    weight_map: Optional[np.ndarray] = None,
 ) -> WarpResult:
     if strategy == WarpStrategy.MESH_UNIDIRECTIONAL:
         warper = _build_mesh_warper(img_source.shape, mesh_config)
@@ -203,6 +218,7 @@ def apply_warp(
             flow_roi=flow_roi,
             roi_bbox=roi_bbox,
             valid_mask=valid_mask,
+            weight_map=weight_map,
             source_valid_mask=source_valid_mask,
             target_valid_mask=target_valid_mask,
         )
@@ -216,6 +232,7 @@ def apply_warp(
             flow_roi=flow_roi,
             roi_bbox=roi_bbox,
             valid_mask=valid_mask,
+            weight_map=weight_map,
             source_valid_mask=source_valid_mask,
             target_valid_mask=target_valid_mask,
         )
@@ -229,6 +246,7 @@ def apply_warp(
             flow_roi=flow_roi,
             roi_bbox=roi_bbox,
             valid_mask=valid_mask,
+            weight_map=None,
             source_valid_mask=source_valid_mask,
             target_valid_mask=target_valid_mask,
         )
@@ -242,6 +260,7 @@ def apply_warp(
             flow_roi=flow_roi,
             roi_bbox=roi_bbox,
             valid_mask=valid_mask,
+            weight_map=None,
             source_valid_mask=source_valid_mask,
             target_valid_mask=target_valid_mask,
         )

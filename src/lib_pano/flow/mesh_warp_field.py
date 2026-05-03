@@ -14,6 +14,9 @@ class MeshWarpField:
         min_valid_ratio: float = 0.3,
         invalid_cell_strategy: str = 'interpolate',
         feather_width: float = 20.0,
+        use_weighted_sampling: bool = True,
+        min_weight: float = 0.05,
+        min_weight_ratio: float = 0.02,
     ) -> None:
         self.H = full_h
         self.W = full_w
@@ -23,6 +26,9 @@ class MeshWarpField:
         self.min_valid_ratio = min_valid_ratio
         self.invalid_cell_strategy = invalid_cell_strategy
         self.feather_width = feather_width
+        self.use_weighted_sampling = use_weighted_sampling
+        self.min_weight = min_weight
+        self.min_weight_ratio = min_weight_ratio
 
         self.grid_h = int(np.ceil(full_h / grid_size))
         self.grid_w = int(np.ceil(full_w / grid_size))
@@ -33,6 +39,7 @@ class MeshWarpField:
         flow_roi: np.ndarray,
         roi_bbox: Tuple[int, int, int, int],
         valid_mask: Optional[np.ndarray],
+        weight_map: Optional[np.ndarray] = None,
     ) -> Tuple[np.ndarray, np.ndarray]:
         x_min, y_min, x_max, y_max = roi_bbox
         grid_flow = np.zeros((self.grid_h, self.grid_w, 2), dtype=np.float32)
@@ -64,7 +71,31 @@ class MeshWarpField:
                     intersect_x0 - x_min: intersect_x1 - x_min,
                 ]
 
-                if valid_mask is not None:
+                if self.use_weighted_sampling and weight_map is not None:
+                    weight_slice = weight_map[
+                        intersect_y0 - y_min: intersect_y1 - y_min,
+                        intersect_x0 - x_min: intersect_x1 - x_min,
+                    ].astype(np.float32)
+                    weight_slice = np.clip(np.nan_to_num(weight_slice, nan=0.0), 0.0, 1.0)
+
+                    if valid_mask is not None:
+                        mask_slice = valid_mask[
+                            intersect_y0 - y_min: intersect_y1 - y_min,
+                            intersect_x0 - x_min: intersect_x1 - x_min,
+                        ]
+                        weight_slice = np.where(mask_slice > 0, weight_slice, 0.0)
+
+                    strong_weight = weight_slice > self.min_weight
+                    cell_area = weight_slice.size
+                    weight_sum = float(np.sum(weight_slice[strong_weight]))
+                    weight_ratio = weight_sum / float(cell_area) if cell_area > 0 else 0.0
+
+                    if np.any(strong_weight) and weight_ratio >= self.min_weight_ratio:
+                        weights = weight_slice[strong_weight]
+                        weighted_flow = roi_slice[strong_weight] * weights[:, None]
+                        grid_flow[gy, gx] = np.sum(weighted_flow, axis=0) / max(weight_sum, 1e-6)
+                        grid_mask[gy, gx] = True
+                elif valid_mask is not None:
                     mask_slice = valid_mask[
                         intersect_y0 - y_min: intersect_y1 - y_min,
                         intersect_x0 - x_min: intersect_x1 - x_min,
@@ -146,8 +177,9 @@ class MeshWarpField:
         flow_roi: np.ndarray,
         roi_bbox: Tuple[int, int, int, int],
         valid_mask: Optional[np.ndarray] = None,
+        weight_map: Optional[np.ndarray] = None,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        grid_flow, grid_mask = self._sample_grid_flow(flow_roi, roi_bbox, valid_mask)
+        grid_flow, grid_mask = self._sample_grid_flow(flow_roi, roi_bbox, valid_mask, weight_map)
         base_flow = self._build_base_flow(grid_flow, grid_mask)
         weight_mask = self._build_weight_mask(grid_mask)
         final_grid_flow = base_flow * weight_mask

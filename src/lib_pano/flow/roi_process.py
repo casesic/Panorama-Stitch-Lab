@@ -85,7 +85,7 @@ def compute_photometric_mask(
     crop_target: np.ndarray,
     flow_roi: np.ndarray,
     threshold: int = 30,
-) -> Tuple[np.ndarray, np.ndarray]:
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     h, w = flow_roi.shape[:2]
     grid_y, grid_x = np.mgrid[0:h, 0:w].astype(np.float32)
     map_x = grid_x + flow_roi[..., 0].astype(np.float32)
@@ -104,7 +104,7 @@ def compute_photometric_mask(
         axis=2,
     )
     photometric_mask = (err < threshold).astype(np.uint8) * 255
-    return photometric_mask, warped_source
+    return photometric_mask, warped_source, err
 
 
 def build_flow_seed_mask(
@@ -122,6 +122,38 @@ def build_flow_seed_mask(
         flow_seed_mask &= photometric_mask > 0
 
     return flow_seed_mask.astype(np.uint8) * 255
+
+
+def build_flow_weight_map(
+    target_valid_roi: np.ndarray,
+    source_valid_at_landed: np.ndarray,
+    raft_valid_mask: Optional[np.ndarray] = None,
+    photometric_error: Optional[np.ndarray] = None,
+    photometric_mask: Optional[np.ndarray] = None,
+    support_roi_roi: Optional[np.ndarray] = None,
+    photo_sigma: float = 60.0,
+    landed_invalid_multiplier: float = 0.10,
+    raft_invalid_multiplier: float = 0.35,
+    min_weight: float = 0.0,
+) -> np.ndarray:
+    weight = (target_valid_roi > 0).astype(np.float32)
+
+    if support_roi_roi is not None:
+        weight *= (support_roi_roi > 0).astype(np.float32)
+
+    weight *= np.where(source_valid_at_landed > 0, 1.0, landed_invalid_multiplier).astype(np.float32)
+
+    if raft_valid_mask is not None:
+        weight *= np.where(raft_valid_mask > 0, 1.0, raft_invalid_multiplier).astype(np.float32)
+
+    if photometric_error is not None:
+        sigma = max(float(photo_sigma), 1e-6)
+        photo_weight = np.exp(-photometric_error.astype(np.float32) / sigma)
+        weight *= photo_weight.astype(np.float32)
+    elif photometric_mask is not None:
+        weight *= np.where(photometric_mask > 0, 1.0, 0.2).astype(np.float32)
+
+    return np.clip(weight, min_weight, 1.0).astype(np.float32)
 
 
 def blend_priority(

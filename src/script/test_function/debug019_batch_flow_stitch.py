@@ -13,7 +13,7 @@ from lib_pano.stitch.flow_stitcher import stitch_with_flow
 
 INPUT_DIR = r"data_process/Output/20260311_riding_fragment/stitch_raw"
 OUTPUT_DIR = r"data_process/Output/20260311_riding_fragment/raft_stitch"
-INDEX_START = 514
+INDEX_START = 513
 NUM_FRAMES = 1
 WARP_DIRECTION = "cam4_to_cam2"
 
@@ -30,7 +30,11 @@ MESH_CONFIG = MeshConfig(
     grid_size=32,
     decay_radius=30.0,
     max_propagation=35.0,
+    min_valid_ratio=0.03,
     feather_width=20.0,
+    use_weighted_sampling=True,
+    min_weight=0.02,
+    min_weight_ratio=0.005,
 )
 # WARP_STRATEGY = WarpStrategy.DISTANCE_UNIDIRECTIONAL
 # DISTANCE_CONFIG = DistanceConfig(
@@ -96,6 +100,9 @@ def process_frame(frame_idx, raft_flow):
         blend_erode_kernel_size=BLEND_ERODE_KERNEL_SIZE,
         use_seam_repair=USE_SEAM_REPAIR,
         photometric_threshold=PHOTO_THRESHOLD,
+        photo_sigma=60.0,
+        landed_invalid_multiplier=0.10,
+        raft_invalid_multiplier=0.35,
         debug_dir=str(output_dir),
     )
 
