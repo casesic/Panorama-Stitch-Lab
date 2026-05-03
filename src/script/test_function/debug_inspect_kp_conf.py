@@ -247,7 +247,7 @@ if __name__ == "__main__":
 
 r'''
 python src\script\test_function\debug_inspect_kp_conf.py `
-  --rtm_dir data_process\Output\20260311_riding\rtm_cache\equirect `
+  --rtm_dir data_process\Output\20260311_riding\rtm_cache\equirect_rotate_rtmw `
   --fitting_dir data_process\Output\20260311_riding\fitting\dual_cam `
   --hmr_dir data_process\Output\20260311_riding\hmr_cache `
   --cam cam2 `

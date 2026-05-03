@@ -43,6 +43,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output_dir", type=str, required=True, help="Output root directory.")
     parser.add_argument("--reviewed", type=str, required=True, help="Path to reviewed.json.")
     parser.add_argument(
+        "--blend_direction",
+        type=str,
+        choices=("top", "bottom"),
+        default="top",
+        help="补背部方向：top=填充目标人物顶部以上区域，bottom=填充底部以下区域",
+    )
+    parser.add_argument(
         "--start",
         type=int,
         default=None,
@@ -53,6 +60,12 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=None,
         help="结束帧索引（包含），不指定则处理到末尾",
+    )
+    parser.add_argument(
+        "--directions",
+        choices=("both", "c2_to_c4", "c4_to_c2"),
+        default="both",
+        help="Composite direction(s) to process.",
     )
     return parser.parse_args()
 
@@ -106,19 +119,28 @@ def place_rgba_on_black(
     return result
 
 
-def blend_two_humans(warp: np.ndarray, target_origin: np.ndarray) -> np.ndarray:
+def blend_two_humans(warp: np.ndarray, target_origin: np.ndarray, direction: str = "top") -> np.ndarray:
     if warp.shape != target_origin.shape:
         raise ValueError("warp and target_origin must have the same shape")
+    if direction not in ("top", "bottom"):
+        raise ValueError(f"Unsupported blend direction: {direction}")
 
     target_valid = np.any(target_origin > 0, axis=2)
-    top_boundary_per_col = np.where(
-        target_valid.any(axis=0),
-        target_valid.argmax(axis=0),
-        target_valid.shape[0],
-    ).astype(np.int32)
-
     rows = np.arange(target_valid.shape[0], dtype=np.int32)[:, None]
-    boundary_mask = rows < top_boundary_per_col[None, :]
+    if direction == "top":
+        top_boundary_per_col = np.where(
+            target_valid.any(axis=0),
+            target_valid.argmax(axis=0),
+            target_valid.shape[0],
+        ).astype(np.int32)
+        boundary_mask = rows < top_boundary_per_col[None, :]
+    else:
+        bottom_boundary_per_col = np.where(
+            target_valid.any(axis=0),
+            target_valid.shape[0] - 1 - target_valid[::-1].argmax(axis=0),
+            -1,
+        ).astype(np.int32)
+        boundary_mask = rows > bottom_boundary_per_col[None, :]
 
     warp_valid = np.any(warp > 0, axis=2)
     completion_mask = warp_valid & (~target_valid) & boundary_mask
@@ -135,10 +157,11 @@ def composite_direction(
     flow_name: str,
     seg_dir: Path,
     flow_dir: Path,
-    image_dir: Path,
     source_bboxes: dict[str, list[int]],
     target_bboxes: dict[str, list[int]],
     human_bbox: list[int],
+    erp_h: int,
+    erp_w: int,
  ) -> np.ndarray | None:
     bbox_key = str(frame_idx)
     source_bbox = source_bboxes.get(bbox_key)
@@ -152,7 +175,6 @@ def composite_direction(
     confidence_name = flow_name.replace(".npy", "").replace("semantic_flow", "semantic_flow_confidence") + ".npy"
     confidence_path = frame_flow_dir / confidence_name
     rgba_path = seg_dir / source_camera / "rgba" / f"{frame_idx:05d}.png"
-    target_image_path = image_dir / target_camera / f"{frame_idx:05d}.jpg"
 
     if not flow_path.exists() or not confidence_path.exists():
         print(f"Warning: missing flow files, skipping frame {frame_idx:05d} for {source_camera}_to_{target_camera}")
@@ -161,7 +183,6 @@ def composite_direction(
     flow = np.load(flow_path)
     confidence = np.load(confidence_path)
     source_rgba = cv2.imread(str(rgba_path), cv2.IMREAD_UNCHANGED)
-    target_bgr = cv2.imread(str(target_image_path), cv2.IMREAD_COLOR)
 
     if source_rgba is None:
         print(f"Warning: source rgba not found, skipping {source_camera} frame {frame_idx:05d}")
@@ -169,26 +190,33 @@ def composite_direction(
     if source_rgba.ndim != 3 or source_rgba.shape[2] != 4:
         print(f"Warning: source rgba is not BGRA, skipping {source_camera} frame {frame_idx:05d}")
         return None
-    if target_bgr is None:
-        print(f"Warning: target ERP image not found, skipping {target_camera} frame {frame_idx:05d}")
-        return None
-
     flow_h, flow_w = flow.shape[:2]
-    rgba_h, rgba_w = source_rgba.shape[:2]
-    work_h = min(flow_h, rgba_h, confidence.shape[0])
-    work_w = min(flow_w, rgba_w, confidence.shape[1])
-    if work_h <= 0 or work_w <= 0:
-        print(f"Warning: empty work region, skipping frame {frame_idx:05d} for {source_camera}_to_{target_camera}")
+    conf_h, conf_w = confidence.shape[:2]
+    if flow_h <= 0 or flow_w <= 0:
+        print(f"Warning: empty flow, skipping frame {frame_idx:05d} for {source_camera}_to_{target_camera}")
         return None
 
-    flow = flow[:work_h, :work_w]
-    confidence = confidence[:work_h, :work_w]
-    source_rgba = source_rgba[:work_h, :work_w]
+    if (conf_h, conf_w) != (flow_h, flow_w):
+        print(
+            f"Warning: confidence shape mismatch with flow, skipping frame {frame_idx:05d}: "
+            f"flow={flow.shape}, confidence={confidence.shape}"
+        )
+        return None
 
-    source_x1, source_y1, _, _ = [int(v) for v in source_bbox]
+    source_x1, source_y1, source_x2, source_y2 = [int(v) for v in source_bbox]
+    bbox_w = source_x2 - source_x1
+    bbox_h = source_y2 - source_y1
+    rgba_h, rgba_w = source_rgba.shape[:2]
+
+    if (rgba_w, rgba_h) != (bbox_w, bbox_h):
+        print(
+            f"Warning: source rgba size mismatch with bbox for {source_camera} frame {frame_idx:05d}: "
+            f"rgba=({rgba_w}, {rgba_h}), bbox_size=({bbox_w}, {bbox_h}), bbox={source_bbox}"
+        )
+        return None
+
     hx1, hy1, _, _ = [int(v) for v in human_bbox]
     _target_x1, _target_y1, _, _ = [int(v) for v in target_bbox]
-    erp_h, erp_w = target_bgr.shape[:2]
 
     roi_y1, roi_x1 = hy1, hx1
     roi_h, roi_w = flow.shape[:2]
@@ -212,7 +240,7 @@ def composite_direction(
     full_mask[clip_y1:clip_y2, clip_x1:clip_x2] = confidence[flow_y1:flow_y2, flow_x1:flow_x2] > 0
     full_flow[clip_y1:clip_y2, clip_x1:clip_x2] = flow[flow_y1:flow_y2, flow_x1:flow_x2].astype(np.float32)
 
-    decay_radius = 200.0
+    decay_radius = 400.0
     pad = int(decay_radius) + 1
     ys, xs = np.where(full_mask)
     if len(ys) == 0:
@@ -283,12 +311,13 @@ def process_frame(
     frame_idx: int,
     seg_dir: Path,
     flow_dir: Path,
-    image_dir: Path,
     cam2_bboxes: dict[str, list[int]],
     cam4_bboxes: dict[str, list[int]],
     output_dir: Path,
     erp_h: int,
     erp_w: int,
+    blend_direction: str,
+    directions: str,
 ) -> None:
     bbox_key = str(frame_idx)
     cam2_bbox = cam2_bboxes.get(bbox_key)
@@ -318,75 +347,79 @@ def process_frame(
         if cam4_origin is None:
             print(f"Warning: failed to place cam4 rgba for frame {frame_idx:05d}")
 
-    warped_cam2 = composite_direction(
-        frame_idx=frame_idx,
-        source_camera="cam2",
-        target_camera="cam4",
-        flow_name="semantic_flow_c2_to_c4.npy",
-        seg_dir=seg_dir,
-        flow_dir=flow_dir,
-        image_dir=image_dir,
-        source_bboxes=cam2_bboxes,
-        target_bboxes=cam4_bboxes,
-        human_bbox=human_bbox,
-    )
-    if warped_cam2 is None:
-        print(f"Warning: failed to compose cam2_to_cam4 for frame {frame_idx:05d}")
-
-    warped_cam4 = composite_direction(
-        frame_idx=frame_idx,
-        source_camera="cam4",
-        target_camera="cam2",
-        flow_name="semantic_flow_c4_to_c2.npy",
-        seg_dir=seg_dir,
-        flow_dir=flow_dir,
-        image_dir=image_dir,
-        source_bboxes=cam4_bboxes,
-        target_bboxes=cam2_bboxes,
-        human_bbox=human_bbox,
-    )
-    if warped_cam4 is None:
-        print(f"Warning: failed to compose cam4_to_cam2 for frame {frame_idx:05d}")
-
-    if warped_cam2 is not None:
-        warp_dir = output_dir / "cam2_to_cam4" / "warp"
-        warp_dir.mkdir(parents=True, exist_ok=True)
-        cv2.imwrite(str(warp_dir / f"{frame_idx:05d}.jpg"), warped_cam2)
-    if cam2_origin is not None:
-        cam2_origin_dir = output_dir / "cam2_to_cam4" / "cam2_origin"
-        cam2_origin_dir.mkdir(parents=True, exist_ok=True)
-        cv2.imwrite(str(cam2_origin_dir / f"{frame_idx:05d}.jpg"), cam2_origin)
-    if cam4_origin is not None:
-        cam4_origin_dir = output_dir / "cam2_to_cam4" / "cam4_origin"
-        cam4_origin_dir.mkdir(parents=True, exist_ok=True)
-        cv2.imwrite(str(cam4_origin_dir / f"{frame_idx:05d}.jpg"), cam4_origin)
-    if warped_cam2 is not None and cam4_origin is not None:
-        blend_dir = output_dir / "cam2_to_cam4" / "blend"
-        blend_dir.mkdir(parents=True, exist_ok=True)
-        cv2.imwrite(
-            str(blend_dir / f"{frame_idx:05d}.jpg"),
-            blend_two_humans(warp=warped_cam2, target_origin=cam4_origin),
+    if directions in ("both", "c2_to_c4"):
+        warped_cam2 = composite_direction(
+            frame_idx=frame_idx,
+            source_camera="cam2",
+            target_camera="cam4",
+            flow_name="semantic_flow_c2_to_c4.npy",
+            seg_dir=seg_dir,
+            flow_dir=flow_dir,
+            source_bboxes=cam2_bboxes,
+            target_bboxes=cam4_bboxes,
+            human_bbox=human_bbox,
+            erp_h=erp_h,
+            erp_w=erp_w,
         )
+        if warped_cam2 is None:
+            print(f"Warning: failed to compose cam2_to_cam4 for frame {frame_idx:05d}")
 
-    if warped_cam4 is not None:
-        warp_dir = output_dir / "cam4_to_cam2" / "warp"
-        warp_dir.mkdir(parents=True, exist_ok=True)
-        cv2.imwrite(str(warp_dir / f"{frame_idx:05d}.jpg"), warped_cam4)
-    if cam4_origin is not None:
-        cam4_origin_dir = output_dir / "cam4_to_cam2" / "cam4_origin"
-        cam4_origin_dir.mkdir(parents=True, exist_ok=True)
-        cv2.imwrite(str(cam4_origin_dir / f"{frame_idx:05d}.jpg"), cam4_origin)
-    if cam2_origin is not None:
-        cam2_origin_dir = output_dir / "cam4_to_cam2" / "cam2_origin"
-        cam2_origin_dir.mkdir(parents=True, exist_ok=True)
-        cv2.imwrite(str(cam2_origin_dir / f"{frame_idx:05d}.jpg"), cam2_origin)
-    if warped_cam4 is not None and cam2_origin is not None:
-        blend_dir = output_dir / "cam4_to_cam2" / "blend"
-        blend_dir.mkdir(parents=True, exist_ok=True)
-        cv2.imwrite(
-            str(blend_dir / f"{frame_idx:05d}.jpg"),
-            blend_two_humans(warp=warped_cam4, target_origin=cam2_origin),
+        if warped_cam2 is not None:
+            warp_dir = output_dir / "cam2_to_cam4" / "warp"
+            warp_dir.mkdir(parents=True, exist_ok=True)
+            cv2.imwrite(str(warp_dir / f"{frame_idx:05d}.jpg"), warped_cam2)
+        if cam2_origin is not None:
+            cam2_origin_dir = output_dir / "cam2_to_cam4" / "cam2_origin"
+            cam2_origin_dir.mkdir(parents=True, exist_ok=True)
+            cv2.imwrite(str(cam2_origin_dir / f"{frame_idx:05d}.jpg"), cam2_origin)
+        if cam4_origin is not None:
+            cam4_origin_dir = output_dir / "cam2_to_cam4" / "cam4_origin"
+            cam4_origin_dir.mkdir(parents=True, exist_ok=True)
+            cv2.imwrite(str(cam4_origin_dir / f"{frame_idx:05d}.jpg"), cam4_origin)
+        if warped_cam2 is not None and cam4_origin is not None:
+            blend_dir = output_dir / "cam2_to_cam4" / "blend"
+            blend_dir.mkdir(parents=True, exist_ok=True)
+            cv2.imwrite(
+                str(blend_dir / f"{frame_idx:05d}.jpg"),
+                blend_two_humans(warp=warped_cam2, target_origin=cam4_origin, direction=blend_direction),
+            )
+
+    if directions in ("both", "c4_to_c2"):
+        warped_cam4 = composite_direction(
+            frame_idx=frame_idx,
+            source_camera="cam4",
+            target_camera="cam2",
+            flow_name="semantic_flow_c4_to_c2.npy",
+            seg_dir=seg_dir,
+            flow_dir=flow_dir,
+            source_bboxes=cam4_bboxes,
+            target_bboxes=cam2_bboxes,
+            human_bbox=human_bbox,
+            erp_h=erp_h,
+            erp_w=erp_w,
         )
+        if warped_cam4 is None:
+            print(f"Warning: failed to compose cam4_to_cam2 for frame {frame_idx:05d}")
+
+        if warped_cam4 is not None:
+            warp_dir = output_dir / "cam4_to_cam2" / "warp"
+            warp_dir.mkdir(parents=True, exist_ok=True)
+            cv2.imwrite(str(warp_dir / f"{frame_idx:05d}.jpg"), warped_cam4)
+        if cam4_origin is not None:
+            cam4_origin_dir = output_dir / "cam4_to_cam2" / "cam4_origin"
+            cam4_origin_dir.mkdir(parents=True, exist_ok=True)
+            cv2.imwrite(str(cam4_origin_dir / f"{frame_idx:05d}.jpg"), cam4_origin)
+        if cam2_origin is not None:
+            cam2_origin_dir = output_dir / "cam4_to_cam2" / "cam2_origin"
+            cam2_origin_dir.mkdir(parents=True, exist_ok=True)
+            cv2.imwrite(str(cam2_origin_dir / f"{frame_idx:05d}.jpg"), cam2_origin)
+        if warped_cam4 is not None and cam2_origin is not None:
+            blend_dir = output_dir / "cam4_to_cam2" / "blend"
+            blend_dir.mkdir(parents=True, exist_ok=True)
+            cv2.imwrite(
+                str(blend_dir / f"{frame_idx:05d}.jpg"),
+                blend_two_humans(warp=warped_cam4, target_origin=cam2_origin, direction=blend_direction),
+            )
 
 
 def infer_erp_size(frame_indices: list[int], image_dir: Path) -> tuple[int, int]:
@@ -427,12 +460,13 @@ def main() -> None:
                 frame_idx=frame_idx,
                 seg_dir=seg_dir,
                 flow_dir=flow_dir,
-                image_dir=image_dir,
                 cam2_bboxes=cam2_bboxes,
                 cam4_bboxes=cam4_bboxes,
                 output_dir=output_dir,
                 erp_h=erp_h,
                 erp_w=erp_w,
+                blend_direction=args.blend_direction,
+                directions=args.directions,
             )
 
 
@@ -441,11 +475,27 @@ if __name__ == "__main__":
 
 
 r'''
-python src\script\test_function\debug037_composite_human.py `
-  --seg_dir data_process\Output\20260311_riding\seg\equirect_rotate_crop `
-  --flow_dir data_process\Output\20260311_riding\semantic_flow `
-  --image_dir data_process\Output\20260311_riding\image\equirect_rotate `
-  --bbox_dir data_process\Output\20260311_riding\image\equirect_rotate_crop `
-  --output_dir data_process\Output\20260311_riding\composite_human `
-  --reviewed data_process\Input\20260311_riding\review.json `
+python src\script\test_function\debug037_composite_human.py \
+  --seg_dir data_process\Output\20260311_riding\seg\equirect_crop_rotate_sam3 \
+  --flow_dir data_process\Output\20260311_riding\semantic_flow\no_sil \
+  --image_dir data_process\Output\20260311_riding\image\equirect_rotate \
+  --bbox_dir data_process\Output\20260311_riding\image\equirect_crop_rotate \
+  --output_dir data_process\Output\20260311_riding\composite_human\no_sil \
+  --reviewed data_process\Input\20260311_riding\review.json \
+  --blend_direction top \
+  --directions c2_to_c4 
 '''
+
+r'''
+python src\script\test_function\debug037_composite_human.py `
+  --seg_dir data_process\Output\20260320_riding_dataset1\seg\equirect_crop_rotate_sam3 `
+  --flow_dir data_process\Output\20260320_riding_dataset1\semantic_flow `
+  --image_dir data_process\Output\20260320_riding_dataset1\image\equirect_rotate `
+  --bbox_dir data_process\Output\20260320_riding_dataset1\image\equirect_crop_rotate `
+  --output_dir data_process\Output\20260320_riding_dataset1\composite_human `
+  --reviewed data_process\Input\20260320_riding\dataset1\review.json `
+  --blend_direction bottom `
+  --start 890 `
+  --end 890
+''' 
+# 0311_riding top, 0320_riding_dataset1 bottom,  0320_riding_dataset1 bottom(不完善，可能要做改变) 

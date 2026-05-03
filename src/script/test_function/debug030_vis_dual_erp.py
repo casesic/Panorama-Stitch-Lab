@@ -90,7 +90,12 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Visualize dual-camera ERP fitting results from debug029 outputs.")
     parser.add_argument("--result_dir", type=Path, required=True, help="debug029 output root containing cam2/ and cam4/")
     parser.add_argument("--segment", type=str, required=False, default=None, help="Segment range in start_end format, e.g. 513_519")
-    parser.add_argument("--rtm_dir", type=Path, required=True, help="RTM pkl root containing cam2/ and cam4/")
+    parser.add_argument(
+        "--rtm_dir",
+        type=Path,
+        default=None,
+        help="Optional RTM pkl root; if omitted, RTM keypoints are not loaded.",
+    )
     parser.add_argument("--image_dir", type=Path, required=True, help="Equirect image root containing cam2/ and cam4/")
     parser.add_argument("--output_dir", type=Path, default=Path("outputs/erp_vis_dual"), help="Output directory")
     parser.add_argument("--mesh", action="store_true", help="Render mesh overlay")
@@ -206,8 +211,11 @@ def visualize_frame(
         filtered_pairs = [(i, j) for i, j in SMPLX_BODY_PAIRS if i in matched_idx and j in matched_idx]
         draw_skel(vis, all_body_2d, filtered_pairs, color=(0, 100, 255), thick=2)
         draw_pts(vis, matched_2d, r=5, color=(0, 140, 255))
+    elif not kp_names:
+        draw_skel(vis, all_body_2d, SMPLX_BODY_PAIRS, color=(0, 100, 255), thick=2)
+        draw_pts(vis, all_body_2d, r=5, color=(0, 140, 255))
 
-    if {"Nose", "L_Eye", "R_Eye", "L_Ear", "R_Ear"} & kp_names:
+    if not kp_names or {"Nose", "L_Eye", "R_Eye", "L_Ear", "R_Ear"} & kp_names:
         draw_pts(
             vis,
             project_points_erp(joints_all[SMPLX_FACE], image_width, image_height, project_fn),
@@ -242,6 +250,8 @@ def main() -> int:
 
     invalid_cam2: list[int] = []
     invalid_cam4: list[int] = []
+    missing_rtm_cam2: list[int] = []
+    missing_rtm_cam4: list[int] = []
     video_writer = None
     for segment in segments:
         start_frame, end_frame = parse_segment_range(segment)
@@ -267,12 +277,10 @@ def main() -> int:
             image_path_c4 = args.image_dir / "cam4" / f"{frame_idx:05d}.jpg"
             img_c2 = cv2.imread(str(image_path_c2))
             img_c4 = cv2.imread(str(image_path_c4))
-            rtm_pkl_path_c2 = args.rtm_dir / "cam2" / f"rtm_s{frame_idx:05d}_c2.pkl"
-            rtm_pkl_path_c4 = args.rtm_dir / "cam4" / f"rtm_s{frame_idx:05d}_c4.pkl"
 
-            if img_c2 is None or not rtm_pkl_path_c2.exists():
+            if img_c2 is None:
                 invalid_cam2.append(frame_idx)
-            if img_c4 is None or not rtm_pkl_path_c4.exists():
+            if img_c4 is None:
                 invalid_cam4.append(frame_idx)
 
             if img_c2 is None:
@@ -282,8 +290,18 @@ def main() -> int:
                 print(f"[warn] Failed to read image: {image_path_c4}")
                 continue
 
-            kp133_c2, kp_fmt_c2 = load_rtm_keypoints(rtm_pkl_path_c2)
-            kp133_c4, kp_fmt_c4 = load_rtm_keypoints(rtm_pkl_path_c4)
+            if args.rtm_dir is None:
+                kp133_c2, kp_fmt_c2 = None, {}
+                kp133_c4, kp_fmt_c4 = None, {}
+            else:
+                rtm_pkl_path_c2 = args.rtm_dir / "cam2" / f"rtm_s{frame_idx:05d}_c2.pkl"
+                rtm_pkl_path_c4 = args.rtm_dir / "cam4" / f"rtm_s{frame_idx:05d}_c4.pkl"
+                if not rtm_pkl_path_c2.exists():
+                    missing_rtm_cam2.append(frame_idx)
+                if not rtm_pkl_path_c4.exists():
+                    missing_rtm_cam4.append(frame_idx)
+                kp133_c2, kp_fmt_c2 = load_rtm_keypoints(rtm_pkl_path_c2)
+                kp133_c4, kp_fmt_c4 = load_rtm_keypoints(rtm_pkl_path_c4)
 
             vis_c2, _, _ = visualize_frame(
                 img=img_c2,
@@ -337,6 +355,10 @@ def main() -> int:
     invalid_json = {
         "cam2": {"equirect": sorted(set(invalid_cam2))},
         "cam4": {"equirect": sorted(set(invalid_cam4))},
+        "missing_rtm": {
+            "cam2": sorted(set(missing_rtm_cam2)),
+            "cam4": sorted(set(missing_rtm_cam4)),
+        },
     }
     with (args.output_dir / "invalid.json").open("w", encoding="utf-8") as f:
         json.dump(invalid_json, f, ensure_ascii=False, indent=2)
@@ -348,10 +370,19 @@ if __name__ == "__main__":
 
 r'''
 python src\script\test_function\debug030_vis_dual_erp.py `
-  --result_dir data_process\Output\20260311_riding\fitting\dual_cam `
+  --result_dir data_process\Output\20260320_riding_dataset1\fitting\dual_cam_sil_886_895 `
+  --segment 886_895 `
+  --image_dir data_process\Output\20260320_riding_dataset1\image\equirect_rotate `
+  --output_dir data_process\Output\20260320_riding_dataset1\vis\dual_erp_sil_886_895_no_rtm `
+  --mesh --scale 0.5
+'''
+
+r'''
+python src\script\test_function\debug030_vis_dual_erp.py `
+  --result_dir data_process\Output\20260311_riding\fitting\dual_cam_sil_513_518 `
   --segment 513_518 `
   --rtm_dir data_process\Output\20260311_riding\rtm_cache\equirect_rotate `
   --image_dir data_process\Output\20260311_riding\image\equirect_rotate `
-  --output_dir data_process\Output\20260311_riding\vis\dual_erp `
+  --output_dir data_process\Output\20260311_riding\vis\dual_erp_sil_513_518 `
   --mesh  --scale 0.5
 '''

@@ -58,7 +58,71 @@ def parse_args() -> argparse.Namespace:
         default="cuda",
         help="Device for RTMLib inference, cuda or cpu",
     )
+    parser.add_argument(
+        "--invalid_json",
+        type=str,
+        default=None,
+        help="Optional invalid.json containing invalid_frames to skip.",
+    )
+    parser.add_argument(
+        "--verbose_warnings",
+        action="store_true",
+        help="Print per-frame warnings instead of only summary.",
+    )
+    parser.add_argument(
+        "--pose_mode",
+        type=str,
+        default="detector",
+        choices=("detector", "crop_bbox"),
+        help="Pose inference mode. detector uses WholePoseDetector internal detector; crop_bbox uses the full crop as top-down bbox.",
+    )
     return parser.parse_args()
+
+
+def _extract_frame_indices(obj) -> set[int]:
+    frame_indices: set[int] = set()
+
+    if isinstance(obj, int):
+        frame_indices.add(int(obj))
+        return frame_indices
+
+    if isinstance(obj, list):
+        for item in obj:
+            frame_indices.update(_extract_frame_indices(item))
+        return frame_indices
+
+    if isinstance(obj, dict):
+        if "invalid_frames" in obj:
+            frame_indices.update(_extract_frame_indices(obj["invalid_frames"]))
+            return frame_indices
+
+        for key in ("frame_idx", "frame_idxs", "frames"):
+            if key in obj:
+                frame_indices.update(_extract_frame_indices(obj[key]))
+
+        for key, value in obj.items():
+            if key == "problem_frames":
+                continue
+            if key in ("frame_idx", "frame_idxs", "frames", "invalid_frames"):
+                continue
+            frame_indices.update(_extract_frame_indices(value))
+
+    return frame_indices
+
+
+def load_invalid_frames(invalid_path: Path | None) -> set[int]:
+    if invalid_path is None:
+        return set()
+    if not invalid_path.exists():
+        raise FileNotFoundError(f"invalid json file not found: {invalid_path}")
+
+    with invalid_path.open("r", encoding="utf-8-sig") as file:
+        data = json.load(file)
+
+    if isinstance(data, dict) and "invalid_frames" in data:
+        return _extract_frame_indices(data["invalid_frames"])
+
+    return _extract_frame_indices(data)
 
 
 def _build_multi_frame_det_sequence(det_results: list):
@@ -161,23 +225,39 @@ def _process_single_camera(
     output_dir: Path,
     vis_dir: Path,
     bbox_dict: dict[str, list[int]],
-) -> None:
+    verbose_warnings: bool,
+    pose_mode: str,
+) -> str:
     bbox_key = str(frame_idx)
     bbox_xyxy = bbox_dict.get(bbox_key)
     if bbox_xyxy is None:
-        print(f"Warning: bbox not found, skipping {camera_name} frame {frame_idx:05d}")
-        return
+        if verbose_warnings:
+            print(f"Warning: bbox not found, skipping {camera_name} frame {frame_idx:05d}")
+        return "missing_bbox"
 
     crop_path = crop_dir / camera_name / f"{frame_idx:05d}.jpg"
     crop_image = cv.imread(str(crop_path))
     if crop_image is None:
-        print(f"Warning: crop image not found, skipping {camera_name} frame {frame_idx:05d}")
-        return
+        if verbose_warnings:
+            print(f"Warning: crop image not found, skipping {camera_name} frame {frame_idx:05d}")
+        return "missing_crop"
 
-    det_result = detector.detect_single_image(crop_image)
+    if pose_mode == "detector":
+        det_result = detector.detect_single_image(crop_image)
+    elif pose_mode == "crop_bbox":
+        crop_h, crop_w = crop_image.shape[:2]
+        crop_bbox_xyxy = [0, 0, crop_w - 1, crop_h - 1]
+        det_result = detector.detect_single_image_with_bbox(
+            crop_image,
+            crop_bbox_xyxy,
+        )
+    else:
+        raise ValueError(f"Unsupported pose_mode: {pose_mode}")
+
     if not det_result.flag_valid or det_result.bbox is None:
-        print(f"Warning: no valid detection for {camera_name} frame {frame_idx:05d}")
-        return
+        if verbose_warnings:
+            print(f"Warning: no valid detection for {camera_name} frame {frame_idx:05d}")
+        return "no_detection"
 
     x1, y1, x2, y2 = [int(v) for v in bbox_xyxy]
     det_result_full = _offset_detection_to_full_erp(det_result, x1, y1)
@@ -191,6 +271,7 @@ def _process_single_camera(
     vis_image = draw_keypoints(crop_image, det_result, draw_face=True, draw_hands=True)
     cv.rectangle(vis_image, (0, 0), (crop_image.shape[1] - 1, crop_image.shape[0] - 1), (255, 0, 0), 2)
     cv.imwrite(str(vis_dir / f"vis_{frame_idx:05d}_{camera_suffix}.jpg"), vis_image)
+    return "ok"
 
 
 def main() -> None:
@@ -200,16 +281,30 @@ def main() -> None:
     reviewed_path = Path(args.reviewed)
     crop_dir = Path(args.crop_dir)
     output_dir = Path(args.output_dir)
+    invalid_path = Path(args.invalid_json) if args.invalid_json is not None else None
 
     reviewed_pairs = load_reviewed_entries(reviewed_path)
     cam2_bboxes = _load_bbox_dict(crop_dir / "cam2_bboxes.json")
     cam4_bboxes = _load_bbox_dict(crop_dir / "cam4_bboxes.json")
+    invalid_frames = load_invalid_frames(invalid_path)
+    print(f"loaded invalid frames: {len(invalid_frames)}")
     detector = WholePoseDetector(device=args.device)
+
+    stats = {
+        "cam2": {"ok": 0, "missing_bbox": 0, "missing_crop": 0, "no_detection": 0, "skipped_invalid": 0},
+        "cam4": {"ok": 0, "missing_bbox": 0, "missing_crop": 0, "no_detection": 0, "skipped_invalid": 0},
+    }
 
     total_steps = len(reviewed_pairs) * 2
     with tqdm(total=total_steps, desc="Running WholePoseDetector on ERP crops", unit="frame") as progress:
         for _, frame_idx in reviewed_pairs:
-            _process_single_camera(
+            if frame_idx in invalid_frames:
+                stats["cam2"]["skipped_invalid"] += 1
+                stats["cam4"]["skipped_invalid"] += 1
+                progress.update(2)
+                continue
+
+            status_c2 = _process_single_camera(
                 detector=detector,
                 frame_idx=frame_idx,
                 camera_name="cam2",
@@ -218,10 +313,13 @@ def main() -> None:
                 output_dir=output_dir / "cam2",
                 vis_dir=output_dir / "vis" / "cam2",
                 bbox_dict=cam2_bboxes,
+                verbose_warnings=args.verbose_warnings,
+                pose_mode=args.pose_mode,
             )
+            stats["cam2"][status_c2] += 1
             progress.update(1)
 
-            _process_single_camera(
+            status_c4 = _process_single_camera(
                 detector=detector,
                 frame_idx=frame_idx,
                 camera_name="cam4",
@@ -230,8 +328,17 @@ def main() -> None:
                 output_dir=output_dir / "cam4",
                 vis_dir=output_dir / "vis" / "cam4",
                 bbox_dict=cam4_bboxes,
+                verbose_warnings=args.verbose_warnings,
+                pose_mode=args.pose_mode,
             )
+            stats["cam4"][status_c4] += 1
             progress.update(1)
+
+    print("Detection summary:")
+    for camera_name, camera_stats in stats.items():
+        print(f"{camera_name}:")
+        for key, value in camera_stats.items():
+            print(f"  {key}: {value}")
 
 
 if __name__ == "__main__":
@@ -241,7 +348,17 @@ if __name__ == "__main__":
 r'''
 python src\script\test_function\debug026_run_rtmlib_erp.py `
   --reviewed data_process\Input\20260311_riding\review.json `
-  --crop_dir data_process\Output\20260311_riding\image\equirect_rotate_crop `
+  --crop_dir data_process\Output\20260311_riding\image\equirect_crop_rotate `
   --output_dir data_process\Output\20260311_riding\rtm_cache\equirect_rotate `
-  --device cuda
+  --invalid_json data_process\Output\20260311_riding\invalid.json `
+  --device cuda `
+  --pose_mode crop_bbox
+  
+python src\script\test_function\debug026_run_rtmlib_erp.py `
+  --reviewed data_process\Input\20260320_riding\dataset1\review.json `
+  --crop_dir data_process\Output\20260320_riding_dataset1\image\equirect_crop_rotate `
+  --output_dir data_process\Output\20260320_riding_dataset1\rtm_cache\equirect_rotate `
+  --invalid_json data_process\Output\20260320_riding_dataset1\invalid.json `
+  --device cuda `
+  --pose_mode crop_bbox
 '''

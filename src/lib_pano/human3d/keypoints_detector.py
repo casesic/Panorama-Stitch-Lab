@@ -173,6 +173,44 @@ class WholePoseDetector:
     def detect_single_image(self, image: np.ndarray) -> Result_Single_Human_Single_Frame:
         return self._detect_impl(image, mask=None)
 
+    def detect_single_image_with_bbox(
+        self,
+        image: np.ndarray,
+        bbox_xyxy: np.ndarray | list[float] | tuple[float, float, float, float],
+    ) -> Result_Single_Human_Single_Frame:
+        h, w = image.shape[:2]
+        xmin = max(0, min(w - 1, int(round(bbox_xyxy[0]))))
+        ymin = max(0, min(h - 1, int(round(bbox_xyxy[1]))))
+        xmax = max(0, min(w - 1, int(round(bbox_xyxy[2]))))
+        ymax = max(0, min(h - 1, int(round(bbox_xyxy[3]))))
+
+        if xmax <= xmin or ymax <= ymin:
+            return Result_Single_Human_Single_Frame(
+                None, 0.0, None, self.keypoints_format
+            )
+
+        best_bbox = np.array([xmin, ymin, xmax, ymax], dtype=np.float32)
+        kpts, scores = self.body_model.pose_model(
+            image,
+            bboxes=np.array([best_bbox], dtype=np.float32),
+        )
+
+        if kpts is None or scores is None or len(kpts) == 0 or len(scores) == 0:
+            return Result_Single_Human_Single_Frame(
+                None, 0.0, None, self.keypoints_format
+            )
+
+        scores_flat = np.array(scores[0]).reshape(133)
+
+        keypoints = np.zeros((133, 3), dtype=np.float32)
+        keypoints[:, :2] = kpts[0]
+        keypoints[:, 2] = scores_flat
+
+        return Result_Single_Human_Single_Frame(
+            _rtmlib_bbox_to_internal(best_bbox, h, w),
+            1.0, keypoints, self.keypoints_format
+        )
+
     def detect_single_image_with_fov_mask(
         self,
         image: np.ndarray,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import json
 import pickle
 import sys
@@ -48,10 +49,46 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--output_dir", type=str, required=True, help="Output root directory.")
     parser.add_argument(
-        "--invalid_detections",
+        "--rtm_invalid_json",
         type=str,
         default=None,
-        help="Optional path to invalid_detections.json.",
+        help="Optional path to RTM invalid.json from debug026/review.",
+    )
+    parser.add_argument(
+        "--seg_invalid_json",
+        type=str,
+        default=None,
+        help="Optional path to segmentation invalid.json from debug038/review.",
+    )
+    parser.add_argument(
+        "--hmr_invalid_json",
+        type=str,
+        default=None,
+        help="Optional path to HMR init invalid.json from debug024/review.",
+    )
+    parser.add_argument(
+        "--seg_dir",
+        type=str,
+        required=True,
+        help="Segmentation mask root directory containing cam2/ and cam4/ subdirectories.",
+    )
+    parser.add_argument(
+        "--bbox_dir",
+        type=str,
+        required=True,
+        help="BBox json directory containing cam2_bboxes.json and cam4_bboxes.json.",
+    )
+    parser.add_argument(
+        "--use_silhouette_loss",
+        action="store_true",
+        default=True,
+        help="启用轮廓损失",
+    )
+    parser.add_argument(
+        "--no_silhouette_loss",
+        dest="use_silhouette_loss",
+        action="store_false",
+        help="禁用轮廓损失",
     )
     parser.add_argument(
         "--image_width",
@@ -131,7 +168,24 @@ def split_long_segments(
     return result
 
 
-def _extract_frame_indices_from_obj(obj: Any) -> set[int]:
+def split_reconstructable_subsegments(frame_indices: list[int], reconstructable: dict[int, bool]) -> list[list[int]]:
+    subsegments: list[list[int]] = []
+    current: list[int] = []
+    for frame_idx in frame_indices:
+        if reconstructable.get(frame_idx, False):
+            if current and frame_idx != current[-1] + 1:
+                subsegments.append(current)
+                current = []
+            current.append(frame_idx)
+        elif current:
+            subsegments.append(current)
+            current = []
+    if current:
+        subsegments.append(current)
+    return subsegments
+
+
+def _extract_frame_indices_from_obj(obj: Any, *, include_problem_frames: bool = False) -> set[int]:
     frame_indices: set[int] = set()
 
     if isinstance(obj, int):
@@ -140,14 +194,21 @@ def _extract_frame_indices_from_obj(obj: Any) -> set[int]:
 
     if isinstance(obj, list):
         for item in obj:
-            frame_indices.update(_extract_frame_indices_from_obj(item))
+            frame_indices.update(_extract_frame_indices_from_obj(item, include_problem_frames=include_problem_frames))
         return frame_indices
 
     if isinstance(obj, dict):
         if "frame_idx" in obj:
             frame_indices.add(int(obj["frame_idx"]))
+        if "invalid_frames" in obj:
+            frame_indices.update(
+                _extract_frame_indices_from_obj(obj["invalid_frames"], include_problem_frames=include_problem_frames)
+            )
+        if include_problem_frames and "problem_frames" in obj:
+            frame_indices.update(
+                _extract_frame_indices_from_obj(obj["problem_frames"], include_problem_frames=include_problem_frames)
+            )
         for key in (
-            "invalid_frames",
             "frame_idxs",
             "frames",
             "invalid_detections",
@@ -155,21 +216,46 @@ def _extract_frame_indices_from_obj(obj: Any) -> set[int]:
             "cam4",
         ):
             if key in obj:
-                frame_indices.update(_extract_frame_indices_from_obj(obj[key]))
+                frame_indices.update(
+                    _extract_frame_indices_from_obj(obj[key], include_problem_frames=include_problem_frames)
+                )
         return frame_indices
 
     return frame_indices
 
 
-def load_invalid_frames(invalid_path: Path | None) -> set[int]:
+def load_invalid_frames(invalid_path: Path | None, label: str = "invalid_json") -> set[int]:
     if invalid_path is None:
         return set()
     if not invalid_path.exists():
-        raise FileNotFoundError(f"invalid_detections file not found: {invalid_path}")
+        raise FileNotFoundError(f"{label} file not found: {invalid_path}")
 
     with invalid_path.open("r", encoding="utf-8") as file:
         data = json.load(file)
+    if isinstance(data, dict) and "invalid_frames" in data:
+        return _extract_frame_indices_from_obj(data["invalid_frames"])
     return _extract_frame_indices_from_obj(data)
+
+
+def load_problem_frames(invalid_path: Path | None, label: str = "invalid_json") -> set[int]:
+    if invalid_path is None:
+        return set()
+    if not invalid_path.exists():
+        raise FileNotFoundError(f"{label} file not found: {invalid_path}")
+
+    with invalid_path.open("r", encoding="utf-8") as file:
+        data = json.load(file)
+    if isinstance(data, dict) and "problem_frames" in data:
+        return _extract_frame_indices_from_obj(data["problem_frames"], include_problem_frames=True)
+    return set()
+
+
+def load_bbox_dict(bbox_dir: Path) -> tuple[dict, dict]:
+    with (bbox_dir / "cam2_bboxes.json").open("r", encoding="utf-8") as file:
+        cam2_bboxes = json.load(file)
+    with (bbox_dir / "cam4_bboxes.json").open("r", encoding="utf-8") as file:
+        cam4_bboxes = json.load(file)
+    return cam2_bboxes, cam4_bboxes
 
 
 def infer_keypoints_format_and_dim(frame_indices: list[int], rtm_dir: Path, cam_id: str) -> tuple[dict[str, int], int]:
@@ -248,8 +334,16 @@ def load_det_result(
             keypoints_format=default_keypoints_format,
         )
 
-    with pkl_path.open("rb") as file:
-        seq = pickle.load(file)
+    try:
+        with pkl_path.open("rb") as file:
+            seq = pickle.load(file)
+    except Exception:
+        return Result_Single_Human_Single_Frame(
+            bbox=None,
+            bbox_score=0.0,
+            keypoints=zero_keypoints,
+            keypoints_format=default_keypoints_format,
+        )
 
     is_valid = bool(seq.array_valid[0])
     det = Result_Single_Human_Single_Frame(
@@ -261,6 +355,39 @@ def load_det_result(
     return det
 
 
+def rtm_pkl_path(frame_idx: int, rtm_dir: Path, cam_id: str) -> Path:
+    cam_suffix = "c2" if cam_id == "cam2" else "c4"
+    return rtm_dir / cam_id / f"rtm_s{frame_idx:05d}_{cam_suffix}.pkl"
+
+
+def is_rtm_det_valid(frame_idx: int, rtm_dir: Path, invalid_frames: set[int], cam_id: str) -> bool:
+    if frame_idx in invalid_frames:
+        return False
+    pkl_path = rtm_pkl_path(frame_idx, rtm_dir, cam_id)
+    if not pkl_path.exists():
+        return False
+    try:
+        with pkl_path.open("rb") as file:
+            seq = pickle.load(file)
+        return bool(seq.array_valid[0])
+    except Exception:
+        return False
+
+
+def get_mask_paths(frame_idx: int, seg_dir: Path) -> tuple[Path, Path]:
+    return (
+        seg_dir / "cam2" / "mask" / f"{frame_idx:05d}.png",
+        seg_dir / "cam4" / "mask" / f"{frame_idx:05d}.png",
+    )
+
+
+def is_seg_valid(frame_idx: int, seg_dir: Path, invalid_frames: set[int]) -> bool:
+    if frame_idx in invalid_frames:
+        return False
+    mask_c2, mask_c4 = get_mask_paths(frame_idx, seg_dir)
+    return mask_c2.exists() or mask_c4.exists()
+
+
 def load_smplx_init(frame_idx: int, hmr_dir: Path, cam_id: str):
     cam_suffix = "c2" if cam_id == "cam2" else "c4"
     pkl_path = hmr_dir / cam_id / f"hmr_s{frame_idx:05d}_{cam_suffix}.pkl"
@@ -269,6 +396,53 @@ def load_smplx_init(frame_idx: int, hmr_dir: Path, cam_id: str):
     
     smpl_seq = _build_smpl_init_from_single_frame_pkl(pkl_path)
     return init_smplx_from_smpl54_seq(smpl_seq, [0])
+
+
+def try_load_smplx_init(frame_idx: int, hmr_dir: Path, hmr_invalid_frames: set[int], cam_id: str):
+    if frame_idx in hmr_invalid_frames:
+        return None
+    try:
+        return load_smplx_init(frame_idx, hmr_dir, cam_id)
+    except Exception:
+        return None
+
+
+def blend_smplx_init(left, right, alpha: float):
+    if left is None:
+        return right
+    if right is None:
+        return left
+
+    alpha = float(max(0.0, min(1.0, alpha)))
+    out = slice_smplx_seq(left, [0])
+    for attr in ("orient", "transl", "body_pose", "left_hand_pose", "right_hand_pose"):
+        if hasattr(out, attr) and hasattr(left, attr) and hasattr(right, attr):
+            getattr(out, attr)[0] = (1.0 - alpha) * getattr(left, attr)[0] + alpha * getattr(right, attr)[0]
+    for attr in ("beta", "scale"):
+        if hasattr(out, attr) and hasattr(left, attr) and hasattr(right, attr):
+            setattr(out, attr, (1.0 - alpha) * getattr(left, attr).clone() + alpha * getattr(right, attr).clone())
+    return out
+
+
+def build_hmr_init_for_frame(frame_idx: int, original_segment: list[int], direct_by_frame: dict[int, Any]):
+    direct = direct_by_frame.get(frame_idx)
+    if direct is not None:
+        return direct, "hmr"
+
+    left_frames = [idx for idx in original_segment if idx < frame_idx and direct_by_frame.get(idx) is not None]
+    right_frames = [idx for idx in original_segment if idx > frame_idx and direct_by_frame.get(idx) is not None]
+    left_idx = left_frames[-1] if left_frames else None
+    right_idx = right_frames[0] if right_frames else None
+
+    if left_idx is not None and right_idx is not None:
+        denom = max(1, right_idx - left_idx)
+        alpha = (frame_idx - left_idx) / denom
+        return blend_smplx_init(direct_by_frame[left_idx], direct_by_frame[right_idx], alpha), "interpolated"
+    if left_idx is not None:
+        return slice_smplx_seq(direct_by_frame[left_idx], [0]), "neighbor"
+    if right_idx is not None:
+        return slice_smplx_seq(direct_by_frame[right_idx], [0]), "neighbor"
+    return None, "tpose"
 
 
 def build_segment_smplx_init(smplx_list_c2, smplx_list_c4):
@@ -342,14 +516,26 @@ def main() -> None:
     rtm_dir = Path(args.rtm_dir)
     hmr_dir = Path(args.hmr_dir)
     output_dir = Path(args.output_dir)
-    invalid_path = Path(args.invalid_detections) if args.invalid_detections is not None else None
+    seg_dir = Path(args.seg_dir)
+    bbox_dir = Path(args.bbox_dir)
+    rtm_invalid_path = Path(args.rtm_invalid_json) if args.rtm_invalid_json is not None else None
+    seg_invalid_path = Path(args.seg_invalid_json) if args.seg_invalid_json is not None else None
+    hmr_invalid_path = Path(args.hmr_invalid_json) if args.hmr_invalid_json is not None else None
 
     frame_indices = load_reviewed_frame_indices(reviewed_path)
     segments = split_frame_segments(frame_indices)
     if args.max_segment_len > 0:
         segments = split_long_segments(segments, args.max_segment_len)
         print(f"切段后共 {len(segments)} 段，最大段长 {args.max_segment_len}")
-    invalid_frames = load_invalid_frames(invalid_path)
+    rtm_invalid_frames = load_invalid_frames(rtm_invalid_path, label="rtm_invalid_json")
+    seg_invalid_frames = load_invalid_frames(seg_invalid_path, label="seg_invalid_json")
+    hmr_invalid_frames = load_invalid_frames(hmr_invalid_path, label="hmr_invalid_json")
+    problem_frames = {
+        "rtm": sorted(load_problem_frames(rtm_invalid_path, label="rtm_invalid_json")),
+        "seg": sorted(load_problem_frames(seg_invalid_path, label="seg_invalid_json")),
+        "hmr": sorted(load_problem_frames(hmr_invalid_path, label="hmr_invalid_json")),
+    }
+    cam2_bboxes, cam4_bboxes = load_bbox_dict(bbox_dir)
     default_keypoints_format_c2, num_keypoints_c2 = infer_keypoints_format_and_dim(frame_indices, rtm_dir, "cam2")
     default_keypoints_format_c4, num_keypoints_c4 = infer_keypoints_format_and_dim(frame_indices, rtm_dir, "cam4")
 
@@ -358,59 +544,186 @@ def main() -> None:
     if args.end_frame is not None:
         segments = [frame_idxs for frame_idxs in segments if frame_idxs[0] <= args.end_frame]
 
-    fitter = DualCamERPFitter(gender="neutral", R_cam4=R_CAM4)
+    fitter = DualCamERPFitter(
+        gender="neutral",
+        R_cam4=R_CAM4,
+        use_silhouette_loss=args.use_silhouette_loss,
+    )
+    sil_device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    frame_status: dict[str, dict[str, Any]] = {}
+    segment_summary: list[dict[str, Any]] = []
+    init_counter: Counter[str] = Counter()
+    fitting_subsegment_count = 0
 
     for frame_idxs in tqdm(segments, desc="DualCamERPFitter", unit="segment"):
-        det_list_c2 = [
-            load_det_result(
-                frame_idx,
-                rtm_dir,
-                invalid_frames,
-                default_keypoints_format=default_keypoints_format_c2,
-                num_keypoints=num_keypoints_c2,
-                cam_id="cam2",
-            )
+        segment_key = f"{frame_idxs[0]}_{frame_idxs[-1]}"
+        direct_hmr_c2 = {
+            frame_idx: try_load_smplx_init(frame_idx, hmr_dir, hmr_invalid_frames, "cam2")
             for frame_idx in frame_idxs
-        ]
-        det_list_c4 = [
-            load_det_result(
-                frame_idx,
-                rtm_dir,
-                invalid_frames,
-                default_keypoints_format=default_keypoints_format_c4,
-                num_keypoints=num_keypoints_c4,
-                cam_id="cam4",
-            )
+        }
+        direct_hmr_c4 = {
+            frame_idx: try_load_smplx_init(frame_idx, hmr_dir, hmr_invalid_frames, "cam4")
             for frame_idx in frame_idxs
-        ]
-        smplx_list_c2 = [load_smplx_init(frame_idx, hmr_dir, "cam2") for frame_idx in frame_idxs]
-        smplx_list_c4 = [load_smplx_init(frame_idx, hmr_dir, "cam4") for frame_idx in frame_idxs]
-        smplx_init_c2, smplx_init_c4 = build_segment_smplx_init(smplx_list_c2, smplx_list_c4)
+        }
 
-        valid_frame_count_c2 = sum(1 for det in det_list_c2 if bool(det.flag_valid))
-        valid_frame_count_c4 = sum(1 for det in det_list_c4 if bool(det.flag_valid))
-        if valid_frame_count_c2 == 0 and valid_frame_count_c4 == 0:
-            print(
-                f"Warning: skip segment {frame_idxs[0]}-{frame_idxs[-1]} because both cameras have no valid detections."
+        reconstructable_by_frame: dict[int, bool] = {}
+        for frame_idx in frame_idxs:
+            rtm_valid_c2 = is_rtm_det_valid(frame_idx, rtm_dir, rtm_invalid_frames, "cam2")
+            rtm_valid_c4 = is_rtm_det_valid(frame_idx, rtm_dir, rtm_invalid_frames, "cam4")
+            rtm_valid = rtm_valid_c2 or rtm_valid_c4
+            seg_valid = is_seg_valid(frame_idx, seg_dir, seg_invalid_frames)
+            hmr_valid = direct_hmr_c2.get(frame_idx) is not None or direct_hmr_c4.get(frame_idx) is not None
+            reconstructable = rtm_valid or seg_valid
+            reconstructable_by_frame[frame_idx] = reconstructable
+            frame_status[str(frame_idx)] = {
+                "rtm_valid": rtm_valid,
+                "seg_valid": seg_valid,
+                "hmr_valid": hmr_valid,
+                "reconstructable": reconstructable,
+                "status": "rebuilt" if reconstructable else "skipped_both_invalid",
+                "init": "none",
+                "segment": segment_key,
+                "subsegment": None,
+            }
+
+        subsegments = split_reconstructable_subsegments(frame_idxs, reconstructable_by_frame)
+        fitting_subsegment_count += len(subsegments)
+        segment_summary.append(
+            {
+                "segment": segment_key,
+                "frame_count": len(frame_idxs),
+                "subsegments": [f"{subseg[0]}_{subseg[-1]}" for subseg in subsegments],
+                "rebuilt": sum(1 for idx in frame_idxs if reconstructable_by_frame[idx]),
+                "skipped_both_invalid": sum(1 for idx in frame_idxs if not reconstructable_by_frame[idx]),
+                "rtm_valid": sum(1 for idx in frame_idxs if frame_status[str(idx)]["rtm_valid"]),
+                "seg_valid": sum(1 for idx in frame_idxs if frame_status[str(idx)]["seg_valid"]),
+                "hmr_valid": sum(1 for idx in frame_idxs if frame_status[str(idx)]["hmr_valid"]),
+            }
+        )
+
+        for sub_frame_idxs in subsegments:
+            subsegment_key = f"{sub_frame_idxs[0]}_{sub_frame_idxs[-1]}"
+            det_list_c2 = [
+                load_det_result(
+                    frame_idx,
+                    rtm_dir,
+                    rtm_invalid_frames,
+                    default_keypoints_format=default_keypoints_format_c2,
+                    num_keypoints=num_keypoints_c2,
+                    cam_id="cam2",
+                )
+                for frame_idx in sub_frame_idxs
+            ]
+            det_list_c4 = [
+                load_det_result(
+                    frame_idx,
+                    rtm_dir,
+                    rtm_invalid_frames,
+                    default_keypoints_format=default_keypoints_format_c4,
+                    num_keypoints=num_keypoints_c4,
+                    cam_id="cam4",
+                )
+                for frame_idx in sub_frame_idxs
+            ]
+
+            smplx_list_c2, smplx_list_c4 = [], []
+            for frame_idx in sub_frame_idxs:
+                smplx_c2, init_c2 = build_hmr_init_for_frame(frame_idx, frame_idxs, direct_hmr_c2)
+                smplx_c4, init_c4 = build_hmr_init_for_frame(frame_idx, frame_idxs, direct_hmr_c4)
+                smplx_list_c2.append(smplx_c2)
+                smplx_list_c4.append(smplx_c4)
+                init_sources = {init_c2, init_c4}
+                if "hmr" in init_sources:
+                    init_source = "hmr"
+                elif "interpolated" in init_sources:
+                    init_source = "interpolated"
+                elif "neighbor" in init_sources:
+                    init_source = "neighbor"
+                else:
+                    init_source = "tpose"
+                frame_status[str(frame_idx)]["init"] = init_source
+                frame_status[str(frame_idx)]["subsegment"] = subsegment_key
+                init_counter[init_source] += 1
+
+            smplx_init_c2, smplx_init_c4 = build_segment_smplx_init(smplx_list_c2, smplx_list_c4)
+            boundary_pts_list_c2, boundary_pts_list_c4 = [], []
+            bbox_list_c2, bbox_list_c4 = [], []
+            for frame_idx in sub_frame_idxs:
+                mask_c2, mask_c4 = get_mask_paths(frame_idx, seg_dir)
+                use_seg_frame = frame_status[str(frame_idx)]["seg_valid"] and args.use_silhouette_loss
+                boundary_pts_list_c2.append(
+                    DualCamERPFitter._prepare_silhouette_data(mask_c2, device=sil_device)
+                    if use_seg_frame and mask_c2.exists()
+                    else None
+                )
+                boundary_pts_list_c4.append(
+                    DualCamERPFitter._prepare_silhouette_data(mask_c4, device=sil_device)
+                    if use_seg_frame and mask_c4.exists()
+                    else None
+                )
+                bbox_list_c2.append(cam2_bboxes.get(str(frame_idx)))
+                bbox_list_c4.append(cam4_bboxes.get(str(frame_idx)))
+
+            valid_frame_count_c2 = sum(1 for det in det_list_c2 if bool(det.flag_valid))
+            valid_frame_count_c4 = sum(1 for det in det_list_c4 if bool(det.flag_valid))
+
+            result_c2, result_c4, shared_beta = fitter.fit(
+                cam2_dets=det_list_c2,
+                cam4_dets=det_list_c4,
+                image_size=(args.image_width, args.image_height),
+                smplx_init_c2=smplx_init_c2,
+                smplx_init_c4=smplx_init_c4,
+                boundary_pts_list_c2=boundary_pts_list_c2,
+                boundary_pts_list_c4=boundary_pts_list_c4,
+                bbox_list_c2=bbox_list_c2,
+                bbox_list_c4=bbox_list_c4,
             )
-            continue
+            save_segment_result(
+                result_c2=result_c2,
+                result_c4=result_c4,
+                shared_beta=shared_beta,
+                output_dir=output_dir,
+                frame_idxs=sub_frame_idxs,
+                valid_frame_count_c2=valid_frame_count_c2,
+                valid_frame_count_c4=valid_frame_count_c4,
+            )
 
-        result_c2, result_c4, shared_beta = fitter.fit(
-            cam2_dets=det_list_c2,
-            cam4_dets=det_list_c4,
-            image_size=(args.image_width, args.image_height),
-            smplx_init_c2=smplx_init_c2,
-            smplx_init_c4=smplx_init_c4,
+    status_values = list(frame_status.values())
+    global_summary = {
+        "original_segments": len(segments),
+        "fitting_subsegments": fitting_subsegment_count,
+        "skipped_both_invalid_frames": sum(1 for item in status_values if item["status"] == "skipped_both_invalid"),
+        "rebuilt_frames": sum(1 for item in status_values if item["status"] == "rebuilt"),
+        "rtm_valid": sum(1 for item in status_values if item["rtm_valid"]),
+        "rtm_invalid": sum(1 for item in status_values if not item["rtm_valid"]),
+        "seg_valid": sum(1 for item in status_values if item["seg_valid"]),
+        "seg_invalid": sum(1 for item in status_values if not item["seg_valid"]),
+        "hmr_valid": sum(1 for item in status_values if item["hmr_valid"]),
+        "hmr_invalid": sum(1 for item in status_values if not item["hmr_valid"]),
+        "init_sources": {
+            "hmr": init_counter.get("hmr", 0),
+            "interpolated": init_counter.get("interpolated", 0),
+            "neighbor": init_counter.get("neighbor", 0),
+            "tpose": init_counter.get("tpose", 0),
+        },
+        "problem_frames": problem_frames,
+    }
+    output_dir.mkdir(parents=True, exist_ok=True)
+    with (output_dir / "fitting_summary.json").open("w", encoding="utf-8") as file:
+        json.dump(
+            {
+                "global_summary": global_summary,
+                "segment_summary": segment_summary,
+                "frame_status": frame_status,
+            },
+            file,
+            ensure_ascii=False,
+            indent=2,
         )
-        save_segment_result(
-            result_c2=result_c2,
-            result_c4=result_c4,
-            shared_beta=shared_beta,
-            output_dir=output_dir,
-            frame_idxs=frame_idxs,
-            valid_frame_count_c2=valid_frame_count_c2,
-            valid_frame_count_c4=valid_frame_count_c4,
-        )
+
+    print("Fitting summary:")
+    print(json.dumps(global_summary, ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":
@@ -419,17 +732,26 @@ if __name__ == "__main__":
 r'''
 python src\script\test_function\debug029_run_dual_erp_fitting.py `
   --reviewed data_process\Input\20260311_riding\review.json `
-  --rtm_dir data_process\Output\20260311_riding\rtm_cache\equirect_rotate `
+  --rtm_dir data_process\Output\20260311_riding\rtm_cache\equirect_rotate_rtmw `
   --hmr_dir data_process\Output\20260311_riding\hmr_cache `
-  --output_dir data_process\Output\20260311_riding\fitting\dual_cam `
-  --invalid_detections data_process\Output\20260311_riding\invalid_detections.json `
-  --max_segment_len 10
+  --seg_dir data_process\Output\20260311_riding\seg\equirect_crop_rotate_sam3 `
+  --output_dir data_process\Output\20260311_riding\fitting\dual_cam_sil_new_513_518 `
+  --rtm_invalid_json data_process\Output\20260311_riding\rtm_cache\equirect_rotate_rtmw\invalid.json `
+  --seg_invalid_json data_process\Output\20260311_riding\seg\invalid.json `
+  --hmr_invalid_json data_process\Output\20260311_riding\hmr_cache\invalid.json `
+  --bbox_dir data_process\Output\20260311_riding\image\equirect_crop_rotate `
+  --max_segment_len 10 `
+  --start_frame 513 --end_frame 518 `
+  --use_silhouette_loss
 
 python src\script\test_function\debug029_run_dual_erp_fitting.py `
-  --reviewed data_process\Input\20260311_riding\review.json `
-  --rtm_dir data_process\Output\20260311_riding\rtm_cache\equirect_rotate `
-  --hmr_dir data_process\Output\20260311_riding\hmr_cache `
-  --output_dir data_process\Output\20260311_riding\fitting\dual_cam `
-  --invalid_detections data_process\Output\20260311_riding\invalid_detections.json `
-  --start_frame 513 --end_frame 518
+  --reviewed data_process\Input\20260320_riding\dataset1\review.json `
+  --rtm_dir data_process\Output\20260320_riding_dataset1\rtm_cache\equirect_rotate `
+  --hmr_dir data_process\Output\20260320_riding_dataset1\hmr_cache `
+  --output_dir data_process\Output\20260320_riding_dataset1\fitting\dual_cam_sil_886_895 `
+  --rtm_invalid_json data_process\Output\20260320_riding_dataset1\invalid_detections.json `
+  --seg_dir data_process\Output\20260320_riding_dataset1\seg\equirect_crop_rotate_sam3 `
+  --bbox_dir data_process\Output\20260320_riding_dataset1\image\equirect_crop_rotate `
+  --start_frame 886 --end_frame 895 `
+  --use_silhouette_loss
 '''

@@ -2,45 +2,22 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
+import os
 from pathlib import Path
 from typing import Any
 
 import cv2
 import numpy as np
 from tqdm import tqdm
-import os
-import config_script
-os.environ.setdefault('KMP_DUPLICATE_LIB_OK', 'TRUE')
 
-PROJECT_ROOT = Path(config_script.PROJECT_ROOT)
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
+os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 
-SINGLE_FITTING_ROOT = PROJECT_ROOT / "tools" / "SingleFitting"
-if str(SINGLE_FITTING_ROOT) not in sys.path:
-    sys.path.insert(0, str(SINGLE_FITTING_ROOT))
-
-from tools.fisheye_extractor.config import DS_PARAMS_CAM2, DS_PARAMS_CAM4
-from tools.fisheye_extractor.ds_model import unproject
-
-ROTATION_MATRIX = np.array([1, 0, 0, 0, 0, 1, 0, -1, 0], dtype=np.float64).reshape(3, 3)
-R_EXTRINSIC_CAM4 = np.array([-1, 0, 0, 0, -1, 0, 0, 0, 1], dtype=np.float64).reshape(3, 3)
 JPEG_QUALITY = 95
 
-def _ray_to_erp_pixel(pts: np.ndarray, w: int, h: int) -> np.ndarray:
-    x = pts[:, 0]
-    y = pts[:, 1]
-    z = pts[:, 2]
-    lon = np.arctan2(x, z)
-    lat = np.arcsin(np.clip(y, -1 + 1e-6, 1 - 1e-6))
-    u = (lon / (2.0 * np.pi) + 0.5) * w
-    v = (0.5 - lat / np.pi) * h
-    return np.stack([u, v], axis=1)
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Map fisheye RTMLib bbox to equirect crops for 4D-Humans."
+        description="Crop equirect_rotate images from equirect-coordinate bboxes for 4D-Humans."
     )
     parser.add_argument("--reviewed", type=str, required=True, help="Path to reviewed.json.")
     parser.add_argument(
@@ -57,33 +34,34 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--output_dir", type=str, required=True, help="Output root directory.")
     parser.add_argument(
-        "--invalid_detections",
+        "--invalid_json",
         type=str,
         default=None,
-        help="Optional path to invalid_detections.json.",
+        help="Optional invalid.json containing invalid_frames to skip.",
     )
     parser.add_argument(
-        "--padding_x",
+        "--padding_left",
         type=int,
-        default=0,
-        help="左右 padding（像素），默认0不扩展。",
+        default=250,
+        help="Padding to expand the left side of each equirect bbox.",
     )
     parser.add_argument(
-        "--padding_y",
+        "--padding_right",
         type=int,
-        default=130,
-        help="上下 padding（像素）。",
+        default=250,
+        help="Padding to expand the right side of each equirect bbox.",
     )
     parser.add_argument(
-        "--fisheye_size",
+        "--padding_top",
         type=int,
-        default=2880,
-        help="Actual fisheye image size used with DS intrinsics scaled from 2880.",
+        default=150,
+        help="Padding to expand the top side of each equirect bbox.",
     )
     parser.add_argument(
-        "--apply_extrinsic",
-        action="store_true",
-        help="Apply optional extrinsic rotation when mapping fisheye bbox to equirect_rotate.",
+        "--padding_bottom",
+        type=int,
+        default=150,
+        help="Padding to expand the bottom side of each equirect bbox.",
     )
     return parser.parse_args()
 
@@ -137,80 +115,57 @@ def _extract_frame_indices(obj: Any) -> set[int]:
         return frame_indices
 
     if isinstance(obj, dict):
+        if "invalid_frames" in obj:
+            frame_indices.update(_extract_frame_indices(obj["invalid_frames"]))
+            return frame_indices
         if "frame_idx" in obj:
             frame_indices.add(int(obj["frame_idx"]))
         if "frame_idxs" in obj:
             frame_indices.update(_extract_frame_indices(obj["frame_idxs"]))
         if "frames" in obj:
             frame_indices.update(_extract_frame_indices(obj["frames"]))
+        for key, value in obj.items():
+            if key == "problem_frames":
+                continue
+            if key in ("frame_idx", "frame_idxs", "frames", "invalid_frames"):
+                continue
+            frame_indices.update(_extract_frame_indices(value))
         return frame_indices
 
     return frame_indices
 
 
-def load_invalid_frame_sets(invalid_path: Path | None) -> tuple[set[int], set[int]]:
+def load_invalid_frames(invalid_path: Path | None) -> set[int]:
     if invalid_path is None:
-        return set(), set()
+        return set()
     if not invalid_path.exists():
-        raise FileNotFoundError(f"invalid_detections file not found: {invalid_path}")
+        raise FileNotFoundError(f"invalid json file not found: {invalid_path}")
 
-    with invalid_path.open("r", encoding="utf-8") as file:
+    with invalid_path.open("r", encoding="utf-8-sig") as file:
         data = json.load(file)
 
-    cam2_invalid = _extract_frame_indices(data.get("cam2", {}).get("fisheye", []))
-    cam4_invalid = _extract_frame_indices(data.get("cam4", {}).get("fisheye", []))
-    return cam2_invalid, cam4_invalid
-def map_fisheye_bbox_to_equirect(
-    bbox_xywh: np.ndarray,
-    ds_params: dict,
+    if isinstance(data, dict) and "invalid_frames" in data:
+        return _extract_frame_indices(data["invalid_frames"])
+
+    return _extract_frame_indices(data)
+
+
+def expand_erp_bbox(
+    bbox_xyxy,
     erp_w: int,
     erp_h: int,
-    padding_x: int = 0,
-    padding_y: int = 20,
-    R_extrinsic: np.ndarray | None = None,
-    pad_top: bool = False,
-) -> tuple[int, int, int, int]:
-    xmin, ymin, xmax, ymax = np.asarray(bbox_xywh, dtype=np.float64).reshape(4)
-
-    xs = np.linspace(xmin, xmax, num=10, dtype=np.float64)
-    ys = np.linspace(ymin, ymax, num=10, dtype=np.float64)
-    edge_points = np.concatenate(
-        [
-            np.stack([xs, np.full_like(xs, ymin)], axis=1),
-            np.stack([xs, np.full_like(xs, ymax)], axis=1),
-            np.stack([np.full_like(ys, xmin), ys], axis=1),
-            np.stack([np.full_like(ys, xmax), ys], axis=1),
-        ],
-        axis=0,
-    )
-
-    pts_3d, valid_mask = unproject(edge_points, ds_params)
-    valid_mask = np.asarray(valid_mask, dtype=bool)
-    if not np.any(valid_mask):
-        raise ValueError("No valid sampled bbox edge points after fisheye unprojection")
-
-    pts_raw = np.asarray(pts_3d[valid_mask], dtype=np.float64)
-    if R_extrinsic is not None:
-        pts_raw = pts_raw @ R_extrinsic.T
-        pts_rotated = pts_raw @ ROTATION_MATRIX.T
-    else:
-        pts_rotated = pts_raw @ ROTATION_MATRIX
-    pts_erp = _ray_to_erp_pixel(pts_rotated, erp_w, erp_h)
-    
-
-    x1 = max(0, int(np.floor(np.min(pts_erp[:, 0]) - padding_x)))
-    x2 = min(erp_w, int(np.ceil(np.max(pts_erp[:, 0]) + padding_x)))
-    if pad_top:
-        y1 = max(0, int(np.floor(np.min(pts_erp[:, 1]) + padding_y)))
-        y2 = min(erp_h, int(np.ceil(np.max(pts_erp[:, 1]) + padding_y)))
-    else:
-        y1 = max(0, int(np.floor(np.min(pts_erp[:, 1]) - padding_y)))
-        y2 = min(erp_h, int(np.ceil(np.max(pts_erp[:, 1]) - padding_y)))
-
-    x2 = max(x1 + 1, x2)
-    y2 = max(y1 + 1, y2)
-    x2 = min(erp_w, x2)
-    y2 = min(erp_h, y2)
+    padding_left: int,
+    padding_right: int,
+    padding_top: int,
+    padding_bottom: int,
+) -> tuple[int, int, int, int] | None:
+    x1, y1, x2, y2 = np.asarray(bbox_xyxy, dtype=np.float64).reshape(4)
+    x1 = max(0, int(np.floor(x1 - padding_left)))
+    y1 = max(0, int(np.floor(y1 - padding_top)))
+    x2 = min(erp_w, int(np.ceil(x2 + padding_right)))
+    y2 = min(erp_h, int(np.ceil(y2 + padding_bottom)))
+    if x2 <= x1 or y2 <= y1:
+        return None
     return x1, y1, x2, y2
 
 
@@ -228,52 +183,49 @@ def _process_single_camera(
     bbox_xyxy: list[int] | None,
     output_dir: Path,
     invalid_frames: set[int],
-    padding_x: int,
-    padding_y: int,
     erp_w: int,
     erp_h: int,
-    R_extrinsic: np.ndarray | None = None,
-    pad_top: bool = False,
+    padding_left: int,
+    padding_right: int,
+    padding_top: int,
+    padding_bottom: int,
 ) -> tuple[int, int, int, int] | None:
     if frame_idx in invalid_frames:
-        return
+        return None
 
     if bbox_xyxy is None:
         print(f"Warning: bbox not found, skipping {camera_name} frame {frame_idx:05d}")
-        return
-
-    ds_params = DS_PARAMS_CAM2 if camera_name == "cam2" else DS_PARAMS_CAM4
+        return None
 
     image_path = equirect_dir / camera_name / f"{frame_idx:05d}.jpg"
     image = cv2.imread(str(image_path))
     if image is None:
         print(f"Warning: equirect image not found, skipping {camera_name} frame {frame_idx:05d}")
-        return
+        return None
 
-    try:
-        x1, y1, x2, y2 = map_fisheye_bbox_to_equirect(
-            np.asarray(bbox_xyxy, dtype=np.float64),
-            ds_params=ds_params,
-            erp_w=erp_w,
-            erp_h=erp_h,
-            padding_x=padding_x,
-            padding_y=padding_y,
-            R_extrinsic=R_extrinsic,
-            pad_top=pad_top,
-        )
-    except ValueError as exc:
-        print(f"Warning: failed to map bbox for {camera_name} frame {frame_idx:05d}: {exc}")
-        return
+    expanded_bbox = expand_erp_bbox(
+        bbox_xyxy,
+        erp_w=erp_w,
+        erp_h=erp_h,
+        padding_left=padding_left,
+        padding_right=padding_right,
+        padding_top=padding_top,
+        padding_bottom=padding_bottom,
+    )
+    if expanded_bbox is None:
+        print(f"Warning: invalid expanded bbox, skipping {camera_name} frame {frame_idx:05d}: {bbox_xyxy}")
+        return None
 
+    x1, y1, x2, y2 = expanded_bbox
     cropped = image[y1:y2, x1:x2]
     if cropped.size == 0:
         print(f"Warning: empty crop, skipping {camera_name} frame {frame_idx:05d}")
-        return
+        return None
 
     encoded = _encode_jpeg(cropped)
     if encoded is None:
         print(f"Warning: failed to encode crop, skipping {camera_name} frame {frame_idx:05d}")
-        return
+        return None
 
     output_path = output_dir / f"{frame_idx:05d}.jpg"
     output_path.write_bytes(encoded)
@@ -282,11 +234,7 @@ def _process_single_camera(
     cv2.rectangle(vis, (x1, y1), (x2, y2), (0, 0, 255), 3)
     vis_dir = output_dir.parent / "vis" / camera_name
     vis_dir.mkdir(parents=True, exist_ok=True)
-    cv2.imwrite(
-        str(vis_dir / f"{frame_idx:05d}.jpg"),
-        vis,
-        [cv2.IMWRITE_JPEG_QUALITY, 95],
-    )
+    cv2.imwrite(str(vis_dir / f"{frame_idx:05d}.jpg"), vis, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
     return x1, y1, x2, y2
 
 
@@ -297,49 +245,49 @@ def process_frame(
     cam4_bbox_input: list[int] | None,
     output_cam2_dir: Path,
     output_cam4_dir: Path,
-    invalid_cam2: set[int],
-    invalid_cam4: set[int],
-    padding_x: int,
-    padding_y: int,
+    invalid_frames: set[int],
     erp_w: int,
     erp_h: int,
+    padding_left: int,
+    padding_right: int,
+    padding_top: int,
+    padding_bottom: int,
     cam2_bboxes: dict[str, list[int]],
     cam4_bboxes: dict[str, list[int]],
-    apply_extrinsic: bool = False,
 ) -> None:
-    cam2_bbox = _process_single_camera(
+    cam2_expanded_bbox = _process_single_camera(
         camera_name="cam2",
         frame_idx=frame_idx,
         equirect_dir=equirect_dir,
         bbox_xyxy=cam2_bbox,
         output_dir=output_cam2_dir,
-        invalid_frames=invalid_cam2,
-        padding_x=padding_x,
-        padding_y=padding_y,
+        invalid_frames=invalid_frames,
         erp_w=erp_w,
         erp_h=erp_h,
-        R_extrinsic=None,
-        pad_top=False,
+        padding_left=padding_left,
+        padding_right=padding_right,
+        padding_top=padding_top,
+        padding_bottom=padding_bottom,
     )
-    if cam2_bbox is not None:
-        cam2_bboxes[str(frame_idx)] = list(cam2_bbox)
+    if cam2_expanded_bbox is not None:
+        cam2_bboxes[str(frame_idx)] = list(cam2_expanded_bbox)
 
-    cam4_bbox = _process_single_camera(
+    cam4_expanded_bbox = _process_single_camera(
         camera_name="cam4",
         frame_idx=frame_idx,
         equirect_dir=equirect_dir,
         bbox_xyxy=cam4_bbox_input,
         output_dir=output_cam4_dir,
-        invalid_frames=invalid_cam4,
-        padding_x=padding_x,
-        padding_y=padding_y,
+        invalid_frames=invalid_frames,
         erp_w=erp_w,
         erp_h=erp_h,
-        R_extrinsic=R_EXTRINSIC_CAM4 if apply_extrinsic else None,
-        pad_top=apply_extrinsic,
+        padding_left=padding_left,
+        padding_right=padding_right,
+        padding_top=padding_top,
+        padding_bottom=padding_bottom,
     )
-    if cam4_bbox is not None:
-        cam4_bboxes[str(frame_idx)] = list(cam4_bbox)
+    if cam4_expanded_bbox is not None:
+        cam4_bboxes[str(frame_idx)] = list(cam4_expanded_bbox)
 
 
 def infer_equirect_size(frame_indices: list[int], equirect_dir: Path) -> tuple[int, int]:
@@ -361,15 +309,16 @@ def main() -> None:
     bbox_dir = Path(args.bbox_dir)
     equirect_dir = Path(args.equirect_dir)
     output_dir = Path(args.output_dir)
-    os.makedirs(output_dir, exist_ok=True)
-    invalid_path = Path(args.invalid_detections) if args.invalid_detections is not None else None
+    output_dir.mkdir(parents=True, exist_ok=True)
+    invalid_path = Path(args.invalid_json) if args.invalid_json is not None else None
 
     frame_indices = load_reviewed_frame_indices(reviewed_path)
     cam2_bboxes_input = load_bbox_dict(bbox_dir / "cam2_bboxes.json")
     cam4_bboxes_input = load_bbox_dict(bbox_dir / "cam4_bboxes.json")
     cam2_bboxes: dict[str, list[int]] = {}
     cam4_bboxes: dict[str, list[int]] = {}
-    invalid_cam2, invalid_cam4 = load_invalid_frame_sets(invalid_path)
+    invalid_frames = load_invalid_frames(invalid_path)
+    print(f"loaded invalid frames: {len(invalid_frames)}")
 
     output_cam2_dir = output_dir / "cam2"
     output_cam4_dir = output_dir / "cam4"
@@ -387,15 +336,15 @@ def main() -> None:
                 cam4_bbox_input=cam4_bboxes_input.get(str(frame_idx)),
                 output_cam2_dir=output_cam2_dir,
                 output_cam4_dir=output_cam4_dir,
-                invalid_cam2=invalid_cam2,
-                invalid_cam4=invalid_cam4,
-                padding_x=args.padding_x,
-                padding_y=args.padding_y,
+                invalid_frames=invalid_frames,
                 erp_w=erp_w,
                 erp_h=erp_h,
+                padding_left=args.padding_left,
+                padding_right=args.padding_right,
+                padding_top=args.padding_top,
+                padding_bottom=args.padding_bottom,
                 cam2_bboxes=cam2_bboxes,
                 cam4_bboxes=cam4_bboxes,
-                apply_extrinsic=args.apply_extrinsic,
             )
 
     with (output_dir / "cam2_bboxes.json").open("w", encoding="utf-8") as file:
@@ -406,13 +355,27 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-'''
-python src\script\test_function\debug025_crop_equirect_for_4dhumans.py `
+
+r"""
+python src\script\test_function\debug025_crop_equirect_rotate_from_bboxes.py `
+  --reviewed data_process\Input\20260320_riding\dataset1\review.json `
+  --bbox_dir data_process\Output\20260320_riding_dataset1\bbox_grounding_dino\equirect_rotate_smooth `
+  --equirect_dir data_process\Output\20260320_riding_dataset1\image\equirect_rotate `
+  --output_dir data_process\Output\20260320_riding_dataset1\image\equirect_crop_rotate `
+  --invalid_json data_process\Output\20260320_riding_dataset1\bbox_grounding_dino\equirect_rotate_smooth\invalid.json `
+  --padding_left 30 `
+  --padding_right 30 `
+  --padding_top 20 `
+  --padding_bottom 20
+  
+python src\script\test_function\debug025_crop_equirect_rotate_from_bboxes.py `
   --reviewed data_process\Input\20260311_riding\review.json `
-  --bbox_dir data_process\Output\20260311_riding\bbox_grounding_dino `
+  --bbox_dir data_process\Output\20260311_riding\bbox_grounding_dino\equirect_rotate_smooth `
   --equirect_dir data_process\Output\20260311_riding\image\equirect_rotate `
-  --output_dir data_process\Output\20260311_riding\image\equirect_rotate_crop `
-  --apply_extrinsic `
-  --padding_x 0 `
-  --padding_y 90
-'''
+  --output_dir data_process\Output\20260311_riding\image\equirect_crop_rotate `
+  --invalid_json data_process\Output\20260311_riding\bbox_grounding_dino\equirect_rotate_smooth\invalid.json `
+  --padding_left 30 `
+  --padding_right 30 `
+  --padding_top 20 `
+  --padding_bottom 20
+"""

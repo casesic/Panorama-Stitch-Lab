@@ -49,6 +49,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--start_frame", type=int, required=False, default=None, help="Start frame index, inclusive.")
     parser.add_argument("--end_frame", type=int, required=False, default=None, help="End frame index, inclusive.")
     parser.add_argument("--save_vis", action="store_true", help="Save visualization results.")
+    parser.add_argument(
+        "--directions",
+        choices=("both", "c2_to_c4", "c4_to_c2"),
+        default="both",
+        help="Semantic flow direction(s) to compute.",
+    )
+    parser.add_argument("--image_width", type=int, default=5760, help="ERP image width used when --save_vis is not set.")
+    parser.add_argument("--image_height", type=int, default=2880, help="ERP image height used when --save_vis is not set.")
+    parser.add_argument("--bbox_dir", type=str, default=None, help="Optional crop bbox directory containing cam2/cam4 bbox json.")
+    parser.add_argument("--bbox_padding", type=int, default=100, help="Padding added to bbox union when --bbox_dir is provided.")
     return parser.parse_args()
 
 
@@ -66,6 +76,28 @@ def find_segment_pkl(fitting_dir: Path, frame_idx: int):
             pkl_path_c4 = fitting_dir / "cam4" / pkl_path_c2.name
             return pkl_path_c2, pkl_path_c4, start
     return None, None, None
+
+
+def build_segment_index(fitting_dir: Path) -> dict[int, tuple[Path, Path, int]]:
+    cam2_dir = fitting_dir / "cam2"
+    cam4_dir = fitting_dir / "cam4"
+    pattern = re.compile(r"^seg_(\d+)_(\d+)_seq\.pkl$")
+    segment_index: dict[int, tuple[Path, Path, int]] = {}
+
+    for pkl_path_c2 in sorted(cam2_dir.glob("seg_*_*_seq.pkl")):
+        match = pattern.match(pkl_path_c2.name)
+        if match is None:
+            continue
+        start = int(match.group(1))
+        end = int(match.group(2))
+        pkl_path_c4 = cam4_dir / pkl_path_c2.name
+        if not pkl_path_c4.exists():
+            print(f"Warning: missing cam4 segment for {pkl_path_c2.name}, skipping segment")
+            continue
+        for frame_idx in range(start, end + 1):
+            segment_index[frame_idx] = (pkl_path_c2, pkl_path_c4, start)
+
+    return segment_index
 
 
 def load_all_verts(
@@ -101,6 +133,14 @@ def load_invalid_frames(invalid_json_path: Path | None) -> set[int]:
     return set(cam2_frames) | set(cam4_frames)
 
 
+def load_bbox_dict(json_path: Path) -> dict[str, list[int]]:
+    with json_path.open("r", encoding="utf-8") as file:
+        data = json.load(file)
+    if not isinstance(data, dict):
+        raise ValueError(f"bbox json must contain a dict: {json_path}")
+    return data
+
+
 def discover_frame_indices(fitting_dir: Path) -> list[int]:
     cam2_dir = fitting_dir / "cam2"
     pattern = re.compile(r"^seg_(\d+)_(\d+)_seq\.pkl$")
@@ -133,6 +173,36 @@ def compute_human_bbox(pts_list, erp_h, erp_w, padding=30):
     y1 = max(0, int(np.floor(all_pts[:, 1].min())) - padding)
     x2 = min(erp_w, int(np.ceil(all_pts[:, 0].max())) + padding)
     y2 = min(erp_h, int(np.ceil(all_pts[:, 1].max())) + padding)
+    return (x1, y1, x2, y2)
+
+
+def compute_human_bbox_from_crop_bboxes(
+    frame_idx: int,
+    cam2_bboxes: dict[str, list[int]] | None,
+    cam4_bboxes: dict[str, list[int]] | None,
+    erp_h: int,
+    erp_w: int,
+    padding: int,
+) -> tuple[int, int, int, int] | None:
+    if cam2_bboxes is None and cam4_bboxes is None:
+        return None
+
+    bbox_items = []
+    key = str(frame_idx)
+    if cam2_bboxes is not None and key in cam2_bboxes:
+        bbox_items.append(cam2_bboxes[key])
+    if cam4_bboxes is not None and key in cam4_bboxes:
+        bbox_items.append(cam4_bboxes[key])
+    if not bbox_items:
+        return None
+
+    bboxes = np.asarray(bbox_items, dtype=np.float64).reshape(-1, 4)
+    x1 = max(0, int(np.floor(bboxes[:, 0].min())) - padding)
+    y1 = max(0, int(np.floor(bboxes[:, 1].min())) - padding)
+    x2 = min(erp_w, int(np.ceil(bboxes[:, 2].max())) + padding)
+    y2 = min(erp_h, int(np.ceil(bboxes[:, 3].max())) + padding)
+    if x2 <= x1 or y2 <= y1:
+        return None
     return (x1, y1, x2, y2)
 
 
@@ -190,92 +260,129 @@ def process_frame(
     image_dir: Path,
     output_dir: Path,
     save_vis: bool,
+    directions: str,
+    erp_w: int,
+    erp_h: int,
+    cam2_bboxes: dict[str, list[int]] | None,
+    cam4_bboxes: dict[str, list[int]] | None,
+    bbox_padding: int,
 ):
-    image_path_c2 = image_dir / "cam2" / f"{frame_idx:05d}.jpg"
-    image_path_c4 = image_dir / "cam4" / f"{frame_idx:05d}.jpg"
-    img_cam2 = cv2.imread(str(image_path_c2), cv2.IMREAD_COLOR) if image_path_c2.exists() else None
-    img_cam4 = cv2.imread(str(image_path_c4), cv2.IMREAD_COLOR) if image_path_c4.exists() else None
+    img_cam2 = None
+    img_cam4 = None
+    if save_vis:
+        image_path_c2 = image_dir / "cam2" / f"{frame_idx:05d}.jpg"
+        image_path_c4 = image_dir / "cam4" / f"{frame_idx:05d}.jpg"
+        img_cam2 = cv2.imread(str(image_path_c2), cv2.IMREAD_COLOR) if image_path_c2.exists() else None
+        img_cam4 = cv2.imread(str(image_path_c4), cv2.IMREAD_COLOR) if image_path_c4.exists() else None
 
-    if img_cam2 is None and img_cam4 is None:
-        return {"frame_idx": frame_idx, "valid": False, "reason": "missing_both"}
-    if img_cam2 is None:
-        return {"frame_idx": frame_idx, "valid": False, "reason": "missing_cam2"}
-    if img_cam4 is None:
-        return {"frame_idx": frame_idx, "valid": False, "reason": "missing_cam4"}
+        if img_cam2 is None and img_cam4 is None:
+            return {"frame_idx": frame_idx, "valid": False, "reason": "missing_both"}
+        if img_cam2 is None:
+            return {"frame_idx": frame_idx, "valid": False, "reason": "missing_cam2"}
+        if img_cam4 is None:
+            return {"frame_idx": frame_idx, "valid": False, "reason": "missing_cam4"}
+        erp_h, erp_w = img_cam2.shape[:2]
 
     verts_unified_c2 = verts_c2 @ R_CAM2_NP.T
     verts_unified_c4 = verts_c4 @ R_CAM4_PROJ_NP.T
 
-    erp_h, erp_w = img_cam2.shape[:2]
-    pts_2d_cam2 = project_verts_to_rotated_erp(verts_unified_c2, IDENTITY_NP, erp_h, erp_w)
-    pts_2d_cam4 = project_verts_to_rotated_erp(verts_unified_c4, IDENTITY_NP, erp_h, erp_w)
-    human_bbox = compute_human_bbox([pts_2d_cam2, pts_2d_cam4], erp_h, erp_w)
-
-    _, visible_mask_c2 = get_visible_vertices_erp(
-        verts_world=verts_unified_c2,
-        faces=faces,
-        rotation_matrix=IDENTITY_NP,
+    human_bbox = compute_human_bbox_from_crop_bboxes(
+        frame_idx=frame_idx,
+        cam2_bboxes=cam2_bboxes,
+        cam4_bboxes=cam4_bboxes,
         erp_h=erp_h,
         erp_w=erp_w,
-        roi_bbox=human_bbox,
-    )
-    _, visible_mask_c4 = get_visible_vertices_erp(
-        verts_world=verts_unified_c4,
-        faces=faces,
-        rotation_matrix=IDENTITY_NP,
-        erp_h=erp_h,
-        erp_w=erp_w,
-        roi_bbox=human_bbox,
+        padding=bbox_padding,
     )
 
-    flow_c2c4, conf_c2c4 = compute_semantic_flow(
-        verts_world_A=verts_unified_c4,
-        verts_world_B=verts_unified_c2,
-        faces=faces,
-        erp_h=erp_h,
-        erp_w=erp_w,
-        rotation_matrix=IDENTITY_NP,
-        roi_bbox=human_bbox,
-        visible_mask_B=visible_mask_c2,
-    )
-    flow_c4c2, conf_c4c2 = compute_semantic_flow(
-        verts_world_A=verts_unified_c2,
-        verts_world_B=verts_unified_c4,
-        faces=faces,
-        erp_h=erp_h,
-        erp_w=erp_w,
-        rotation_matrix=IDENTITY_NP,
-        roi_bbox=human_bbox,
-        visible_mask_B=visible_mask_c4,
-    )
+    pts_2d_cam2 = None
+    pts_2d_cam4 = None
+    need_projected_points = save_vis or human_bbox is None
+    if need_projected_points:
+        pts_2d_cam2 = project_verts_to_rotated_erp(verts_unified_c2, IDENTITY_NP, erp_h, erp_w)
+        pts_2d_cam4 = project_verts_to_rotated_erp(verts_unified_c4, IDENTITY_NP, erp_h, erp_w)
+
+    if human_bbox is None:
+        human_bbox = compute_human_bbox([pts_2d_cam2, pts_2d_cam4], erp_h, erp_w)
+
+    flow_c2c4 = None
+    conf_c2c4 = None
+    flow_c4c2 = None
+    conf_c4c2 = None
+    compute_c2_to_c4 = directions in ("both", "c2_to_c4")
+    compute_c4_to_c2 = directions in ("both", "c4_to_c2")
+
+    if compute_c2_to_c4:
+        _, visible_mask_c2 = get_visible_vertices_erp(
+            verts_world=verts_unified_c2,
+            faces=faces,
+            rotation_matrix=IDENTITY_NP,
+            erp_h=erp_h,
+            erp_w=erp_w,
+            roi_bbox=human_bbox,
+        )
+        flow_c2c4, conf_c2c4 = compute_semantic_flow(
+            verts_world_A=verts_unified_c4,
+            verts_world_B=verts_unified_c2,
+            faces=faces,
+            erp_h=erp_h,
+            erp_w=erp_w,
+            rotation_matrix=IDENTITY_NP,
+            roi_bbox=human_bbox,
+            visible_mask_B=visible_mask_c2,
+        )
+
+    if compute_c4_to_c2:
+        _, visible_mask_c4 = get_visible_vertices_erp(
+            verts_world=verts_unified_c4,
+            faces=faces,
+            rotation_matrix=IDENTITY_NP,
+            erp_h=erp_h,
+            erp_w=erp_w,
+            roi_bbox=human_bbox,
+        )
+        flow_c4c2, conf_c4c2 = compute_semantic_flow(
+            verts_world_A=verts_unified_c2,
+            verts_world_B=verts_unified_c4,
+            faces=faces,
+            erp_h=erp_h,
+            erp_w=erp_w,
+            rotation_matrix=IDENTITY_NP,
+            roi_bbox=human_bbox,
+            visible_mask_B=visible_mask_c4,
+        )
 
     frame_output_dir = output_dir / f"frame_{frame_idx:05d}"
     frame_output_dir.mkdir(parents=True, exist_ok=True)
-    np.save(frame_output_dir / "semantic_flow_c2_to_c4.npy", flow_c2c4)
-    np.save(frame_output_dir / "semantic_flow_confidence_c2_to_c4.npy", conf_c2c4)
-    np.save(frame_output_dir / "semantic_flow_c4_to_c2.npy", flow_c4c2)
-    np.save(frame_output_dir / "semantic_flow_confidence_c4_to_c2.npy", conf_c4c2)
+    if compute_c2_to_c4:
+        np.save(frame_output_dir / "semantic_flow_c2_to_c4.npy", flow_c2c4)
+        np.save(frame_output_dir / "semantic_flow_confidence_c2_to_c4.npy", conf_c2c4)
+    if compute_c4_to_c2:
+        np.save(frame_output_dir / "semantic_flow_c4_to_c2.npy", flow_c4c2)
+        np.save(frame_output_dir / "semantic_flow_confidence_c4_to_c2.npy", conf_c4c2)
     np.save(frame_output_dir / "human_bbox.npy", np.asarray(human_bbox, dtype=np.int32))
 
     if save_vis:
         mesh_cam2 = visualize_mesh_on_erp(img_cam2, pts_2d_cam2)
         mesh_cam4 = visualize_mesh_on_erp(img_cam4, pts_2d_cam4)
-        flow_color_c2c4, flow_arrows_c2c4 = visualize_flow(flow_c2c4, conf_c2c4)
-        flow_color_c4c2, flow_arrows_c4c2 = visualize_flow(flow_c4c2, conf_c4c2)
         cv2.imwrite(str(frame_output_dir / "mesh_on_erp_cam2.jpg"), mesh_cam2, [cv2.IMWRITE_JPEG_QUALITY, 95])
         cv2.imwrite(str(frame_output_dir / "mesh_on_erp_cam4.jpg"), mesh_cam4, [cv2.IMWRITE_JPEG_QUALITY, 95])
-        cv2.imwrite(str(frame_output_dir / "flow_color_c2_to_c4.png"), flow_color_c2c4)
-        cv2.imwrite(str(frame_output_dir / "flow_arrows_c2_to_c4.png"), flow_arrows_c2c4)
-        cv2.imwrite(str(frame_output_dir / "flow_color_c4_to_c2.png"), flow_color_c4c2)
-        cv2.imwrite(str(frame_output_dir / "flow_arrows_c4_to_c2.png"), flow_arrows_c4c2)
+        if compute_c2_to_c4:
+            flow_color_c2c4, flow_arrows_c2c4 = visualize_flow(flow_c2c4, conf_c2c4)
+            cv2.imwrite(str(frame_output_dir / "flow_color_c2_to_c4.png"), flow_color_c2c4)
+            cv2.imwrite(str(frame_output_dir / "flow_arrows_c2_to_c4.png"), flow_arrows_c2c4)
+        if compute_c4_to_c2:
+            flow_color_c4c2, flow_arrows_c4c2 = visualize_flow(flow_c4c2, conf_c4c2)
+            cv2.imwrite(str(frame_output_dir / "flow_color_c4_to_c2.png"), flow_color_c4c2)
+            cv2.imwrite(str(frame_output_dir / "flow_arrows_c4_to_c2.png"), flow_arrows_c4c2)
 
     return {
         "frame_idx": frame_idx,
         "valid": True,
         "reason": "ok",
         "human_bbox": list(human_bbox),
-        "flow_pixels_c2_to_c4": int((conf_c2c4 > 0).sum()),
-        "flow_pixels_c4_to_c2": int((conf_c4c2 > 0).sum()),
+        "flow_pixels_c2_to_c4": int((conf_c2c4 > 0).sum()) if conf_c2c4 is not None else None,
+        "flow_pixels_c4_to_c2": int((conf_c4c2 > 0).sum()) if conf_c4c2 is not None else None,
     }
 
 
@@ -290,11 +397,27 @@ def main() -> None:
     smplx_model = get_smplx_batch(gender="neutral")
     faces = smplx_model.faces.numpy() if hasattr(smplx_model.faces, "numpy") else np.asarray(smplx_model.faces)
     faces = np.asarray(faces, dtype=int)
-    frame_indices = discover_frame_indices(fitting_dir)
+    segment_index = build_segment_index(fitting_dir)
+    frame_indices = sorted(segment_index.keys())
     if args.start_frame is not None:
         frame_indices = [i for i in frame_indices if i >= args.start_frame]
     if args.end_frame is not None:
         frame_indices = [i for i in frame_indices if i <= args.end_frame]
+
+    cam2_bboxes = None
+    cam4_bboxes = None
+    if args.bbox_dir is not None:
+        bbox_dir = Path(args.bbox_dir)
+        cam2_bbox_path = bbox_dir / "cam2_bboxes.json"
+        cam4_bbox_path = bbox_dir / "cam4_bboxes.json"
+        if cam2_bbox_path.exists():
+            cam2_bboxes = load_bbox_dict(cam2_bbox_path)
+        else:
+            print(f"Warning: cam2 bbox json not found: {cam2_bbox_path}")
+        if cam4_bbox_path.exists():
+            cam4_bboxes = load_bbox_dict(cam4_bbox_path)
+        else:
+            print(f"Warning: cam4 bbox json not found: {cam4_bbox_path}")
 
     meta = []
     _segment_cache: dict[Path, np.ndarray] = {}
@@ -304,12 +427,13 @@ def main() -> None:
             print(f"[frame {frame_idx:05d}] invalid_detection, skipping")
             continue
 
-        pkl_path_c2, pkl_path_c4, segment_start = find_segment_pkl(fitting_dir, frame_idx)
-        if pkl_path_c2 is None or pkl_path_c4 is None or segment_start is None:
+        segment_info = segment_index.get(frame_idx)
+        if segment_info is None:
             result = {"frame_idx": frame_idx, "valid": False, "reason": "no_segment"}
             meta.append(result)
             print(f"[frame {frame_idx:05d}] no_segment")
             continue
+        pkl_path_c2, pkl_path_c4, segment_start = segment_info
 
         try:
             if pkl_path_c2 not in _segment_cache:
@@ -333,6 +457,12 @@ def main() -> None:
                 image_dir=image_dir,
                 output_dir=output_dir,
                 save_vis=args.save_vis,
+                directions=args.directions,
+                erp_w=args.image_width,
+                erp_h=args.image_height,
+                cam2_bboxes=cam2_bboxes,
+                cam4_bboxes=cam4_bboxes,
+                bbox_padding=args.bbox_padding,
             )
         except Exception as exc:
             result = {"frame_idx": frame_idx, "valid": False, "reason": f"error: {exc}"}
@@ -371,3 +501,16 @@ python src\script\test_function\debug031_batch_semantic_flow.py `
   --invalid_json data_process\Output\20260311_riding\vis\dual_erp\invalid.json `
   --save_vis
 '''
+
+r'''
+python src\script\test_function\debug031_batch_semantic_flow.py `
+  --fitting_dir data_process\Output\20260320_riding_dataset1\fitting\dual_cam `
+  --image_dir data_process\Output\20260320_riding_dataset1\image\equirect_rotate `
+  --output_dir data_process\Output\20260320_riding_dataset1\semantic_flow `
+  --invalid_json data_process\Output\20260320_riding_dataset1\vis\dual_erp_no_sil\invalid.json `
+  --save_vis `
+  --start_frame 890 `
+  --end_frame 890
+'''
+
+# 这块要改, 要不然要一直改padding参数 现在先改为500, 以后可能直接用前面得到的bbox结果, 这样就不需要建立human_bbox了

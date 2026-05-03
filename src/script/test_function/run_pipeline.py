@@ -11,15 +11,17 @@ from typing import Any
 SCRIPT_BY_STEP: dict[str, str] = {
     "020": "debug020_run_export.py",
     "021": "debug021_run_fisheye_to_equirect.py",
-    "022": "debug022_detect_fisheye_bbox.py",
-    "023": "debug023_run_erp_fitting.py",
-    "024": "debug024_run_hmr_convert.py",
-    "025": "debug025_crop_equirect_for_4dhumans.py",
-    "026": "debug026_run_rtmlib_erp.py",
-    "027": "debug027_segment_human_erp.py",
-    "034": "debug034_generate_review.py",
     "035": "debug035_annotate_click_points.py",
-    "036": "debug036_detect_fisheye_bbox_direct.py",
+    "040": "debug040_detect_grounding_dino.py",
+    "041": "debug041_smooth_bboxes.py",
+    "025": "debug025_crop_equirect_rotate_from_bboxes.py",
+    "026": "debug026_run_rtmlib_erp.py",
+    "024": "debug024_run_hmr_convert.py",
+    "029": "debug029_run_dual_erp_fitting.py",
+    "030": "debug030_vis_dual_erp.py",
+    "031": "debug031_batch_semantic_flow.py",
+    "027": "debug027_segment_human_erp.py",
+    "037": "debug037_composite_human.py",
 }
 
 SUPPORTED_STEPS = tuple(SCRIPT_BY_STEP.keys())
@@ -27,7 +29,7 @@ SUPPORTED_STEPS = tuple(SCRIPT_BY_STEP.keys())
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Batch run selected debug020-027/debug034-debug036 pipeline steps for multiple datasets."
+        description="Batch run selected pipeline steps for multiple datasets."
     )
     parser.add_argument(
         "--config",
@@ -39,7 +41,7 @@ def parse_args() -> argparse.Namespace:
         "--steps",
         type=str,
         required=True,
-        help="Comma-separated step ids, e.g. 034,020,021,035,022,036,025,026,027",
+        help="Comma-separated step ids, e.g. 020,021,035,040,041,025,026,024,029,030,031,027,037",
     )
     parser.add_argument(
         "--datasets",
@@ -68,7 +70,8 @@ def load_config(config_path: Path) -> dict[str, dict[str, Any]]:
 
 
 def parse_steps(raw_steps: str) -> list[str]:
-    steps = [step.strip() for step in raw_steps.split(",") if step.strip()]
+    raw_items = [step.strip() for step in raw_steps.split(",") if step.strip()]
+    steps = [step.zfill(3) if step.isdigit() else step for step in raw_items]
     if not steps:
         raise ValueError("--steps must contain at least one step.")
 
@@ -106,20 +109,18 @@ def _require_field(dataset_name: str, dataset_config: dict[str, Any], field_name
     raise ValueError(f"Dataset '{dataset_name}' field '{field_name}' must be a non-empty string.")
 
 
-def _default_seg_path_from_reviewed(reviewed: str) -> str:
-    return str(Path(reviewed).with_name("seg.json"))
+def _get_field_with_default(dataset_config: dict, field_name: str, default):
+    return dataset_config.get(field_name, default)
+
+
+def _default_bbox_smooth_dir(bbox_dir: str) -> str:
+    bbox_path = Path(bbox_dir)
+    return str(bbox_path.parent / f"{bbox_path.name}_smooth")
 
 
 def build_step_args(step: str, dataset_name: str, dataset_config: dict[str, Any]) -> list[str]:
     reviewed = _require_field(dataset_name, dataset_config, "reviewed")
 
-    if step == "034":
-        return [
-            "--seg",
-            _default_seg_path_from_reviewed(reviewed),
-            "--output",
-            reviewed,
-        ]
     if step == "020":
         return [
             "--reviewed",
@@ -127,6 +128,7 @@ def build_step_args(step: str, dataset_name: str, dataset_config: dict[str, Any]
             "--output_dir",
             _require_field(dataset_name, dataset_config, "fisheye_dir"),
         ]
+
     if step == "021":
         return [
             "--reviewed",
@@ -134,95 +136,181 @@ def build_step_args(step: str, dataset_name: str, dataset_config: dict[str, Any]
             "--fisheye_dir",
             _require_field(dataset_name, dataset_config, "fisheye_dir"),
             "--output_dir",
-            _require_field(dataset_name, dataset_config, "equirect_dir"),
+            _require_field(dataset_name, dataset_config, "equirect_rotate_dir"),
             "--camera",
             _require_field(dataset_name, dataset_config, "camera"),
+            "--apply_extrinsic",
         ]
-    if step == "022":
-        cmd = [
-            "--reviewed",
-            reviewed,
-            "--input_dir",
-            _require_field(dataset_name, dataset_config, "fisheye_dir"),
-            "--output_dir",
-            _require_field(dataset_name, dataset_config, "rtm_fisheye_dir"),
-            "--camera_group",
-            _require_field(dataset_name, dataset_config, "camera"),
-            "--device",
-            _require_field(dataset_name, dataset_config, "device"),
-        ]
-        _append_optional_arg(cmd, dataset_config, "click_points")
-        return cmd
+
     if step == "035":
         return [
             "--reviewed",
             reviewed,
             "--fisheye_dir",
-            _require_field(dataset_name, dataset_config, "fisheye_dir"),
+            _require_field(dataset_name, dataset_config, "equirect_rotate_dir"),
             "--output",
             _require_field(dataset_name, dataset_config, "click_points"),
         ]
-    if step == "036":
+
+    if step == "040":
         cmd = [
             "--reviewed",
             reviewed,
             "--input_dir",
-            _require_field(dataset_name, dataset_config, "fisheye_dir"),
+            _require_field(dataset_name, dataset_config, "equirect_rotate_dir"),
             "--output_dir",
-            _require_field(dataset_name, dataset_config, "rtm_fisheye_dir"),
-            "--device",
-            _require_field(dataset_name, dataset_config, "device"),
+            _require_field(dataset_name, dataset_config, "bbox_dir"),
         ]
         _append_optional_arg(cmd, dataset_config, "click_points")
         return cmd
-    if step == "023":
+
+    if step == "041":
+        bbox_dir = _require_field(dataset_name, dataset_config, "bbox_dir")
+        bbox_smooth_dir = _get_field_with_default(dataset_config, "bbox_smooth_dir", _default_bbox_smooth_dir(bbox_dir))
+        image_width = _get_field_with_default(dataset_config, "image_width", 5760)
+        image_height = _get_field_with_default(dataset_config, "image_height", 2880)
+        window = _get_field_with_default(dataset_config, "bbox_smooth_window", 2)
+        max_gap = _get_field_with_default(dataset_config, "bbox_smooth_max_gap", 2)
+        max_expand_ratio = _get_field_with_default(dataset_config, "bbox_smooth_max_expand_ratio", 3)
         cmd = [
             "--reviewed",
             reviewed,
-            "--rtm_dir",
-            _require_field(dataset_name, dataset_config, "rtm_erp_dir"),
-            "--hmr_dir",
-            _require_field(dataset_name, dataset_config, "hmr_dir"),
+            "--input_dir",
+            bbox_dir,
             "--output_dir",
-            _require_field(dataset_name, dataset_config, "fitting_dir"),
+            bbox_smooth_dir,
+            "--image_dir",
+            _require_field(dataset_name, dataset_config, "equirect_rotate_dir"),
+            "--image_width",
+            str(image_width),
+            "--image_height",
+            str(image_height),
+            "--window",
+            str(window),
+            "--max_gap",
+            str(max_gap),
+            "--max_expand_ratio",
+            str(max_expand_ratio),
+            "--save_vis",
         ]
-        _append_optional_arg(cmd, dataset_config, "invalid_detections")
+        if _get_field_with_default(dataset_config, "bbox_smooth_save_vis", False):
+            cmd.append("--save_vis")
         return cmd
-    if step == "024":
-        return [
-            "--reviewed",
-            reviewed,
-            "--hmr_dir",
-            _require_field(dataset_name, dataset_config, "hmr_dir"),
-            "--output_dir",
-            _require_field(dataset_name, dataset_config, "hmr_cache_dir"),
-        ]
+
     if step == "025":
+        padding_left = _get_field_with_default(dataset_config, "padding_left", 250)
+        padding_right = _get_field_with_default(dataset_config, "padding_right", 250)
+        padding_top = _get_field_with_default(dataset_config, "padding_top", 150)
+        padding_bottom = _get_field_with_default(dataset_config, "padding_bottom", 150)
         cmd = [
             "--reviewed",
             reviewed,
-            "--rtm_dir",
-            _require_field(dataset_name, dataset_config, "rtm_fisheye_dir"),
+            "--bbox_dir",
+            _require_field(dataset_name, dataset_config, "bbox_dir"),
             "--equirect_dir",
-            _require_field(dataset_name, dataset_config, "equirect_dir"),
+            _require_field(dataset_name, dataset_config, "equirect_rotate_dir"),
             "--output_dir",
-            _require_field(dataset_name, dataset_config, "equirect_crop_dir"),
-            "--camera",
-            _require_field(dataset_name, dataset_config, "camera"),
+            _require_field(dataset_name, dataset_config, "equirect_crop_rotate_dir"),
+            "--padding_left",
+            str(padding_left),
+            "--padding_right",
+            str(padding_right),
+            "--padding_top",
+            str(padding_top),
+            "--padding_bottom",
+            str(padding_bottom),
         ]
         _append_optional_arg(cmd, dataset_config, "invalid_detections")
         return cmd
+
     if step == "026":
         return [
             "--reviewed",
             reviewed,
             "--crop_dir",
-            _require_field(dataset_name, dataset_config, "equirect_crop_dir"),
+            _require_field(dataset_name, dataset_config, "equirect_crop_rotate_dir"),
             "--output_dir",
             _require_field(dataset_name, dataset_config, "rtm_erp_dir"),
             "--device",
             _require_field(dataset_name, dataset_config, "device"),
         ]
+
+    if step == "024":
+        return [
+            "--reviewed",
+            reviewed,
+            "--4d_humans_dir",
+            _require_field(dataset_name, dataset_config, "4d_humans_dir"),
+            "--output_dir",
+            _require_field(dataset_name, dataset_config, "hmr_cache_dir"),
+            "--invalid_json",
+            str(Path(_require_field(dataset_name, dataset_config, "4d_humans_dir")).parent / "invalid.json"),
+        ]
+
+    if step == "029":
+        cmd = [
+            "--reviewed",
+            reviewed,
+            "--rtm_dir",
+            _require_field(dataset_name, dataset_config, "rtm_erp_dir"),
+            "--hmr_dir",
+            _require_field(dataset_name, dataset_config, "hmr_cache_dir"),
+            "--output_dir",
+            _require_field(dataset_name, dataset_config, "fitting_dir"),
+            "--bbox_dir",
+            _require_field(dataset_name, dataset_config, "equirect_crop_rotate_dir"),
+        ]
+        _append_optional_arg(cmd, dataset_config, "invalid_detections")
+
+        seg_dir = dataset_config.get("seg_dir")
+        if seg_dir:
+            seg_path = Path(seg_dir) / "equirect_rotate_crop"
+            cmd.extend(["--seg_dir", str(seg_path)])
+
+        use_sil = _get_field_with_default(dataset_config, "use_silhouette_loss", True)
+        if not use_sil:
+            cmd.append("--no_silhouette_loss")
+
+        max_seg = _get_field_with_default(dataset_config, "max_segment_len", 10)
+        cmd.extend(["--max_segment_len", str(max_seg)])
+        return cmd
+
+    if step == "030":
+        mesh = _get_field_with_default(dataset_config, "mesh", False)
+        scale = _get_field_with_default(dataset_config, "scale", 0.5)
+        cmd = [
+            "--result_dir",
+            _require_field(dataset_name, dataset_config, "fitting_dir"),
+            "--rtm_dir",
+            _require_field(dataset_name, dataset_config, "rtm_erp_dir"),
+            "--image_dir",
+            _require_field(dataset_name, dataset_config, "equirect_rotate_dir"),
+            "--output_dir",
+            _require_field(dataset_name, dataset_config, "vis_dir"),
+            "--scale",
+            str(scale),
+        ]
+        if mesh:
+            cmd.append("--mesh")
+        return cmd
+
+    if step == "031":
+        cmd = [
+            "--fitting_dir",
+            _require_field(dataset_name, dataset_config, "fitting_dual_dir"),
+            "--image_dir",
+            _require_field(dataset_name, dataset_config, "equirect_rotate_dir"),
+            "--output_dir",
+            _require_field(dataset_name, dataset_config, "flow_dir"),
+        ]
+
+        vis_dir = dataset_config.get("vis_dir")
+        if vis_dir:
+            invalid_json_path = Path(vis_dir) / "invalid.json"
+            if invalid_json_path.exists():
+                cmd.extend(["--invalid_json", str(invalid_json_path)])
+        return cmd
+
     if step == "027":
         cmd = [
             "--reviewed",
@@ -231,11 +319,31 @@ def build_step_args(step: str, dataset_name: str, dataset_config: dict[str, Any]
             _require_field(dataset_name, dataset_config, "equirect_crop_dir"),
             "--rtm_dir",
             _require_field(dataset_name, dataset_config, "rtm_erp_dir"),
+            "--bbox_dir",
+            _require_field(dataset_name, dataset_config, "equirect_crop_dir"),
             "--output_dir",
-            _require_field(dataset_name, dataset_config, "seg_dir"),
+            str(Path(_require_field(dataset_name, dataset_config, "seg_dir")) / "equirect_rotate_crop"),
         ]
         _append_optional_arg(cmd, dataset_config, "sam_model")
         return cmd
+
+    if step == "037":
+        return [
+            "--reviewed",
+            reviewed,
+            "--seg_dir",
+            str(Path(_require_field(dataset_name, dataset_config, "seg_dir")) / "equirect_crop_rotate_sam3"),
+            "--flow_dir",
+            _require_field(dataset_name, dataset_config, "flow_dir"),
+            "--image_dir",
+            _require_field(dataset_name, dataset_config, "equirect_rotate_dir"),
+            "--bbox_dir",
+            _require_field(dataset_name, dataset_config, "equirect_crop_rotate_dir"),
+            "--output_dir",
+            _require_field(dataset_name, dataset_config, "composite_dir"),
+            "--blend_direction",
+            _require_field(dataset_name, dataset_config, "blend_direction"),
+        ]
 
     raise ValueError(f"Unsupported step: {step}")
 
@@ -324,3 +432,15 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+r'''
+python src/script/test_function/run_pipeline.py \
+  --config data_process/Output/config.json \
+  --steps 020,021,035,040,025,026,024,029,030,031,027,037
+
+python src/script/test_function/run_pipeline.py `
+  --config data_process/Output/config.json `
+  --steps 029 `
+  --datasets dataset1
+'''

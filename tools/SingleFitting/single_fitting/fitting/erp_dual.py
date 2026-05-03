@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import math
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Callable, Dict
 
+import cv2
+import numpy as np
 import torch
 from torch import nn
 
@@ -31,7 +34,12 @@ _NON_SHAPE_LOSS_KEYS = (
 
 
 class DualCamERPFitter(BaseSMPLXFitter):
-    def __init__(self, gender: str = "neutral", R_cam4: torch.Tensor | None = None):
+    def __init__(
+        self,
+        gender: str = "neutral",
+        R_cam4: torch.Tensor | None = None,
+        use_silhouette_loss: bool = True,
+    ):
         super().__init__(gender=gender)
         self.conf_thresh = 0.57
         self.fps = 30.0
@@ -43,6 +51,7 @@ class DualCamERPFitter(BaseSMPLXFitter):
         self.max_iter_closure = 60
         self.stop_ratio = 1e-3
         self.hand_overall_weight = 2.0
+        self.use_silhouette_loss = use_silhouette_loss
         if R_cam4 is None:
             raise ValueError("R_cam4 must be provided for DualCamERPFitter")
         self.R_cam4 = R_cam4.clone().detach().float()
@@ -95,6 +104,72 @@ class DualCamERPFitter(BaseSMPLXFitter):
         R_rot = ROTATION_MATRIX.to(points_3d.device, dtype=points_3d.dtype)
         pts_cam4 = points_3d @ R_cam4.T  # points_3d: N*3  (3*3 @3*N)^T = N*3 @(3*3).T 
         return self._project_erp(pts_cam4 @ R_rot.T, W, H)
+
+    @staticmethod
+    def _prepare_silhouette_data(
+        mask_path: Path,
+        n_samples: int = 300,
+        device: str = "cpu",
+    ) -> torch.Tensor | None:
+        mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+        if mask is None:
+            return None
+
+        valid_mask = (mask > 127).astype(np.uint8)
+        h, w = valid_mask.shape[:2]
+        kernel_size = max(3, int(min(h, w) * 0.02))
+        if kernel_size % 2 == 0:
+            kernel_size += 1
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
+        eroded_mask = cv2.erode(valid_mask, kernel, iterations=1)
+
+        contours, _ = cv2.findContours(eroded_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+        if not contours:
+            return None
+
+        min_area = float(h * w) * 0.05
+        valid_contours = [cnt for cnt in contours if cv2.contourArea(cnt) >= min_area]
+        if not valid_contours:
+            return None
+
+        boundary_pts = np.concatenate([cnt.reshape(-1, 2) for cnt in valid_contours], axis=0)
+        if boundary_pts.shape[0] == 0:
+            return None
+
+        sample_count = min(int(n_samples), boundary_pts.shape[0])
+        sample_idx = np.linspace(0, boundary_pts.shape[0] - 1, num=sample_count, dtype=np.int64)
+        sampled_pts = boundary_pts[sample_idx]
+        return torch.tensor(sampled_pts, dtype=torch.float32, device=device)
+
+    def _compute_silhouette_loss(
+        self,
+        verts_world: torch.Tensor,
+        boundary_pts: torch.Tensor,
+        bbox: list[int],
+        project_fn,
+        erp_w: int,
+        erp_h: int,
+    ) -> torch.Tensor:
+        proj = project_fn(verts_world, erp_w, erp_h)
+        x1, y1, x2, y2 = bbox
+        offset = proj.new_tensor([x1, y1])
+        proj_local = proj - offset
+
+        crop_w = x2 - x1
+        crop_h = y2 - y1
+        valid_mask = (
+            (proj_local[:, 0] >= 0)
+            & (proj_local[:, 0] <= crop_w)
+            & (proj_local[:, 1] >= 0)
+            & (proj_local[:, 1] <= crop_h)
+        )
+        proj_local_valid = proj_local[valid_mask]
+        if proj_local_valid.shape[0] == 0:
+            return verts_world.new_zeros(())
+
+        boundary_pts = boundary_pts.to(proj_local_valid.device)
+        dists = torch.cdist(boundary_pts, proj_local_valid)
+        return dists.min(dim=1).values.mean()
 
     def _init_params(
         self,
@@ -203,6 +278,10 @@ class DualCamERPFitter(BaseSMPLXFitter):
         image_size,
         smplx_init_c2=None,
         smplx_init_c4=None,
+        boundary_pts_list_c2: list[torch.Tensor | None] | None = None,
+        boundary_pts_list_c4: list[torch.Tensor | None] | None = None,
+        bbox_list_c2: list[list[int] | None] | None = None,
+        bbox_list_c4: list[list[int] | None] | None = None,
     ):
         from lib_dynamic_hvip.smpl.smpl_lib import forward_smplx_tensor_batch
 
@@ -227,9 +306,12 @@ class DualCamERPFitter(BaseSMPLXFitter):
         shape_anchor = shared_beta.clone().detach()
         pose_anchor = shared_body_pose.clone().detach()
 
+        sil_weight = 0.3 if self.use_silhouette_loss else 0.0
         base_weights = {
             "body_2d_det_c2": n_frame * 1.0,
             "body_2d_det_c4": n_frame * 1.0,
+            "loss_sil_c2": n_frame * sil_weight,
+            "loss_sil_c4": n_frame * sil_weight,
             "loss_pose_prior_c2": n_frame * 0.05,
             "loss_pose_prior_c4": n_frame * 0.05,
             "loss_hand_prior_c2": n_frame * 0.02,
@@ -254,6 +336,8 @@ class DualCamERPFitter(BaseSMPLXFitter):
                 {
                     "body_2d_det_c2": 1.0,
                     "body_2d_det_c4": 1.0,
+                    "loss_sil_c2": 0.0,
+                    "loss_sil_c4": 0.0,
                     "loss_pose_prior_c2": 0.0,
                     "loss_pose_prior_c4": 0.0,
                     "loss_hand_prior_c2": 0.0,
@@ -285,6 +369,8 @@ class DualCamERPFitter(BaseSMPLXFitter):
                 {
                     "body_2d_det_c2": 1.0,
                     "body_2d_det_c4": 1.0,
+                    "loss_sil_c2": 1.0,
+                    "loss_sil_c4": 1.0,
                     "loss_pose_prior_c2": 1.0,
                     "loss_pose_prior_c4": 1.0,
                     "loss_hand_prior_c2": 0.0,
@@ -339,8 +425,8 @@ class DualCamERPFitter(BaseSMPLXFitter):
             # ),
         ]
 
-        def make_loss_fn():
-            _, joints_c2, _ = forward_smplx_tensor_batch(
+        def make_loss_fn(compute_sil_c2: bool, compute_sil_c4: bool):
+            verts_c2, joints_c2, _ = forward_smplx_tensor_batch(
                 smplx_model=model,
                 global_orient=smpl_c2.orient,
                 body_pose=shared_body_pose.unsqueeze(0).expand(n_frame, -1)
@@ -352,7 +438,7 @@ class DualCamERPFitter(BaseSMPLXFitter):
                 transl=smpl_c2.transl,
                 scale=smpl_c2.scale.expand(n_frame),
             )
-            _, joints_c4, _ = forward_smplx_tensor_batch(
+            verts_c4, joints_c4, _ = forward_smplx_tensor_batch(
                 smplx_model=model,
                 global_orient=smpl_c4.orient,
                 body_pose=shared_body_pose.unsqueeze(0).expand(n_frame, -1)
@@ -382,6 +468,36 @@ class DualCamERPFitter(BaseSMPLXFitter):
                 H=erp_h,
             )
 
+            if compute_sil_c2:
+                sil_losses_c2 = []
+                for i in range(n_frame):
+                    bpts = boundary_pts_list_c2[i] if boundary_pts_list_c2 else None
+                    bbox = bbox_list_c2[i] if bbox_list_c2 else None
+                    if bpts is not None and bbox is not None:
+                        sil_losses_c2.append(
+                            self._compute_silhouette_loss(
+                                verts_c2[i], bpts, bbox, self._project_cam2, erp_w, erp_h
+                            )
+                        )
+                loss_sil_c2 = torch.stack(sil_losses_c2).mean() if sil_losses_c2 else verts_c2.new_zeros(())
+            else:
+                loss_sil_c2 = verts_c2.new_zeros(())
+
+            if compute_sil_c4:
+                sil_losses_c4 = []
+                for i in range(n_frame):
+                    bpts = boundary_pts_list_c4[i] if boundary_pts_list_c4 else None
+                    bbox = bbox_list_c4[i] if bbox_list_c4 else None
+                    if bpts is not None and bbox is not None:
+                        sil_losses_c4.append(
+                            self._compute_silhouette_loss(
+                                verts_c4[i], bpts, bbox, self._project_cam2, erp_w, erp_h
+                            )
+                        )
+                loss_sil_c4 = torch.stack(sil_losses_c4).mean() if sil_losses_c4 else verts_c4.new_zeros(())
+            else:
+                loss_sil_c4 = verts_c4.new_zeros(())
+
             proxy_c2 = SimpleNamespace(
                 transl=smpl_c2.transl,
                 body_pose=shared_body_pose,
@@ -405,6 +521,8 @@ class DualCamERPFitter(BaseSMPLXFitter):
             losses_all = {
                 "body_2d_det_c2": losses_c2.get("body_2d_det", joints_c2.new_zeros(())),
                 "body_2d_det_c4": losses_c4.get("body_2d_det", joints_c4.new_zeros(())),
+                "loss_sil_c2": loss_sil_c2,
+                "loss_sil_c4": loss_sil_c4,
             }
             losses_all.update(self._suffix_non_shape_losses(reg_c2, "c2"))
             losses_all.update(self._suffix_non_shape_losses(reg_c4, "c4"))
@@ -418,6 +536,8 @@ class DualCamERPFitter(BaseSMPLXFitter):
 
         for stage_name, get_params, max_iter, stage_stop, weight_mult in optimization_stages:
             stage_weights = {k: base_weights[k] * weight_mult.get(k, 1.0) for k in base_weights}
+            compute_sil_c2 = stage_weights.get("loss_sil_c2", 0.0) > 0
+            compute_sil_c4 = stage_weights.get("loss_sil_c4", 0.0) > 0
             params = get_params()
             optimizer = torch.optim.LBFGS(
                 params,
@@ -431,7 +551,10 @@ class DualCamERPFitter(BaseSMPLXFitter):
                 for p in params:
                     p.grad = None
                 optimizer.zero_grad()
-                losses_all = make_loss_fn()
+                losses_all = make_loss_fn(
+                    compute_sil_c2=compute_sil_c2,
+                    compute_sil_c4=compute_sil_c4,
+                )
                 zero = next(iter(losses_all.values())).new_zeros(1)
                 loss = sum(losses_all.get(k, zero) * stage_weights[k] for k in stage_weights)
                 latest_loss = float(loss.detach().cpu().item())
