@@ -2,7 +2,15 @@ import cv2
 import numpy as np
 from typing import Optional, Tuple
 from lib_pano.flow.raft_flow import RAFTFlow
-from lib_pano.flow.roi_process import soft_overlap_from_masks, extract_overlap_roi, blend_priority
+from lib_pano.flow.roi_process import (
+    soft_overlap_from_masks,
+    extract_overlap_roi,
+    blend_priority,
+    crop_mask_by_bbox,
+    compute_landed_source_valid_mask,
+    compute_photometric_mask,
+    build_flow_seed_mask,
+)
 from lib_pano.flow.warp_strategy import apply_warp, WarpStrategy, MeshConfig, DistanceConfig
 from lib_pano.flow.seam_repair import repair_seam
 from lib_pano.flow.debug_writer import DebugWriter
@@ -24,32 +32,60 @@ def stitch_with_flow(
     use_seam_repair: bool = True,
     seam_band_radius: int = 15,
     inpaint_radius: int = 3,
+    photometric_threshold: int = 30,
     debug_dir: Optional[str] = None,
 ) -> Tuple[np.ndarray, np.ndarray]:
     writer = DebugWriter(debug_dir=debug_dir, enabled=debug_dir is not None)
 
     src_m = (source_valid_mask > 0).astype(np.uint8) * 255
     tgt_m = (target_valid_mask > 0).astype(np.uint8) * 255
-    overlap_mask = soft_overlap_from_masks(src_m, tgt_m, extend_y=extend_y)
-    nz_pixels = cv2.countNonZero(overlap_mask)
+    support_roi_mask = soft_overlap_from_masks(src_m, tgt_m, extend_y=extend_y)
+    writer.write_mask('support_roi_mask.png', support_roi_mask)
+    nz_pixels = cv2.countNonZero(support_roi_mask)
 
     if nz_pixels < 100:
         merged_mask = cv2.max(src_m, tgt_m)
         return cv2.max(img_source, img_target), merged_mask
 
-    crop_source, crop_target, roi_bbox = extract_overlap_roi(img_source, img_target, overlap_mask)
+    crop_source, crop_target, roi_bbox = extract_overlap_roi(img_source, img_target, support_roi_mask)
     writer.write_crops(crop_source, crop_target)
 
-    flow_roi, valid_mask = raft_flow.compute(crop_source, crop_target, bidirectional=bidirectional)
-    writer.write_flow(flow_roi, valid_mask)
+    source_valid_roi = crop_mask_by_bbox(source_valid_mask, roi_bbox)
+    target_valid_roi = crop_mask_by_bbox(target_valid_mask, roi_bbox)
+    writer.write_mask('source_valid_roi.png', source_valid_roi)
+    writer.write_mask('target_valid_roi.png', target_valid_roi)
+
+    flow_roi, raft_valid_mask = raft_flow.compute(crop_source, crop_target, bidirectional=bidirectional)
+    writer.write_flow(flow_roi, raft_valid_mask)
     writer.write_alignment_debug(crop_source, crop_target, flow_roi)
+
+    source_valid_at_landed = compute_landed_source_valid_mask(flow_roi, source_valid_roi)
+    photometric_mask, warped_source_by_raft = compute_photometric_mask(
+        crop_source,
+        crop_target,
+        flow_roi,
+        threshold=photometric_threshold,
+    )
+    flow_seed_mask = build_flow_seed_mask(
+        target_valid_roi=target_valid_roi,
+        source_valid_at_landed=source_valid_at_landed,
+        raft_valid_mask=raft_valid_mask,
+        photometric_mask=photometric_mask,
+    )
+
+    writer.write_mask('source_valid_at_landed.png', source_valid_at_landed)
+    if raft_valid_mask is not None:
+        writer.write_mask('raft_valid_mask.png', raft_valid_mask)
+    writer.write_mask('photometric_mask.png', photometric_mask)
+    writer.write_mask('final_flow_seed_mask.png', flow_seed_mask)
+    writer._save('warped_source_by_raft.png', warped_source_by_raft)
 
     warp_result = apply_warp(
         img_source=img_source,
         img_target=img_target,
         flow_roi=flow_roi,
         roi_bbox=roi_bbox,
-        valid_mask=valid_mask,
+        valid_mask=flow_seed_mask,
         strategy=strategy,
         source_valid_mask=source_valid_mask,
         target_valid_mask=target_valid_mask,

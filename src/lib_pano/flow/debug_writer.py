@@ -34,7 +34,18 @@ class DebugWriter:
     def write_flow(self, flow_roi: np.ndarray, valid_mask: Optional[np.ndarray] = None):
         self._save('flow_roi_vis.png', _visualize_flow_bgr(flow_roi))
         if valid_mask is not None:
-            self._save('flow_validity_mask.png', (valid_mask * 255).astype(np.uint8))
+            self.write_mask('flow_validity_mask.png', valid_mask)
+
+    def write_mask(self, name: str, mask: np.ndarray):
+        filename = name if name.lower().endswith('.png') else f'{name}.png'
+        mask_to_save = mask
+        if mask_to_save.dtype == np.bool_:
+            mask_to_save = mask_to_save.astype(np.uint8) * 255
+        else:
+            mask_to_save = mask_to_save.astype(np.uint8)
+            if mask_to_save.max() <= 1:
+                mask_to_save = mask_to_save * 255
+        self._save(filename, mask_to_save)
 
     def write_alignment_debug(
         self,

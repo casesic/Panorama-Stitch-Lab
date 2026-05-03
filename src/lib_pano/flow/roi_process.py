@@ -55,6 +55,75 @@ def extract_overlap_roi(
     return crop_1, crop_2, roi_bbox
 
 
+def crop_mask_by_bbox(mask: np.ndarray, roi_bbox: Tuple[int, int, int, int]) -> np.ndarray:
+    x_min, y_min, x_max, y_max = roi_bbox
+    return mask[y_min:y_max, x_min:x_max].copy()
+
+
+def compute_landed_source_valid_mask(
+    flow_roi: np.ndarray,
+    source_valid_roi: np.ndarray,
+) -> np.ndarray:
+    h, w = flow_roi.shape[:2]
+    grid_y, grid_x = np.mgrid[0:h, 0:w].astype(np.float32)
+    map_x = grid_x + flow_roi[..., 0].astype(np.float32)
+    map_y = grid_y + flow_roi[..., 1].astype(np.float32)
+
+    source_valid_at_landed = cv2.remap(
+        _ensure_binary_mask(source_valid_roi),
+        map_x,
+        map_y,
+        interpolation=cv2.INTER_NEAREST,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=0,
+    )
+    return _ensure_binary_mask(source_valid_at_landed)
+
+
+def compute_photometric_mask(
+    crop_source: np.ndarray,
+    crop_target: np.ndarray,
+    flow_roi: np.ndarray,
+    threshold: int = 30,
+) -> Tuple[np.ndarray, np.ndarray]:
+    h, w = flow_roi.shape[:2]
+    grid_y, grid_x = np.mgrid[0:h, 0:w].astype(np.float32)
+    map_x = grid_x + flow_roi[..., 0].astype(np.float32)
+    map_y = grid_y + flow_roi[..., 1].astype(np.float32)
+
+    warped_source = cv2.remap(
+        crop_source,
+        map_x,
+        map_y,
+        interpolation=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=0,
+    )
+    err = np.mean(
+        np.abs(warped_source.astype(np.float32) - crop_target.astype(np.float32)),
+        axis=2,
+    )
+    photometric_mask = (err < threshold).astype(np.uint8) * 255
+    return photometric_mask, warped_source
+
+
+def build_flow_seed_mask(
+    target_valid_roi: np.ndarray,
+    source_valid_at_landed: np.ndarray,
+    raft_valid_mask: Optional[np.ndarray] = None,
+    photometric_mask: Optional[np.ndarray] = None,
+) -> np.ndarray:
+    flow_seed_mask = (target_valid_roi > 0) & (source_valid_at_landed > 0)
+
+    if raft_valid_mask is not None:
+        flow_seed_mask &= raft_valid_mask > 0
+
+    if photometric_mask is not None:
+        flow_seed_mask &= photometric_mask > 0
+
+    return flow_seed_mask.astype(np.uint8) * 255
+
+
 def blend_priority(
     image_source: np.ndarray,
     image_target: np.ndarray,

@@ -11,9 +11,9 @@ from lib_pano.flow.raft_flow import RAFTFlow
 from lib_pano.flow.warp_strategy import WarpStrategy, MeshConfig, DistanceConfig
 from lib_pano.stitch.flow_stitcher import stitch_with_flow
 
-INPUT_DIR = r"data_process/Output/20260311_riding/stitch_raw"
-OUTPUT_DIR = r"data_process/Output/20260311_riding/raft_stitch"
-INDEX_START = 513
+INPUT_DIR = r"data_process/Output/20260311_riding_fragment/stitch_raw"
+OUTPUT_DIR = r"data_process/Output/20260311_riding_fragment/raft_stitch"
+INDEX_START = 514
 NUM_FRAMES = 1
 WARP_DIRECTION = "cam4_to_cam2"
 
@@ -23,6 +23,8 @@ BIDIRECTIONAL = True
 BLEND_THRESHOLD = 1
 BLEND_ERODE_KERNEL_SIZE = 0
 EXTEND_Y = 180
+PHOTO_THRESHOLD = 80
+RAFT_CONSISTENCY_THRESH = 40
 WARP_STRATEGY = WarpStrategy.MESH_UNIDIRECTIONAL
 MESH_CONFIG = MeshConfig(
     grid_size=32,
@@ -36,7 +38,7 @@ MESH_CONFIG = MeshConfig(
 #     max_propagation_px=400.0,
 #     downsample_factor=2,
 # )
-USE_SEAM_REPAIR = True
+USE_SEAM_REPAIR = False
 
 ROTATION_MATRIX = np.array([1, 0, 0, 0, 0, 1, 0, -1, 0], dtype=np.float64).reshape(3, 3)
 ROTATION_INV = ROTATION_MATRIX.T
@@ -93,6 +95,7 @@ def process_frame(frame_idx, raft_flow):
         blend_threshold=BLEND_THRESHOLD,
         blend_erode_kernel_size=BLEND_ERODE_KERNEL_SIZE,
         use_seam_repair=USE_SEAM_REPAIR,
+        photometric_threshold=PHOTO_THRESHOLD,
         debug_dir=str(output_dir),
     )
 
@@ -112,7 +115,7 @@ def process_frame(frame_idx, raft_flow):
 
 def main():
     print("Initializing RAFTFlow...")
-    raft_flow = RAFTFlow(model_path=os.path.join(RAFT_MODELS_PATH, 'raft-things.pth'), consistency_thresh=40)
+    raft_flow = RAFTFlow(model_path=os.path.join(RAFT_MODELS_PATH, 'raft-things.pth'), consistency_thresh=RAFT_CONSISTENCY_THRESH)
 
     success_count = 0
     for frame_idx in range(INDEX_START, INDEX_START + NUM_FRAMES):

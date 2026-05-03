@@ -475,27 +475,26 @@ if __name__ == "__main__":
 
 
 r'''
-python src\script\test_function\debug037_composite_human.py \
-  --seg_dir data_process\Output\20260311_riding\seg\equirect_crop_rotate_sam3 \
-  --flow_dir data_process\Output\20260311_riding\semantic_flow\no_sil \
-  --image_dir data_process\Output\20260311_riding\image\equirect_rotate \
-  --bbox_dir data_process\Output\20260311_riding\image\equirect_crop_rotate \
-  --output_dir data_process\Output\20260311_riding\composite_human\no_sil \
-  --reviewed data_process\Input\20260311_riding\review.json \
-  --blend_direction top \
+python src\script\test_function\debug037_composite_human.py `
+  --seg_dir data_process\Output\20260311_riding\seg\equirect_crop_rotate_sam3 `
+  --flow_dir data_process\Output\20260311_riding\semantic_flow\new_sil `
+  --image_dir data_process\Output\20260311_riding\image\equirect_rotate `
+  --bbox_dir data_process\Output\20260311_riding\image\equirect_crop_rotate `
+  --output_dir data_process\Output\20260311_riding\composite_human\new_sil `
+  --reviewed data_process\Input\20260311_riding\review.json `
+  --blend_direction top `
   --directions c2_to_c4 
 '''
 
 r'''
 python src\script\test_function\debug037_composite_human.py `
   --seg_dir data_process\Output\20260320_riding_dataset1\seg\equirect_crop_rotate_sam3 `
-  --flow_dir data_process\Output\20260320_riding_dataset1\semantic_flow `
+  --flow_dir data_process\Output\20260320_riding_dataset1\semantic_flow\new_sil `
   --image_dir data_process\Output\20260320_riding_dataset1\image\equirect_rotate `
   --bbox_dir data_process\Output\20260320_riding_dataset1\image\equirect_crop_rotate `
-  --output_dir data_process\Output\20260320_riding_dataset1\composite_human `
+  --output_dir data_process\Output\20260320_riding_dataset1\composite_human\new_sil `
   --reviewed data_process\Input\20260320_riding\dataset1\review.json `
   --blend_direction bottom `
-  --start 890 `
-  --end 890
+  --directions c4_to_c2
 ''' 
 # 0311_riding top, 0320_riding_dataset1 bottom,  0320_riding_dataset1 bottom(不完善，可能要做改变) 
