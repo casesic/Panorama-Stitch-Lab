@@ -58,9 +58,9 @@ def _build_equirect_dirs(
     lon = (uu / float(out_w) - 0.5) * (2.0 * np.pi)
 
     cos_lat = np.cos(lat)
-    x = cos_lat * np.cos(lon)
+    x = cos_lat * np.sin(lon)  
     y = np.sin(lat)
-    z = cos_lat * np.sin(lon)
+    z = cos_lat * np.cos(lon)  
 
     if rotation_matrix is not None:
         dirs = np.stack([x, y, z], axis=-1)

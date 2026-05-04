@@ -15,24 +15,24 @@ PROJECT_ROOT = Path(config_script.PROJECT_ROOT)
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from tools.fisheye_extractor.config import DS_PARAMS, DS_PARAMS_CAM2, DS_PARAMS_CAM4
-from tools.fisheye_extractor.ds_model import project
+from lib_pano.camera.fisheye_equirect import (
+    OUTPUT_HEIGHT,
+    OUTPUT_WIDTH,
+    R_EXTRINSIC_CAM2,
+    R_EXTRINSIC_CAM4,
+    apply_valid_mask_to_image,
+    build_equirect_lut,
+    build_erp_valid_mask_from_lut_and_lens,
+    build_fisheye_lens_mask,
+    build_valid_mask_from_lut,
+    convert_fisheye_to_equirect,
+    encode_jpeg,
+    make_horizontal_flow_valid_mask,
+    select_camera_params,
+)
 
 
-ERP_WIDTH = 5760
-ERP_HEIGHT = 2880
-OUTPUT_WIDTH = 5760
-OUTPUT_HEIGHT = 2880
 JPEG_QUALITY = 95
-ROTATION_MATRIX = np.array(
-    [1, 0, 0, 0, 0, 1, 0, -1, 0],
-    dtype=np.float64,
-).reshape(3, 3)
-R_EXTRINSIC_CAM2 = np.eye(3, dtype=np.float64)
-R_EXTRINSIC_CAM4 = np.array(
-    [-1.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 1.0],
-    dtype=np.float64,
-).reshape(3, 3)
 
 
 def parse_args() -> argparse.Namespace:
@@ -68,6 +68,47 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Apply camera extrinsic rotation before fisheye projection.",
     )
+    parser.add_argument(
+        "--lens_threshold",
+        type=int,
+        default=5,
+        help="Threshold used to detect fisheye lens content mask.",
+    )
+    parser.add_argument(
+        "--lens_close_kernel",
+        type=int,
+        default=51,
+        help="Morphological close kernel size for fisheye lens mask.",
+    )
+    parser.add_argument(
+        "--lens_erode_px",
+        type=int,
+        default=8,
+        help="Erode fisheye lens mask before ERP remap to remove edge flare.",
+    )
+    parser.add_argument(
+        "--export_flow_use",
+        action="store_true",
+        help="Also export flow-use equirect images with trimmed valid masks.",
+    )
+    parser.add_argument(
+        "--flow_output_dir",
+        type=str,
+        default=None,
+        help="Output directory for flow-use equirect images. If omitted, use sibling directory named equirect_rotate_for_flow_use.",
+    )
+    parser.add_argument(
+        "--flow_trim_margin_px",
+        type=int,
+        default=40,
+        help="Trim margin in pixels for flow-use valid mask.",
+    )
+    parser.add_argument(
+        "--flow_trim_percentile",
+        type=float,
+        default=5.0,
+        help="Percentile used to estimate horizontal flow valid boundary.",
+    )
     return parser.parse_args()
 
 
@@ -88,90 +129,15 @@ def load_reviewed_frame_indices(reviewed_path: Path) -> list[int]:
     return sorted(frame_indices)
 
 
-def _select_camera_params(camera_group: str) -> tuple[dict[str, float], dict[str, float]]:
-    """Return DS parameter sets for cam2 and cam4."""
-    if camera_group == "new":
-        return DS_PARAMS_CAM2, DS_PARAMS_CAM4
-    return DS_PARAMS, DS_PARAMS
+def find_first_existing_pair(frame_indices: list[int], fisheye_dir: Path) -> tuple[Path, Path]:
+    """Find the first reviewed frame where both camera images exist."""
+    for frame_idx in frame_indices:
+        cam2_path = fisheye_dir / "cam2" / f"{frame_idx:05d}.jpg"
+        cam4_path = fisheye_dir / "cam4" / f"{frame_idx:05d}.jpg"
+        if cam2_path.exists() and cam4_path.exists():
+            return cam2_path, cam4_path
 
-
-def build_equirect_lut(
-    ds_params: dict[str, float],
-    width: int = ERP_WIDTH,
-    height: int = ERP_HEIGHT,
-    chunk_rows: int = 128,
-    R_extrinsic: np.ndarray | None = None,
-    desc: str = "Building LUT",
-) -> tuple[np.ndarray, np.ndarray]:
-    """Build an equirect-to-fisheye remap LUT once for a given camera."""
-    map_x = np.full((height, width), -1.0, dtype=np.float32)
-    map_y = np.full((height, width), -1.0, dtype=np.float32)
-
-    u_coords = np.arange(width, dtype=np.float64)
-    lon = (u_coords / float(width)) * (2.0 * np.pi) - np.pi
-    sin_lon = np.sin(lon)
-    cos_lon = np.cos(lon)
-
-    for row_start in tqdm(
-        range(0, height, chunk_rows),
-        desc=desc,
-        unit="chunk",
-        leave=False,
-    ):
-        row_end = min(row_start + chunk_rows, height)
-        v_coords = np.arange(row_start, row_end, dtype=np.float64)
-        lat = (v_coords / float(height)) * np.pi - (np.pi / 2.0)
-
-        cos_lat = np.cos(lat)[:, None]
-        sin_lat = np.sin(lat)[:, None]
-
-        ray = np.stack(
-            [
-                cos_lat * sin_lon[None, :],
-                np.broadcast_to(sin_lat, (row_end - row_start, width)),
-                cos_lat * cos_lon[None, :],
-            ],
-            axis=-1,
-        )
-        if R_extrinsic is not None:
-            ray_rot = ray.reshape(-1, 3) @ R_extrinsic.T @ ROTATION_MATRIX.T
-        else:
-            ray_rot = ray.reshape(-1, 3) @ ROTATION_MATRIX.T
-        fisheye_pixels, valid_mask = project(ray_rot, ds_params)
-
-        pixels_chunk = fisheye_pixels.reshape(row_end - row_start, width, 2)
-        valid_chunk = valid_mask.reshape(row_end - row_start, width)
-        map_x_chunk = map_x[row_start:row_end]
-        map_y_chunk = map_y[row_start:row_end]
-        map_x_chunk[valid_chunk] = pixels_chunk[..., 0][valid_chunk]
-        map_y_chunk[valid_chunk] = pixels_chunk[..., 1][valid_chunk]
-
-    return map_x, map_y
-
-
-def _convert_fisheye_to_equirect(
-    frame: np.ndarray,
-    map_x: np.ndarray,
-    map_y: np.ndarray,
-) -> np.ndarray:
-    """Remap one fisheye frame to equirect and resize for output."""
-    equirect = cv2.remap(
-        frame,
-        map_x,
-        map_y,
-        interpolation=cv2.INTER_LINEAR,
-        borderMode=cv2.BORDER_CONSTANT,
-        borderValue=0,
-    )
-    return cv2.resize(equirect, (OUTPUT_WIDTH, OUTPUT_HEIGHT), interpolation=cv2.INTER_AREA)
-
-
-def _encode_jpeg(frame: np.ndarray) -> bytes | None:
-    """Encode one frame to JPEG bytes with quality 95."""
-    ok, encoded = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), JPEG_QUALITY])
-    if not ok:
-        return None
-    return encoded.tobytes()
+    raise RuntimeError("No existing cam2/cam4 fisheye image pair found.")
 
 
 def export_group(
@@ -179,9 +145,14 @@ def export_group(
     fisheye_dir: Path,
     cam2_dir: Path,
     cam4_dir: Path,
-    cam2_lut: tuple[np.ndarray, np.ndarray],
-    cam4_lut: tuple[np.ndarray, np.ndarray],
+    cam2_lut: tuple,
+    cam4_lut: tuple,
     progress: tqdm,
+    flow_cam2_dir: Path | None = None,
+    flow_cam4_dir: Path | None = None,
+    flow_valid_cam2: np.ndarray | None = None,
+    flow_valid_cam4: np.ndarray | None = None,
+    export_flow_use: bool = False,
 ) -> None:
     """Export reviewed fisheye image pairs to equirect images for both cameras."""
     map_x_cam2, map_y_cam2 = cam2_lut
@@ -197,11 +168,11 @@ def export_group(
 
         main_output = cam2_dir / f"{frame_idx:05d}.jpg"
         partner_output = cam4_dir / f"{frame_idx:05d}.jpg"
-        cam2_frame = _convert_fisheye_to_equirect(main_frame, map_x_cam2, map_y_cam2)
-        cam4_frame = _convert_fisheye_to_equirect(partner_frame, map_x_cam4, map_y_cam4)
+        cam2_frame = convert_fisheye_to_equirect(main_frame, map_x_cam2, map_y_cam2)
+        cam4_frame = convert_fisheye_to_equirect(partner_frame, map_x_cam4, map_y_cam4)
 
-        cam2_encoded = _encode_jpeg(cam2_frame)
-        cam4_encoded = _encode_jpeg(cam4_frame)
+        cam2_encoded = encode_jpeg(cam2_frame, quality=JPEG_QUALITY)
+        cam4_encoded = encode_jpeg(cam4_frame, quality=JPEG_QUALITY)
         if cam2_encoded is None or cam4_encoded is None:
             print(f"Warning: failed to encode paired frames, skipping frame {frame_idx}")
             progress.update(1)
@@ -212,6 +183,26 @@ def export_group(
             partner_output.write_bytes(cam4_encoded)
         except OSError:
             print(f"Warning: failed to save paired frames, skipping frame {frame_idx}")
+            progress.update(1)
+            continue
+
+        if export_flow_use:
+            if (
+                flow_cam2_dir is None
+                or flow_cam4_dir is None
+                or flow_valid_cam2 is None
+                or flow_valid_cam4 is None
+            ):
+                raise ValueError("Flow-use export requested without output dirs or valid masks.")
+
+            flow_cam2 = apply_valid_mask_to_image(cam2_frame, flow_valid_cam2, background_value=0)
+            flow_cam4 = apply_valid_mask_to_image(cam4_frame, flow_valid_cam4, background_value=0)
+            flow_cam2_output = flow_cam2_dir / f"{frame_idx:05d}.png"
+            flow_cam4_output = flow_cam4_dir / f"{frame_idx:05d}.png"
+            wrote_flow_cam2 = cv2.imwrite(str(flow_cam2_output), flow_cam2)
+            wrote_flow_cam4 = cv2.imwrite(str(flow_cam4_output), flow_cam4)
+            if not wrote_flow_cam2 or not wrote_flow_cam4:
+                print(f"Warning: failed to save flow-use frames for frame {frame_idx}")
 
         progress.update(1)
 
@@ -225,18 +216,107 @@ def main() -> None:
     equirect_dir = output_dir
     cam2_dir = equirect_dir / "cam2"
     cam4_dir = equirect_dir / "cam4"
+    valid_dir = equirect_dir / "valid"
     cam2_dir.mkdir(parents=True, exist_ok=True)
     cam4_dir.mkdir(parents=True, exist_ok=True)
+    valid_dir.mkdir(parents=True, exist_ok=True)
+
+    if args.flow_output_dir is not None:
+        flow_dir = Path(args.flow_output_dir)
+    else:
+        flow_dir = equirect_dir.with_name(equirect_dir.name + "_for_flow_use")
+    flow_cam2_dir = flow_dir / "cam2"
+    flow_cam4_dir = flow_dir / "cam4"
+    flow_valid_dir = flow_dir / "valid"
+    if args.export_flow_use:
+        flow_cam2_dir.mkdir(parents=True, exist_ok=True)
+        flow_cam4_dir.mkdir(parents=True, exist_ok=True)
+        flow_valid_dir.mkdir(parents=True, exist_ok=True)
 
     frame_indices = load_reviewed_frame_indices(reviewed_path)
 
-    cam2_params, cam4_params = _select_camera_params(args.camera)
+    cam2_params, cam4_params = select_camera_params(args.camera)
     r_ext_cam2 = R_EXTRINSIC_CAM2 if args.apply_extrinsic else None
     r_ext_cam4 = R_EXTRINSIC_CAM4 if args.apply_extrinsic else None
     print(f"Building cam2 LUT with '{args.camera}' camera parameters...")
     cam2_lut = build_equirect_lut(cam2_params, R_extrinsic=r_ext_cam2, desc="Building cam2 LUT")
     print(f"Building cam4 LUT with '{args.camera}' camera parameters...")
     cam4_lut = build_equirect_lut(cam4_params, R_extrinsic=r_ext_cam4, desc="Building cam4 LUT")
+
+    cam2_sample_path, cam4_sample_path = find_first_existing_pair(frame_indices, fisheye_dir)
+    cam2_sample = cv2.imread(str(cam2_sample_path), cv2.IMREAD_COLOR)
+    cam4_sample = cv2.imread(str(cam4_sample_path), cv2.IMREAD_COLOR)
+    if cam2_sample is None or cam4_sample is None:
+        raise RuntimeError(
+            f"Failed to read fisheye sample pair: {cam2_sample_path}, {cam4_sample_path}"
+        )
+
+    cam2_lens_mask = build_fisheye_lens_mask(
+        cam2_sample,
+        threshold=args.lens_threshold,
+        close_kernel=args.lens_close_kernel,
+        erode_px=args.lens_erode_px,
+    )
+    cam4_lens_mask = build_fisheye_lens_mask(
+        cam4_sample,
+        threshold=args.lens_threshold,
+        close_kernel=args.lens_close_kernel,
+        erode_px=args.lens_erode_px,
+    )
+
+    valid_cam2 = build_erp_valid_mask_from_lut_and_lens(
+        cam2_lut,
+        cam2_lens_mask,
+        output_size=(OUTPUT_WIDTH, OUTPUT_HEIGHT),
+    )
+    valid_cam4 = build_erp_valid_mask_from_lut_and_lens(
+        cam4_lut,
+        cam4_lens_mask,
+        output_size=(OUTPUT_WIDTH, OUTPUT_HEIGHT),
+    )
+    cv2.imwrite(str(valid_dir / "cam2.png"), valid_cam2)
+    cv2.imwrite(str(valid_dir / "cam4.png"), valid_cam4)
+
+    flow_valid_cam2 = None
+    flow_valid_cam4 = None
+    if args.export_flow_use:
+        flow_valid_cam2 = make_horizontal_flow_valid_mask(
+            valid_cam2,
+            camera_name="cam2",
+            trim_edge_margin_px=args.flow_trim_margin_px,
+            trim_edge_percentile=args.flow_trim_percentile,
+        )
+        flow_valid_cam4 = make_horizontal_flow_valid_mask(
+            valid_cam4,
+            camera_name="cam4",
+            trim_edge_margin_px=args.flow_trim_margin_px,
+            trim_edge_percentile=args.flow_trim_percentile,
+        )
+        cv2.imwrite(str(flow_valid_dir / "cam2.png"), flow_valid_cam2)
+        cv2.imwrite(str(flow_valid_dir / "cam4.png"), flow_valid_cam4)
+
+        flow_debug_valid_dir = flow_valid_dir / "debug"
+        flow_debug_valid_dir.mkdir(parents=True, exist_ok=True)
+        cv2.imwrite(str(flow_debug_valid_dir / "base_valid_cam2.png"), valid_cam2)
+        cv2.imwrite(str(flow_debug_valid_dir / "base_valid_cam4.png"), valid_cam4)
+        cv2.imwrite(str(flow_debug_valid_dir / "flow_valid_cam2.png"), flow_valid_cam2)
+        cv2.imwrite(str(flow_debug_valid_dir / "flow_valid_cam4.png"), flow_valid_cam4)
+
+    debug_valid_dir = valid_dir / "debug"
+    debug_valid_dir.mkdir(parents=True, exist_ok=True)
+    cv2.imwrite(str(debug_valid_dir / "fisheye_lens_cam2.png"), cam2_lens_mask)
+    cv2.imwrite(str(debug_valid_dir / "fisheye_lens_cam4.png"), cam4_lens_mask)
+
+    lut_valid_cam2 = build_valid_mask_from_lut(
+        cam2_lut,
+        output_size=(OUTPUT_WIDTH, OUTPUT_HEIGHT),
+    )
+    lut_valid_cam4 = build_valid_mask_from_lut(
+        cam4_lut,
+        output_size=(OUTPUT_WIDTH, OUTPUT_HEIGHT),
+    )
+    cv2.imwrite(str(debug_valid_dir / "lut_valid_cam2.png"), lut_valid_cam2)
+    cv2.imwrite(str(debug_valid_dir / "lut_valid_cam4.png"), lut_valid_cam4)
 
     total_frames = len(frame_indices)
     with tqdm(total=total_frames, desc="Exporting equirect frames", unit="frame") as progress:
@@ -248,6 +328,11 @@ def main() -> None:
             cam2_lut,
             cam4_lut,
             progress,
+            flow_cam2_dir=flow_cam2_dir,
+            flow_cam4_dir=flow_cam4_dir,
+            flow_valid_cam2=flow_valid_cam2,
+            flow_valid_cam4=flow_valid_cam4,
+            export_flow_use=args.export_flow_use,
         )
 
 
@@ -260,5 +345,6 @@ python src\script\test_function\debug021_run_fisheye_to_equirect.py `
   --fisheye_dir data_process\Output\20260311_riding\image\fisheye `
   --output_dir data_process\Output\20260311_riding\image\equirect_rotate `
   --camera old `
-  --apply_extrinsic
+  --apply_extrinsic `
+  --export_flow_use
 '''

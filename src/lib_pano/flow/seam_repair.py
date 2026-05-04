@@ -18,10 +18,10 @@ def repair_seam(
     overlap = cv2.bitwise_and(source_mask, target_mask)
     seam_band = cv2.bitwise_and(seam_band, overlap)
 
-    problem = cv2.bitwise_and(seam_band, cv2.bitwise_not(overlap))
 
-    if cv2.countNonZero(problem) == 0:
+    if cv2.countNonZero(seam_band) == 0:
+        print("no seam repair needed")
         return image
 
-    inpaint_mask = cv2.dilate(problem, np.ones((3, 3), np.uint8), iterations=2)
+    inpaint_mask = cv2.dilate(seam_band, np.ones((3, 3), np.uint8), iterations=2)
     return cv2.inpaint(image, inpaint_mask, inpaint_radius, cv2.INPAINT_TELEA)

@@ -5,6 +5,15 @@ from typing import Optional
 from lib_pano.flow.warp_strategy import WarpResult
 
 
+MINIMAL_DEBUG_FILES = {
+    "support_roi_mask.png",
+    "flow_weight_map.png",
+    "semantic_weight_map.png",
+    "combined_weight_map.png",
+    "full_flow_vis.png",
+}
+
+
 def _visualize_flow_bgr(flow: np.ndarray) -> np.ndarray:
     magnitude, angle = cv2.cartToPolar(flow[..., 0], flow[..., 1], angleInDegrees=False)
     hsv = np.zeros((flow.shape[0], flow.shape[1], 3), dtype=np.uint8)
@@ -16,16 +25,32 @@ def _visualize_flow_bgr(flow: np.ndarray) -> np.ndarray:
 
 
 class DebugWriter:
-    def __init__(self, debug_dir: str, enabled: bool = True):
+    def __init__(self, debug_dir: str, enabled: bool = True, debug_level: str = "minimal"):
         self.debug_dir = debug_dir
         self.enabled = enabled
+        self.debug_level = debug_level
         if enabled:
             os.makedirs(debug_dir, exist_ok=True)
 
-    def _save(self, filename: str, image: np.ndarray):
+    def _should_save(self, filename: str) -> bool:
         if not self.enabled:
+            return False
+        if self.debug_level == "none":
+            return False
+        if self.debug_level == "full":
+            return True
+        if self.debug_level == "minimal":
+            return filename in MINIMAL_DEBUG_FILES
+        raise ValueError(f"Unsupported debug_level: {self.debug_level}")
+
+    def _save(self, filename: str, image: np.ndarray):
+        if not self._should_save(filename):
             return
         cv2.imwrite(os.path.join(self.debug_dir, filename), image)
+
+    def write_image(self, name: str, image: np.ndarray):
+        filename = name if name.lower().endswith(".png") else f"{name}.png"
+        self._save(filename, image)
 
     def write_crops(self, crop_source: np.ndarray, crop_target: np.ndarray):
         self._save('crop_source.png', crop_source)
@@ -35,6 +60,23 @@ class DebugWriter:
         self._save('flow_roi_vis.png', _visualize_flow_bgr(flow_roi))
         if valid_mask is not None:
             self.write_mask('flow_validity_mask.png', valid_mask)
+
+    def write_flow_vis(self, name: str, flow: np.ndarray):
+        filename = name if name.lower().endswith(".png") else f"{name}.png"
+        self._save(filename, _visualize_flow_bgr(flow))
+
+    def write_weight_map(self, name: str, weight: np.ndarray, max_value: float | None = None):
+        filename = name if name.lower().endswith(".png") else f"{name}.png"
+
+        weight = np.nan_to_num(weight.astype(np.float32), nan=0.0, posinf=0.0, neginf=0.0)
+        weight = np.maximum(weight, 0.0)
+
+        if max_value is None:
+            max_value = float(weight.max())
+        max_value = max(float(max_value), 1e-6)
+
+        vis = np.clip(weight / max_value * 255.0, 0.0, 255.0).astype(np.uint8)
+        self._save(filename, vis)
 
     def write_mask(self, name: str, mask: np.ndarray):
         filename = name if name.lower().endswith('.png') else f'{name}.png'

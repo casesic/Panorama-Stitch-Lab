@@ -11,6 +11,9 @@ from lib_pano.flow.roi_process import (
     compute_photometric_mask,
     build_flow_seed_mask,
     build_flow_weight_map,
+    crop_bbox_dense_semantic_to_roi,
+    build_semantic_weight_map,
+    combine_flow_with_semantic_prior,
 )
 from lib_pano.flow.warp_strategy import apply_warp, WarpStrategy, MeshConfig, DistanceConfig
 from lib_pano.flow.seam_repair import repair_seam
@@ -31,27 +34,44 @@ def stitch_with_flow(
     blend_threshold: int = 1,
     blend_erode_kernel_size: int = 1,
     use_seam_repair: bool = True,
-    seam_band_radius: int = 15,
-    inpaint_radius: int = 3,
+    seam_band_radius: int = 10,
+    inpaint_radius: int = 2,
     photometric_threshold: int = 30,
     photo_sigma: float = 60.0,
     landed_invalid_multiplier: float = 0.10,
     raft_invalid_multiplier: float = 0.35,
+    flow_weight_min: float = 0.0,
+    semantic_prior: Optional[dict] = None,
+    semantic_weight_scale: float = 4.0,
+    semantic_conf_thresh: float = 0.05,
     debug_dir: Optional[str] = None,
+    debug_level: str = "minimal",
 ) -> Tuple[np.ndarray, np.ndarray]:
-    writer = DebugWriter(debug_dir=debug_dir, enabled=debug_dir is not None)
+    
 
-    src_m = (source_valid_mask > 0).astype(np.uint8) * 255
-    tgt_m = (target_valid_mask > 0).astype(np.uint8) * 255
-    support_roi_mask = soft_overlap_from_masks(src_m, tgt_m, extend_y=extend_y)
+    writer = DebugWriter(
+        debug_dir=debug_dir,
+        enabled=debug_dir is not None and debug_level != "none",
+        debug_level=debug_level,
+    )
+
+    flow_src_m = (source_valid_mask > 0).astype(np.uint8) * 255
+    flow_tgt_m = (target_valid_mask > 0).astype(np.uint8) * 255
+    support_roi_mask = soft_overlap_from_masks(flow_src_m, flow_tgt_m, extend_y=extend_y)
     writer.write_mask('support_roi_mask.png', support_roi_mask)
     nz_pixels = cv2.countNonZero(support_roi_mask)
 
     if nz_pixels < 100:
+        src_m = (source_valid_mask > 0).astype(np.uint8) * 255
+        tgt_m = (target_valid_mask > 0).astype(np.uint8) * 255
         merged_mask = cv2.max(src_m, tgt_m)
         return cv2.max(img_source, img_target), merged_mask
 
-    crop_source, crop_target, roi_bbox = extract_overlap_roi(img_source, img_target, support_roi_mask)
+    crop_source, crop_target, roi_bbox = extract_overlap_roi(
+        img_source,
+        img_target,
+        support_roi_mask,
+    )
     writer.write_crops(crop_source, crop_target)
 
     source_valid_roi = crop_mask_by_bbox(source_valid_mask, roi_bbox)
@@ -87,6 +107,7 @@ def stitch_with_flow(
         photo_sigma=photo_sigma,
         landed_invalid_multiplier=landed_invalid_multiplier,
         raft_invalid_multiplier=raft_invalid_multiplier,
+        min_weight=flow_weight_min,
     )
 
     writer.write_mask('source_valid_at_landed.png', source_valid_at_landed)
@@ -95,12 +116,43 @@ def stitch_with_flow(
     writer.write_mask('photometric_mask.png', photometric_mask)
     writer.write_mask('final_flow_seed_mask.png', flow_seed_mask)
     writer.write_mask('flow_weight_map.png', flow_weight_map)
-    writer._save('warped_source_by_raft.png', warped_source_by_raft)
+    writer.write_image('warped_source_by_raft.png', warped_source_by_raft)
+
+    semantic_flow_roi, semantic_conf_roi = crop_bbox_dense_semantic_to_roi(
+        semantic_prior,
+        roi_bbox,
+    )
+    semantic_weight_map = build_semantic_weight_map(
+        semantic_conf_roi,
+        semantic_weight_scale=semantic_weight_scale,
+        semantic_conf_thresh=semantic_conf_thresh,
+    )
+    combined_flow_roi, combined_weight_map = combine_flow_with_semantic_prior(
+        raft_flow_roi=flow_roi,
+        raft_weight_map=flow_weight_map,
+        semantic_flow_roi=semantic_flow_roi,
+        semantic_weight_map=semantic_weight_map,
+    )
+
+    if semantic_prior is not None:
+        writer.write_weight_map(
+            "semantic_weight_map.png",
+            semantic_weight_map,
+            max_value=semantic_weight_scale,
+        )
+        writer.write_weight_map(
+            "combined_weight_map.png",
+            combined_weight_map,
+            max_value=max(1.0, semantic_weight_scale),
+        )
+        if debug_level == "full":
+            writer.write_flow_vis("semantic_flow_vis.png", semantic_flow_roi)
+            writer.write_flow_vis("combined_flow_vis.png", combined_flow_roi)
 
     warp_result = apply_warp(
         img_source=img_source,
         img_target=img_target,
-        flow_roi=flow_roi,
+        flow_roi=combined_flow_roi,
         roi_bbox=roi_bbox,
         valid_mask=target_valid_roi,
         strategy=strategy,
@@ -108,7 +160,7 @@ def stitch_with_flow(
         target_valid_mask=target_valid_mask,
         mesh_config=mesh_config,
         distance_config=distance_config,
-        weight_map=flow_weight_map,
+        weight_map=combined_weight_map,
     )
     writer.write_warp_result(warp_result)
 

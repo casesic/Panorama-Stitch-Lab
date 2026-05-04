@@ -493,9 +493,9 @@ if __name__ == "__main__":
 
 r'''
 python src\script\test_function\debug031_batch_semantic_flow.py `
-  --fitting_dir data_process\Output\20260311_riding\fitting\dual_cam `
+  --fitting_dir data_process\Output\20260311_riding\fitting\dual_cam_new_sil `
   --image_dir data_process\Output\20260311_riding\image\equirect_rotate `
-  --output_dir data_process\Output\20260311_riding\semantic_flow `
+  --output_dir data_process\Output\20260311_riding\semantic_flow\test_new_sil `
   --start_frame 513 `
   --end_frame 518 `
   --invalid_json data_process\Output\20260311_riding\vis\dual_erp\invalid.json `

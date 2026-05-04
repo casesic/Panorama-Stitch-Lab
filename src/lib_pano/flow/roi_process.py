@@ -60,6 +60,85 @@ def crop_mask_by_bbox(mask: np.ndarray, roi_bbox: Tuple[int, int, int, int]) -> 
     return mask[y_min:y_max, x_min:x_max].copy()
 
 
+def crop_bbox_dense_semantic_to_roi(semantic_prior, roi_bbox):
+    if semantic_prior is None:
+        return None, None
+
+    flow = semantic_prior["flow"]
+    conf = semantic_prior["confidence"]
+    sx1, sy1, sx2, sy2 = semantic_prior["bbox"]
+    rx1, ry1, rx2, ry2 = roi_bbox
+
+    ix1 = max(sx1, rx1)
+    iy1 = max(sy1, ry1)
+    ix2 = min(sx2, rx2)
+    iy2 = min(sy2, ry2)
+
+    roi_h = ry2 - ry1
+    roi_w = rx2 - rx1
+
+    semantic_flow_roi = np.zeros((roi_h, roi_w, 2), dtype=np.float32)
+    semantic_conf_roi = np.zeros((roi_h, roi_w), dtype=np.float32)
+
+    if ix2 <= ix1 or iy2 <= iy1:
+        return semantic_flow_roi, semantic_conf_roi
+
+    src_x1 = ix1 - sx1
+    src_y1 = iy1 - sy1
+    src_x2 = ix2 - sx1
+    src_y2 = iy2 - sy1
+
+    dst_x1 = ix1 - rx1
+    dst_y1 = iy1 - ry1
+    dst_x2 = ix2 - rx1
+    dst_y2 = iy2 - ry1
+
+    semantic_flow_roi[dst_y1:dst_y2, dst_x1:dst_x2] = flow[src_y1:src_y2, src_x1:src_x2]
+    semantic_conf_roi[dst_y1:dst_y2, dst_x1:dst_x2] = conf[src_y1:src_y2, src_x1:src_x2]
+
+    return semantic_flow_roi, semantic_conf_roi
+
+
+def build_semantic_weight_map(
+    semantic_confidence_roi,
+    semantic_weight_scale: float = 1.0,
+    semantic_conf_thresh: float = 0.05,
+):
+    if semantic_confidence_roi is None:
+        return None
+
+    conf = np.clip(semantic_confidence_roi.astype(np.float32) / 2.0, 0.0, 1.0)
+    conf[conf < semantic_conf_thresh] = 0.0
+    return (conf * float(semantic_weight_scale)).astype(np.float32)
+
+
+def combine_flow_with_semantic_prior(
+    raft_flow_roi,
+    raft_weight_map,
+    semantic_flow_roi=None,
+    semantic_weight_map=None,
+):
+    if semantic_flow_roi is None or semantic_weight_map is None:
+        return raft_flow_roi, raft_weight_map
+
+
+    w_raft = raft_weight_map.astype(np.float32)
+    w_sem = semantic_weight_map.astype(np.float32)
+
+    denom = w_raft + w_sem
+    valid = denom > 1e-6
+
+    combined_flow = raft_flow_roi.astype(np.float32).copy()
+    combined_flow[valid] = (
+        raft_flow_roi[valid] * w_raft[valid, None]
+        + semantic_flow_roi[valid] * w_sem[valid, None]
+    ) / denom[valid, None]
+
+    combined_weight = np.maximum(w_raft, w_sem).astype(np.float32)
+
+    return combined_flow, combined_weight
+
+
 def compute_landed_source_valid_mask(
     flow_roi: np.ndarray,
     source_valid_roi: np.ndarray,
@@ -153,7 +232,10 @@ def build_flow_weight_map(
     elif photometric_mask is not None:
         weight *= np.where(photometric_mask > 0, 1.0, 0.2).astype(np.float32)
 
-    return np.clip(weight, min_weight, 1.0).astype(np.float32)
+    weight = np.clip(weight, 0.0, 1.0)
+    if min_weight > 0:
+        weight[weight < min_weight] = 0.0
+    return weight.astype(np.float32)
 
 
 def blend_priority(
