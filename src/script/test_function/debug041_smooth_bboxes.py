@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import argparse
-import json
 from pathlib import Path
 
 import cv2
 import numpy as np
 from tqdm import tqdm
+
+from batch_utils import load_reviewed_frame_indices, split_frame_segments
+from lib_pano.pipeline.bbox_io import bbox_area, clip_bbox, load_bbox_dict, save_bbox_dict, union_bboxes
 
 
 def parse_args() -> argparse.Namespace:
@@ -28,70 +30,6 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--save_vis", action="store_true", help="Save bbox visualization when --image_dir is provided.")
     return parser.parse_args()
-
-
-def load_reviewed_frame_indices(reviewed_path: Path) -> list[int]:
-    with reviewed_path.open("r", encoding="utf-8") as file:
-        reviewed = json.load(file)
-    if not isinstance(reviewed, list):
-        raise ValueError("reviewed.json must contain a list")
-
-    frame_indices = set()
-    for item in reviewed:
-        if not isinstance(item, dict) or "frame_idx" not in item:
-            continue
-        frame_indices.add(int(item["frame_idx"]))
-    return sorted(frame_indices)
-
-
-def load_bbox_dict(json_path: Path) -> dict[str, list[int]]:
-    with json_path.open("r", encoding="utf-8") as file:
-        data = json.load(file)
-    if not isinstance(data, dict):
-        raise ValueError(f"bbox json must contain a dict: {json_path}")
-    return {str(key): [int(round(v)) for v in value] for key, value in data.items()}
-
-
-def split_segments(frame_indices: list[int], max_gap: int) -> list[list[int]]:
-    if not frame_indices:
-        return []
-
-    segments: list[list[int]] = [[frame_indices[0]]]
-    for frame_idx in frame_indices[1:]:
-        if frame_idx - segments[-1][-1] > max_gap:
-            segments.append([frame_idx])
-        else:
-            segments[-1].append(frame_idx)
-    return segments
-
-
-def union_bboxes(bboxes: list[list[int]]) -> list[int] | None:
-    if not bboxes:
-        return None
-    arr = np.asarray(bboxes, dtype=np.float64).reshape(-1, 4)
-    return [
-        int(np.floor(arr[:, 0].min())),
-        int(np.floor(arr[:, 1].min())),
-        int(np.ceil(arr[:, 2].max())),
-        int(np.ceil(arr[:, 3].max())),
-    ]
-
-
-def clip_bbox(bbox, width: int, height: int) -> list[int] | None:
-    x1, y1, x2, y2 = [int(round(v)) for v in bbox]
-    x1 = max(0, min(width, x1))
-    y1 = max(0, min(height, y1))
-    x2 = max(0, min(width, x2))
-    y2 = max(0, min(height, y2))
-    if x2 <= x1 or y2 <= y1:
-        return None
-    return [x1, y1, x2, y2]
-
-
-def bbox_area(bbox: list[int] | None) -> int:
-    if bbox is None:
-        return 0
-    return max(0, bbox[2] - bbox[0]) * max(0, bbox[3] - bbox[1])
 
 
 def draw_labeled_bbox(image: np.ndarray, bbox: list[int], color: tuple[int, int, int], label: str) -> None:
@@ -140,7 +78,7 @@ def process_camera_bboxes(
 ) -> dict[str, list[int]]:
     smoothed: dict[str, list[int]] = {}
 
-    for segment in split_segments(frame_indices, max_gap=max_gap):
+    for segment in split_frame_segments(frame_indices, gap_threshold=max_gap):
         for idx, frame_idx in enumerate(segment):
             lo = max(0, idx - window)
             hi = min(len(segment), idx + window + 1)
@@ -215,11 +153,11 @@ def main() -> None:
     image_dir = Path(args.image_dir) if args.image_dir else None
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    frame_indices = load_reviewed_frame_indices(reviewed_path)
+    frame_indices = load_reviewed_frame_indices(reviewed_path, require_frame_idx=False)
     image_width, image_height = maybe_infer_image_size(image_dir, frame_indices, args.image_width, args.image_height)
 
-    cam2_raw = load_bbox_dict(input_dir / "cam2_bboxes.json")
-    cam4_raw = load_bbox_dict(input_dir / "cam4_bboxes.json")
+    cam2_raw = load_bbox_dict(input_dir / "cam2_bboxes.json", normalize_values=True)
+    cam4_raw = load_bbox_dict(input_dir / "cam4_bboxes.json", normalize_values=True)
     total_steps = len(frame_indices) * 2
     with tqdm(total=total_steps, desc="Smoothing bboxes", unit="frame") as progress:
         cam2_smooth = process_camera_bboxes(
@@ -251,10 +189,8 @@ def main() -> None:
             progress=progress,
         )
 
-    with (output_dir / "cam2_bboxes.json").open("w", encoding="utf-8") as file:
-        json.dump(cam2_smooth, file, indent=2)
-    with (output_dir / "cam4_bboxes.json").open("w", encoding="utf-8") as file:
-        json.dump(cam4_smooth, file, indent=2)
+    save_bbox_dict(output_dir / "cam2_bboxes.json", cam2_smooth, ensure_ascii=True)
+    save_bbox_dict(output_dir / "cam4_bboxes.json", cam4_smooth, ensure_ascii=True)
 
     print(f"cam2 bboxes: raw={len(cam2_raw)}, smooth={len(cam2_smooth)}")
     print(f"cam4 bboxes: raw={len(cam4_raw)}, smooth={len(cam4_smooth)}")

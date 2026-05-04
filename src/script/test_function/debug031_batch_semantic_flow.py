@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import json
 import re
-import sys
 from pathlib import Path
 
 import cv2
@@ -13,12 +12,12 @@ import torch
 import config_script
 os.environ.setdefault('KMP_DUPLICATE_LIB_OK', 'TRUE')
 
+from lib_pano.pipeline.bbox_io import load_bbox_dict
+from lib_pano.pipeline.frame_index import discover_frame_indices
+from lib_pano.pipeline.paths import ensure_single_fitting_path
+
 def _ensure_paths() -> Path:
-    repo_root = Path(__file__).resolve().parents[3]
-    sf_root = repo_root / "tools" / "SingleFitting"
-    if str(sf_root) not in sys.path:
-        sys.path.insert(0, str(sf_root))
-    return repo_root
+    return ensure_single_fitting_path()
 
 
 REPO_ROOT = _ensure_paths()
@@ -131,28 +130,6 @@ def load_invalid_frames(invalid_json_path: Path | None) -> set[int]:
     cam2_frames = invalid_json.get("cam2", {}).get("equirect", [])
     cam4_frames = invalid_json.get("cam4", {}).get("equirect", [])
     return set(cam2_frames) | set(cam4_frames)
-
-
-def load_bbox_dict(json_path: Path) -> dict[str, list[int]]:
-    with json_path.open("r", encoding="utf-8") as file:
-        data = json.load(file)
-    if not isinstance(data, dict):
-        raise ValueError(f"bbox json must contain a dict: {json_path}")
-    return data
-
-
-def discover_frame_indices(fitting_dir: Path) -> list[int]:
-    cam2_dir = fitting_dir / "cam2"
-    pattern = re.compile(r"^seg_(\d+)_(\d+)_seq\.pkl$")
-    frame_indices: set[int] = set()
-    for pkl_path in cam2_dir.glob("seg_*_*_seq.pkl"):
-        match = pattern.match(pkl_path.name)
-        if match is None:
-            continue
-        start_frame = int(match.group(1))
-        end_frame = int(match.group(2))
-        frame_indices.update(range(start_frame, end_frame + 1))
-    return sorted(frame_indices)
 
 
 def compute_human_bbox(pts_list, erp_h, erp_w, padding=30):

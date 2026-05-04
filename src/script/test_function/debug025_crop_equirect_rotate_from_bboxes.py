@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import argparse
-import json
 import os
 from pathlib import Path
-from typing import Any
 
 import cv2
 import numpy as np
 from tqdm import tqdm
+
+from batch_utils import load_reviewed_frame_indices
+from lib_pano.pipeline.bbox_io import load_bbox_dict
+from lib_pano.pipeline.invalid_io import load_invalid_frames
 
 os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 
@@ -64,90 +66,6 @@ def parse_args() -> argparse.Namespace:
         help="Padding to expand the bottom side of each equirect bbox.",
     )
     return parser.parse_args()
-
-
-def load_bbox_dict(json_path: Path) -> dict[str, list[int]]:
-    with json_path.open("r", encoding="utf-8") as file:
-        data = json.load(file)
-    if not isinstance(data, dict):
-        raise ValueError(f"bbox json must contain a dict: {json_path}")
-    return data
-
-
-def _normalize_main_camera_path(video_path: str) -> str | None:
-    if video_path.endswith(".0.mp4"):
-        return video_path
-    if video_path.endswith(".1.mp4"):
-        return video_path[:-6] + ".0.mp4"
-    return None
-
-
-def load_reviewed_frame_indices(reviewed_path: Path) -> list[int]:
-    with reviewed_path.open("r", encoding="utf-8") as file:
-        reviewed = json.load(file)
-
-    if not isinstance(reviewed, list):
-        raise ValueError("reviewed.json must contain a list")
-
-    frame_indices: set[int] = set()
-    for item in reviewed:
-        if not isinstance(item, dict):
-            raise ValueError("Each reviewed entry must be a dict")
-        video_path = _normalize_main_camera_path(str(item.get("video_path", "")))
-        if video_path is None:
-            print(f"Warning: unsupported video path pattern, skipping: {item.get('video_path')}")
-            continue
-        frame_indices.add(int(item["frame_idx"]))
-
-    return sorted(frame_indices)
-
-
-def _extract_frame_indices(obj: Any) -> set[int]:
-    frame_indices: set[int] = set()
-
-    if isinstance(obj, int):
-        frame_indices.add(int(obj))
-        return frame_indices
-
-    if isinstance(obj, list):
-        for item in obj:
-            frame_indices.update(_extract_frame_indices(item))
-        return frame_indices
-
-    if isinstance(obj, dict):
-        if "invalid_frames" in obj:
-            frame_indices.update(_extract_frame_indices(obj["invalid_frames"]))
-            return frame_indices
-        if "frame_idx" in obj:
-            frame_indices.add(int(obj["frame_idx"]))
-        if "frame_idxs" in obj:
-            frame_indices.update(_extract_frame_indices(obj["frame_idxs"]))
-        if "frames" in obj:
-            frame_indices.update(_extract_frame_indices(obj["frames"]))
-        for key, value in obj.items():
-            if key == "problem_frames":
-                continue
-            if key in ("frame_idx", "frame_idxs", "frames", "invalid_frames"):
-                continue
-            frame_indices.update(_extract_frame_indices(value))
-        return frame_indices
-
-    return frame_indices
-
-
-def load_invalid_frames(invalid_path: Path | None) -> set[int]:
-    if invalid_path is None:
-        return set()
-    if not invalid_path.exists():
-        raise FileNotFoundError(f"invalid json file not found: {invalid_path}")
-
-    with invalid_path.open("r", encoding="utf-8-sig") as file:
-        data = json.load(file)
-
-    if isinstance(data, dict) and "invalid_frames" in data:
-        return _extract_frame_indices(data["invalid_frames"])
-
-    return _extract_frame_indices(data)
 
 
 def expand_erp_bbox(
@@ -312,12 +230,12 @@ def main() -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     invalid_path = Path(args.invalid_json) if args.invalid_json is not None else None
 
-    frame_indices = load_reviewed_frame_indices(reviewed_path)
+    frame_indices = load_reviewed_frame_indices(reviewed_path, normalize_video_path=True)
     cam2_bboxes_input = load_bbox_dict(bbox_dir / "cam2_bboxes.json")
     cam4_bboxes_input = load_bbox_dict(bbox_dir / "cam4_bboxes.json")
     cam2_bboxes: dict[str, list[int]] = {}
     cam4_bboxes: dict[str, list[int]] = {}
-    invalid_frames = load_invalid_frames(invalid_path)
+    invalid_frames = load_invalid_frames(invalid_path, encoding="utf-8-sig")
     print(f"loaded invalid frames: {len(invalid_frames)}")
 
     output_cam2_dir = output_dir / "cam2"

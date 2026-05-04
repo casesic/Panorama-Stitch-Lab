@@ -13,15 +13,13 @@ from tqdm import tqdm
 
 os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 
-from batch_utils import load_reviewed_entries
+from batch_utils import load_reviewed_entries, split_frame_segments
+from lib_pano.pipeline.paths import ensure_single_fitting_path
 
 
 def _ensure_paths() -> Path:
     """Ensure the SingleFitting package is importable."""
-    repo_root = Path(__file__).resolve().parents[3]
-    sf_root = repo_root / "tools" / "SingleFitting"
-    if str(sf_root) not in sys.path:
-        sys.path.insert(0, str(sf_root))
+    repo_root = ensure_single_fitting_path()
     fisheye_root = repo_root / "tools" / "fisheye_extractor"
     if str(fisheye_root) not in sys.path:
         sys.path.insert(0, str(fisheye_root))
@@ -106,19 +104,6 @@ def load_click_points(click_points_path: Path | None) -> dict[str, dict[str, lis
             ):
                 normalized[camera_name][str(frame_idx)] = [float(point[0]), float(point[1])]
     return normalized
-
-
-def split_frame_segments(frame_indices: list[int], gap_threshold: int = 2) -> list[list[int]]:
-    if not frame_indices:
-        return []
-
-    segments: list[list[int]] = [[frame_indices[0]]]
-    for frame_idx in frame_indices[1:]:
-        if frame_idx - segments[-1][-1] > gap_threshold:
-            segments.append([frame_idx])
-        else:
-            segments[-1].append(frame_idx)
-    return segments
 
 
 def build_frame_to_click_point(

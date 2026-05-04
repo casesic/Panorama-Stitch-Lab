@@ -2,10 +2,8 @@ from __future__ import annotations
 
 import argparse
 import importlib
-import json
 import pickle
 import shutil
-import sys
 from pathlib import Path
 
 import torch
@@ -13,15 +11,13 @@ from tqdm import tqdm
 
 import config_script
 from batch_utils import load_reviewed_entries
+from lib_pano.pipeline.invalid_io import load_invalid_frames
+from lib_pano.pipeline.paths import ensure_single_fitting_path
 
 
 def _ensure_paths() -> Path:
     """Ensure the SingleFitting package is importable."""
-    repo_root = Path(__file__).resolve().parents[3]
-    sf_root = repo_root / "tools" / "SingleFitting"
-    if str(sf_root) not in sys.path:
-        sys.path.insert(0, str(sf_root))
-    return repo_root
+    return ensure_single_fitting_path()
 
 
 def parse_args() -> argparse.Namespace:
@@ -90,38 +86,6 @@ def _build_smpl_init_from_single_frame_pkl(pkl_path: Path):
     return smpl_init
 
 
-def _extract_frame_indices(obj) -> set[int]:
-    frames: set[int] = set()
-    if isinstance(obj, int):
-        frames.add(int(obj))
-    elif isinstance(obj, list):
-        for item in obj:
-            frames.update(_extract_frame_indices(item))
-    elif isinstance(obj, dict):
-        if "frame_idx" in obj:
-            frames.update(_extract_frame_indices(obj["frame_idx"]))
-        if "frame_idxs" in obj:
-            frames.update(_extract_frame_indices(obj["frame_idxs"]))
-        if "frames" in obj:
-            frames.update(_extract_frame_indices(obj["frames"]))
-        if "invalid_frames" in obj:
-            frames.update(_extract_frame_indices(obj["invalid_frames"]))
-    return frames
-
-
-def load_invalid_frames(invalid_json_path: Path, verbose_warnings: bool) -> set[int]:
-    """Load invalid frame indices from invalid.json."""
-    if not invalid_json_path.exists():
-        if verbose_warnings:
-            print(f"Warning: invalid.json not found, no invalid frames loaded: {invalid_json_path}")
-        return set()
-
-    with invalid_json_path.open("r", encoding="utf-8") as file:
-        data = json.load(file)
-
-    return _extract_frame_indices(data)
-
-
 def _process_camera_frame(hmr_pkl_path: Path, output_path: Path, verbose_warnings: bool) -> str:
     """Convert one camera HMR pkl into an SMPL_Param_Seq cache file."""
     if not hmr_pkl_path.exists():
@@ -145,7 +109,9 @@ def main() -> None:
     four_d_humans_dir = Path(args.four_d_humans_dir)
     output_dir = Path(args.output_dir)
     invalid_json_path = Path(args.invalid_json) if args.invalid_json else four_d_humans_dir.parent / "invalid.json"
-    invalid_frames = load_invalid_frames(invalid_json_path, args.verbose_warnings)
+    if not invalid_json_path.exists() and args.verbose_warnings:
+        print(f"Warning: invalid.json not found, no invalid frames loaded: {invalid_json_path}")
+    invalid_frames = load_invalid_frames(invalid_json_path, missing_ok=True, recurse_all=False)
     reviewed_pairs = load_reviewed_entries(reviewed_path)
     total_steps = len(reviewed_pairs) * 2
     stats = {

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import importlib
-import json
 import pickle
 import sys
 from pathlib import Path
@@ -16,10 +15,9 @@ os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 
 import config_script
 from batch_utils import load_reviewed_entries
-
-PROJECT_ROOT = Path(config_script.PROJECT_ROOT)
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
+from lib_pano.pipeline.bbox_io import load_bbox_dict
+from lib_pano.pipeline.invalid_io import load_invalid_frames
+from lib_pano.pipeline.paths import ensure_single_fitting_path
 
 from lib_pano.human3d.keypoints_detector import (
     Result_Single_Human_Single_Frame,
@@ -30,10 +28,7 @@ from lib_pano.human3d.keypoints_detector import (
 
 def _ensure_paths() -> Path:
     """Ensure the SingleFitting package is importable."""
-    repo_root = Path(__file__).resolve().parents[3]
-    sf_root = repo_root / "tools" / "SingleFitting"
-    if str(sf_root) not in sys.path:
-        sys.path.insert(0, str(sf_root))
+    repo_root = ensure_single_fitting_path()
     fisheye_root = repo_root / "tools" / "fisheye_extractor"
     if str(fisheye_root) not in sys.path:
         sys.path.insert(0, str(fisheye_root))
@@ -77,52 +72,6 @@ def parse_args() -> argparse.Namespace:
         help="Pose inference mode. detector uses WholePoseDetector internal detector; crop_bbox uses the full crop as top-down bbox.",
     )
     return parser.parse_args()
-
-
-def _extract_frame_indices(obj) -> set[int]:
-    frame_indices: set[int] = set()
-
-    if isinstance(obj, int):
-        frame_indices.add(int(obj))
-        return frame_indices
-
-    if isinstance(obj, list):
-        for item in obj:
-            frame_indices.update(_extract_frame_indices(item))
-        return frame_indices
-
-    if isinstance(obj, dict):
-        if "invalid_frames" in obj:
-            frame_indices.update(_extract_frame_indices(obj["invalid_frames"]))
-            return frame_indices
-
-        for key in ("frame_idx", "frame_idxs", "frames"):
-            if key in obj:
-                frame_indices.update(_extract_frame_indices(obj[key]))
-
-        for key, value in obj.items():
-            if key == "problem_frames":
-                continue
-            if key in ("frame_idx", "frame_idxs", "frames", "invalid_frames"):
-                continue
-            frame_indices.update(_extract_frame_indices(value))
-
-    return frame_indices
-
-
-def load_invalid_frames(invalid_path: Path | None) -> set[int]:
-    if invalid_path is None:
-        return set()
-    if not invalid_path.exists():
-        raise FileNotFoundError(f"invalid json file not found: {invalid_path}")
-
-    with invalid_path.open("r", encoding="utf-8-sig") as file:
-        data = json.load(file)
-
-    if isinstance(data, dict) and "invalid_frames" in data:
-        return _extract_frame_indices(data["invalid_frames"])
-
-    return _extract_frame_indices(data)
 
 
 def _build_multi_frame_det_sequence(det_results: list):
@@ -178,14 +127,6 @@ def _build_multi_frame_det_sequence(det_results: list):
 def _build_single_frame_det_seq(det_result):
     """Wrap one detection result as a single-frame sequence."""
     return _build_multi_frame_det_sequence([det_result])
-
-
-def _load_bbox_dict(json_path: Path) -> dict[str, list[int]]:
-    with json_path.open("r", encoding="utf-8") as file:
-        data = json.load(file)
-    if not isinstance(data, dict):
-        raise ValueError(f"bbox json must contain a dict: {json_path}")
-    return data
 
 
 def _offset_detection_to_full_erp(
@@ -284,9 +225,9 @@ def main() -> None:
     invalid_path = Path(args.invalid_json) if args.invalid_json is not None else None
 
     reviewed_pairs = load_reviewed_entries(reviewed_path)
-    cam2_bboxes = _load_bbox_dict(crop_dir / "cam2_bboxes.json")
-    cam4_bboxes = _load_bbox_dict(crop_dir / "cam4_bboxes.json")
-    invalid_frames = load_invalid_frames(invalid_path)
+    cam2_bboxes = load_bbox_dict(crop_dir / "cam2_bboxes.json")
+    cam4_bboxes = load_bbox_dict(crop_dir / "cam4_bboxes.json")
+    invalid_frames = load_invalid_frames(invalid_path, encoding="utf-8-sig")
     print(f"loaded invalid frames: {len(invalid_frames)}")
     detector = WholePoseDetector(device=args.device)
 

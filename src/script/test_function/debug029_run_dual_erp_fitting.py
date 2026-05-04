@@ -4,7 +4,6 @@ import argparse
 from collections import Counter
 import json
 import pickle
-import sys
 from pathlib import Path
 from typing import Any
 
@@ -12,13 +11,13 @@ import torch
 from tqdm import tqdm
 
 import config_script
+from batch_utils import load_reviewed_frame_indices, split_frame_segments
+from lib_pano.pipeline.bbox_io import load_bbox_dict as load_bbox_json
+from lib_pano.pipeline.invalid_io import load_invalid_frames, load_problem_frames
+from lib_pano.pipeline.paths import ensure_single_fitting_path
 
-# 据优化结果来看，都是在cam2坐标系下优化的
 def _ensure_paths() -> Path:
-    repo_root = Path(__file__).resolve().parents[3]
-    sf_root = repo_root / "tools" / "SingleFitting"
-    if str(sf_root) not in sys.path:
-        sys.path.insert(0, str(sf_root))
+    repo_root = ensure_single_fitting_path()
     return repo_root
 
 
@@ -123,37 +122,6 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def load_reviewed_frame_indices(reviewed_path: Path) -> list[int]:
-    with reviewed_path.open("r", encoding="utf-8") as file:
-        reviewed = json.load(file)
-
-    if not isinstance(reviewed, list):
-        raise ValueError("reviewed.json must contain a list")
-
-    frame_indices: set[int] = set()
-    for item in reviewed:
-        if not isinstance(item, dict):
-            raise ValueError("Each reviewed entry must be a dict")
-        if "frame_idx" not in item:
-            raise ValueError("Each reviewed entry must contain frame_idx")
-        frame_indices.add(int(item["frame_idx"]))
-
-    return sorted(frame_indices)
-
-
-def split_frame_segments(frame_indices: list[int], gap_threshold: int = 2) -> list[list[int]]:
-    if not frame_indices:
-        return []
-
-    segments: list[list[int]] = [[frame_indices[0]]]
-    for frame_idx in frame_indices[1:]:
-        if frame_idx - segments[-1][-1] > gap_threshold:
-            segments.append([frame_idx])
-        else:
-            segments[-1].append(frame_idx)
-    return segments
-
-
 def split_long_segments(
     segments: list[list[int]],
     max_len: int,
@@ -183,79 +151,6 @@ def split_reconstructable_subsegments(frame_indices: list[int], reconstructable:
     if current:
         subsegments.append(current)
     return subsegments
-
-
-def _extract_frame_indices_from_obj(obj: Any, *, include_problem_frames: bool = False) -> set[int]:
-    frame_indices: set[int] = set()
-
-    if isinstance(obj, int):
-        frame_indices.add(int(obj))
-        return frame_indices
-
-    if isinstance(obj, list):
-        for item in obj:
-            frame_indices.update(_extract_frame_indices_from_obj(item, include_problem_frames=include_problem_frames))
-        return frame_indices
-
-    if isinstance(obj, dict):
-        if "frame_idx" in obj:
-            frame_indices.add(int(obj["frame_idx"]))
-        if "invalid_frames" in obj:
-            frame_indices.update(
-                _extract_frame_indices_from_obj(obj["invalid_frames"], include_problem_frames=include_problem_frames)
-            )
-        if include_problem_frames and "problem_frames" in obj:
-            frame_indices.update(
-                _extract_frame_indices_from_obj(obj["problem_frames"], include_problem_frames=include_problem_frames)
-            )
-        for key in (
-            "frame_idxs",
-            "frames",
-            "invalid_detections",
-            "cam2",
-            "cam4",
-        ):
-            if key in obj:
-                frame_indices.update(
-                    _extract_frame_indices_from_obj(obj[key], include_problem_frames=include_problem_frames)
-                )
-        return frame_indices
-
-    return frame_indices
-
-
-def load_invalid_frames(invalid_path: Path | None, label: str = "invalid_json") -> set[int]:
-    if invalid_path is None:
-        return set()
-    if not invalid_path.exists():
-        raise FileNotFoundError(f"{label} file not found: {invalid_path}")
-
-    with invalid_path.open("r", encoding="utf-8") as file:
-        data = json.load(file)
-    if isinstance(data, dict) and "invalid_frames" in data:
-        return _extract_frame_indices_from_obj(data["invalid_frames"])
-    return _extract_frame_indices_from_obj(data)
-
-
-def load_problem_frames(invalid_path: Path | None, label: str = "invalid_json") -> set[int]:
-    if invalid_path is None:
-        return set()
-    if not invalid_path.exists():
-        raise FileNotFoundError(f"{label} file not found: {invalid_path}")
-
-    with invalid_path.open("r", encoding="utf-8") as file:
-        data = json.load(file)
-    if isinstance(data, dict) and "problem_frames" in data:
-        return _extract_frame_indices_from_obj(data["problem_frames"], include_problem_frames=True)
-    return set()
-
-
-def load_bbox_dict(bbox_dir: Path) -> tuple[dict, dict]:
-    with (bbox_dir / "cam2_bboxes.json").open("r", encoding="utf-8") as file:
-        cam2_bboxes = json.load(file)
-    with (bbox_dir / "cam4_bboxes.json").open("r", encoding="utf-8") as file:
-        cam4_bboxes = json.load(file)
-    return cam2_bboxes, cam4_bboxes
 
 
 def infer_keypoints_format_and_dim(frame_indices: list[int], rtm_dir: Path, cam_id: str) -> tuple[dict[str, int], int]:
@@ -527,15 +422,16 @@ def main() -> None:
     if args.max_segment_len > 0:
         segments = split_long_segments(segments, args.max_segment_len)
         print(f"切段后共 {len(segments)} 段，最大段长 {args.max_segment_len}")
-    rtm_invalid_frames = load_invalid_frames(rtm_invalid_path, label="rtm_invalid_json")
-    seg_invalid_frames = load_invalid_frames(seg_invalid_path, label="seg_invalid_json")
-    hmr_invalid_frames = load_invalid_frames(hmr_invalid_path, label="hmr_invalid_json")
+    rtm_invalid_frames = load_invalid_frames(rtm_invalid_path, label="rtm_invalid_json", recurse_all=False)
+    seg_invalid_frames = load_invalid_frames(seg_invalid_path, label="seg_invalid_json", recurse_all=False)
+    hmr_invalid_frames = load_invalid_frames(hmr_invalid_path, label="hmr_invalid_json", recurse_all=False)
     problem_frames = {
-        "rtm": sorted(load_problem_frames(rtm_invalid_path, label="rtm_invalid_json")),
-        "seg": sorted(load_problem_frames(seg_invalid_path, label="seg_invalid_json")),
-        "hmr": sorted(load_problem_frames(hmr_invalid_path, label="hmr_invalid_json")),
+        "rtm": sorted(load_problem_frames(rtm_invalid_path, label="rtm_invalid_json", recurse_all=False)),
+        "seg": sorted(load_problem_frames(seg_invalid_path, label="seg_invalid_json", recurse_all=False)),
+        "hmr": sorted(load_problem_frames(hmr_invalid_path, label="hmr_invalid_json", recurse_all=False)),
     }
-    cam2_bboxes, cam4_bboxes = load_bbox_dict(bbox_dir)
+    cam2_bboxes = load_bbox_json(bbox_dir / "cam2_bboxes.json")
+    cam4_bboxes = load_bbox_json(bbox_dir / "cam4_bboxes.json")
     default_keypoints_format_c2, num_keypoints_c2 = infer_keypoints_format_and_dim(frame_indices, rtm_dir, "cam2")
     default_keypoints_format_c4, num_keypoints_c4 = infer_keypoints_format_and_dim(frame_indices, rtm_dir, "cam4")
 

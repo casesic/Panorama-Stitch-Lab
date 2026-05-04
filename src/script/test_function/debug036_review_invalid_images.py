@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import re
 import sys
 from pathlib import Path
 
@@ -25,22 +24,10 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from batch_utils import parse_frame_idx
+from lib_pano.pipeline.invalid_io import load_invalid_frames, load_problem_frames
+
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp"}
-
-
-def parse_frame_idx(path: Path) -> int | None:
-    long_matches = re.findall(r"\d{5,}", path.stem)
-    if long_matches:
-        return int(long_matches[0])
-
-    matches = re.findall(r"\d+", path.stem)
-    if not matches:
-        return None
-
-    if matches[-1] in ("2", "4") and len(matches) > 1:
-        return int(matches[-2])
-
-    return int(matches[-1])
 
 
 def scan_images(image_dir: Path) -> dict[int, Path]:
@@ -81,25 +68,6 @@ def resolve_review_dirs(selected_dir: Path) -> tuple[Path, Path, Path] | None:
     return None
 
 
-def _extract_frame_indices(obj) -> set[int]:
-    frames: set[int] = set()
-    if isinstance(obj, int):
-        frames.add(int(obj))
-    elif isinstance(obj, list):
-        for item in obj:
-            frames.update(_extract_frame_indices(item))
-    elif isinstance(obj, dict):
-        if "frame_idx" in obj:
-            frames.update(_extract_frame_indices(obj["frame_idx"]))
-        if "frame_idxs" in obj:
-            frames.update(_extract_frame_indices(obj["frame_idxs"]))
-        if "frames" in obj:
-            frames.update(_extract_frame_indices(obj["frames"]))
-        if "invalid_frames" in obj:
-            frames.update(_extract_frame_indices(obj["invalid_frames"]))
-    return frames
-
-
 def load_existing_marks(json_path: Path) -> tuple[set[int], set[int]]:
     if not json_path.exists():
         return set(), set()
@@ -108,12 +76,12 @@ def load_existing_marks(json_path: Path) -> tuple[set[int], set[int]]:
         data = json.load(file)
 
     if isinstance(data, dict) and ("invalid_frames" in data or "problem_frames" in data):
-        invalid = _extract_frame_indices(data.get("invalid_frames", []))
-        problem = _extract_frame_indices(data.get("problem_frames", []))
+        invalid = load_invalid_frames(json_path, missing_ok=True, recurse_all=False)
+        problem = load_problem_frames(json_path, recurse_all=False)
         problem -= invalid
         return invalid, problem
 
-    return _extract_frame_indices(data), set()
+    return load_invalid_frames(json_path, missing_ok=True, recurse_all=False), set()
 
 
 def make_missing_image(text: str) -> np.ndarray:

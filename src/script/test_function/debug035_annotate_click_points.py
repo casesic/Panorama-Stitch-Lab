@@ -11,6 +11,8 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QCloseEvent, QImage, QKeyEvent, QMouseEvent, QPixmap
 from PySide6.QtWidgets import QApplication, QLabel, QMainWindow, QMessageBox, QSizePolicy
 
+from batch_utils import load_reviewed_frame_indices, split_frame_segments
+
 
 MAX_DISPLAY_SIZE = 400
 DOT_COLOR = (0, 0, 255)
@@ -34,37 +36,6 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--output", type=str, required=True, help="Path to click_points.json.")
     return parser.parse_args()
-
-
-def load_reviewed_frame_indices(reviewed_path: Path) -> list[int]:
-    with reviewed_path.open("r", encoding="utf-8") as file:
-        reviewed = json.load(file)
-
-    if not isinstance(reviewed, list):
-        raise ValueError("reviewed.json must contain a list")
-
-    frame_indices: set[int] = set()
-    for item in reviewed:
-        if not isinstance(item, dict):
-            raise ValueError("Each reviewed entry must be a dict")
-        if "frame_idx" not in item:
-            raise ValueError("Each reviewed entry must contain frame_idx")
-        frame_indices.add(int(item["frame_idx"]))
-
-    return sorted(frame_indices)
-
-
-def split_frame_segments(frame_indices: list[int], gap_threshold: int = 2) -> list[list[int]]:
-    if not frame_indices:
-        return []
-
-    segments: list[list[int]] = [[frame_indices[0]]]
-    for frame_idx in frame_indices[1:]:
-        if frame_idx - segments[-1][-1] > gap_threshold:
-            segments.append([frame_idx])
-        else:
-            segments[-1].append(frame_idx)
-    return segments
 
 
 def load_existing_output(output_path: Path) -> dict[str, dict[str, list[int]]]:
