@@ -1,0 +1,71 @@
+{
+  "example_dataset": {
+    "dataset_root": "data_process/Output/example_dataset",
+    "output_root": "data_process/Output/example_dataset",
+    "video_path": "data_process/Input/example_dataset/source.mp4",
+
+    "reviewed": "data_process/Input/example_dataset/review.json",
+    "invalid_detections": "data_process/Input/example_dataset/invalid_detections.json",
+
+    "fisheye_dir": "data_process/Output/example_dataset/image/fisheye",
+    "equirect_rotate_dir": "data_process/Output/example_dataset/image/equirect_rotate",
+    "equirect_crop_rotate_dir": "data_process/Output/example_dataset/image/equirect_crop_rotate",
+    "camera": "new",
+
+    "click_points": "data_process/Output/example_dataset/click_points_equirect_rotate.json",
+
+    "bbox_dir": "data_process/Output/example_dataset/bbox_grounding_dino/equirect_rotate",
+    "crop_bbox_dir": "data_process/Output/example_dataset/bbox_grounding_dino/equirect_rotate",
+    "bbox_smooth_dir": "data_process/Output/example_dataset/bbox_grounding_dino/equirect_rotate_smooth",
+    "bbox_smooth_save_vis": true,
+    "bbox_smooth_window": 2,
+    "bbox_smooth_max_gap": 2,
+    "bbox_smooth_max_expand_ratio": 3,
+    "image_width": 5760,
+    "image_height": 2880,
+    "padding_left": 250,
+    "padding_right": 250,
+    "padding_top": 150,
+    "padding_bottom": 150,
+
+    "rtm_erp_dir": "data_process/Output/example_dataset/rtm_cache/equirect_rotate",
+    "rtmlib_erp_dir": "data_process/Output/example_dataset/rtm_cache/equirect_rotate",
+    "rtmw_erp_dir": "data_process/Output/example_dataset/rtm_cache/equirect_rotate_rtmw",
+    "pose_config": "third_party/mmpose/configs/body_2d_keypoint/rtmw/example_config.py",
+    "pose_checkpoint": "models/mmpose/rtmw/example_checkpoint.pth",
+    "device": "cuda:0",
+    "rtmw_verbose_warnings": false,
+    "rtmw_disable_mmpose_vis": false,
+    "rtmw_kpt_thr": 0.3,
+
+    "4d_humans_dir": "data_process/Output/example_dataset/4dhumans/equirect_crop_rotate",
+    "hmr_cache_dir": "data_process/Output/example_dataset/hmr_cache",
+    "hmr_output_dir": "data_process/Output/example_dataset/hmr_cache",
+
+    "seg_dir": "data_process/Output/example_dataset/seg",
+    "sam3_model_dir": "models/sam3",
+    "sam_model": "models/sam3",
+    "sam3_text": "person",
+    "sam3_threshold": 0.5,
+    "sam3_mask_threshold": 0.5,
+    "sam3_limit": 0,
+
+    "rtm_invalid_json": "data_process/Output/example_dataset/rtm_cache/equirect_rotate_rtmw/invalid.json",
+    "seg_invalid_json": "data_process/Output/example_dataset/seg/invalid.json",
+    "hmr_invalid_json": "data_process/Output/example_dataset/hmr_cache/invalid.json",
+    "fitting_dir": "data_process/Output/example_dataset/fitting/dual_cam_sil",
+    "fitting_dual_dir": "data_process/Output/example_dataset/fitting/dual_cam_no_sil",
+    "use_silhouette_loss": false,
+    "max_segment_len": 10,
+
+    "vis_dir": "data_process/Output/example_dataset/vis/dual_erp",
+    "mesh": true,
+    "scale": 0.5,
+
+    "flow_dir": "data_process/Output/example_dataset/semantic_flow",
+    "semantic_flow_dir": "data_process/Output/example_dataset/semantic_flow",
+
+    "composite_dir": "data_process/Output/example_dataset/composite_human",
+    "blend_direction": "top"
+  }
+}

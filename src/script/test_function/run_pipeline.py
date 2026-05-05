@@ -7,6 +7,16 @@ import sys
 from pathlib import Path
 from typing import Any, Callable
 
+SRC_ROOT = Path(__file__).resolve().parents[2]
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
+
+from lib_pano.pipeline.config_validation import (
+    format_missing_field_error,
+    maybe_get_with_fallback,
+    validate_dataset_config,
+)
+
 
 StepBuilder = Callable[[str, dict[str, Any]], list[str]]
 
@@ -43,6 +53,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Print commands without executing them.",
     )
+    parser.add_argument(
+        "--validate_only",
+        action="store_true",
+        help="Validate selected dataset configs for selected steps without building or running commands.",
+    )
     return parser.parse_args()
 
 
@@ -66,18 +81,19 @@ def load_config(config_path: Path) -> dict[str, dict[str, Any]]:
 def _require_field(dataset_name: str, dataset_config: dict[str, Any], field_name: str) -> str:
     value = dataset_config.get(field_name)
     if value is None:
-        raise KeyError(f"Dataset '{dataset_name}' is missing required config field '{field_name}'.")
+        raise KeyError(format_missing_field_error(dataset_name, "?", field_name))
     if isinstance(value, str) and value.strip():
         return value
     raise ValueError(f"Dataset '{dataset_name}' field '{field_name}' must be a non-empty string.")
 
 
 def _require_any_field(dataset_name: str, dataset_config: dict[str, Any], *field_names: str) -> str:
+    value = maybe_get_with_fallback(dataset_config, field_names[0], field_names[1] if len(field_names) > 1 else None)
+    if isinstance(value, str) and value.strip():
+        return value
     for field_name in field_names:
-        value = dataset_config.get(field_name)
-        if isinstance(value, str) and value.strip():
-            return value
-        if value is not None:
+        raw_value = dataset_config.get(field_name)
+        if raw_value is not None:
             raise ValueError(f"Dataset '{dataset_name}' field '{field_name}' must be a non-empty string.")
     joined = ", ".join(f"'{field_name}'" for field_name in field_names)
     raise KeyError(f"Dataset '{dataset_name}' is missing required config field; expected one of: {joined}.")
@@ -436,6 +452,12 @@ def run_step_for_dataset(
         print(f"[ERROR] dataset={dataset_name} step={step} script not found: {script_path}")
         return 1
 
+    validation_errors = validate_dataset_config(dataset_name, dataset_config, [step])
+    if validation_errors:
+        for error in validation_errors:
+            print(f"[ERROR] {error}")
+        return 1
+
     try:
         step_args = build_step_args(step, dataset_name, dataset_config)
     except (KeyError, ValueError) as exc:
@@ -484,6 +506,18 @@ def main() -> None:
     datasets = select_datasets(dataset_configs, args.datasets)
     script_dir = Path(__file__).resolve().parent
     project_root = Path(__file__).resolve().parents[3]
+
+    validation_errors: list[str] = []
+    for dataset_name in datasets:
+        validation_errors.extend(validate_dataset_config(dataset_name, dataset_configs[dataset_name], steps))
+    if args.validate_only:
+        if validation_errors:
+            print("[VALIDATION] Failed:")
+            for error in validation_errors:
+                print(f"  {error}")
+            raise SystemExit(1)
+        print("[VALIDATION] OK")
+        return
 
     failures: list[tuple[str, str, int]] = []
     for step in steps:
