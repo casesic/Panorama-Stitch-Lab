@@ -1,16 +1,23 @@
 from __future__ import annotations
 
 import argparse
-import re
+import sys
 from pathlib import Path
 
 import cv2
-import numpy as np
 
+SRC_ROOT = Path(__file__).resolve().parents[2]
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
 
-CAM2_COLOR = (0, 255, 0)
-CAM4_COLOR = (0, 255, 255)
-LINE_COLOR = (220, 220, 220)
+from lib_pano.correspondence.sparse_corr_io import list_corr_npz_files, load_corr_npz
+from lib_pano.correspondence.sparse_corr_vis import (
+    CAM2_COLOR,
+    CAM4_COLOR,
+    draw_corr_side_by_side,
+    draw_points_canvas,
+    draw_points_on_bg,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -31,102 +38,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--vis_scale", type=float, default=1.0)
     parser.add_argument("--bg_dir", type=str, default=None)
     return parser.parse_args()
-
-
-def make_scaled_shape(width: int, height: int, vis_scale: float) -> tuple[int, int]:
-    return max(1, int(round(width * vis_scale))), max(1, int(round(height * vis_scale)))
-
-
-def points_in_bounds(pts: np.ndarray, width: int, height: int) -> np.ndarray:
-    finite = np.isfinite(pts).all(axis=1)
-    return (
-        finite
-        & (pts[:, 0] >= 0)
-        & (pts[:, 0] < width)
-        & (pts[:, 1] >= 0)
-        & (pts[:, 1] < height)
-    )
-
-
-def sample_line_indices(num_pairs: int, max_lines: int, sample_mode: str, seed: int) -> np.ndarray:
-    if max_lines <= 0 or num_pairs == 0:
-        return np.empty((0,), dtype=np.int64)
-    if num_pairs <= max_lines:
-        return np.arange(num_pairs, dtype=np.int64)
-    if sample_mode == "uniform":
-        return np.linspace(0, num_pairs - 1, max_lines, dtype=np.int64)
-
-    rng = np.random.default_rng(seed)
-    sampled = rng.choice(num_pairs, size=max_lines, replace=False)
-    sampled.sort()
-    return sampled.astype(np.int64, copy=False)
-
-
-def draw_points_canvas(
-    pts: np.ndarray,
-    width: int,
-    height: int,
-    vis_scale: float,
-    point_radius: int,
-    color: tuple[int, int, int],
-) -> np.ndarray:
-    scaled_w, scaled_h = make_scaled_shape(width, height, vis_scale)
-    canvas = np.zeros((scaled_h, scaled_w, 3), dtype=np.uint8)
-    valid_pts = pts[points_in_bounds(pts, width, height)]
-    radius = max(1, int(round(point_radius * vis_scale)))
-
-    draw_pts = np.rint(valid_pts * vis_scale).astype(np.int32)
-    for x, y in draw_pts:
-        if 0 <= x < scaled_w and 0 <= y < scaled_h:
-            cv2.circle(canvas, (int(x), int(y)), radius, color, -1, lineType=cv2.LINE_AA)
-    return canvas
-
-
-def draw_fisheye_pair_canvas(
-    pairs: np.ndarray,
-    width: int,
-    height: int,
-    vis_scale: float,
-    point_radius: int,
-    line_thickness: int,
-    max_lines: int,
-    sample_mode: str,
-    seed: int,
-) -> np.ndarray:
-    scaled_w, scaled_h = make_scaled_shape(width * 2, height, vis_scale)
-    canvas = np.zeros((scaled_h, scaled_w, 3), dtype=np.uint8)
-
-    cam2_pts = pairs[:, 0:2]
-    cam4_pts = pairs[:, 2:4]
-    valid_cam2 = points_in_bounds(cam2_pts, width, height)
-    valid_cam4 = points_in_bounds(cam4_pts, width, height)
-
-    radius = max(1, int(round(point_radius * vis_scale)))
-    thickness = max(1, int(round(line_thickness * vis_scale)))
-
-    cam2_draw = np.rint(cam2_pts[valid_cam2] * vis_scale).astype(np.int32)
-    for x, y in cam2_draw:
-        if 0 <= x < scaled_w and 0 <= y < scaled_h:
-            cv2.circle(canvas, (int(x), int(y)), radius, CAM2_COLOR, -1, lineType=cv2.LINE_AA)
-
-    cam4_draw = np.rint((cam4_pts[valid_cam4] + np.array([width, 0.0])) * vis_scale).astype(np.int32)
-    for x, y in cam4_draw:
-        if 0 <= x < scaled_w and 0 <= y < scaled_h:
-            cv2.circle(canvas, (int(x), int(y)), radius, CAM4_COLOR, -1, lineType=cv2.LINE_AA)
-
-    for row_idx in sample_line_indices(len(pairs), max_lines, sample_mode, seed):
-        if not (valid_cam2[row_idx] and valid_cam4[row_idx]):
-            continue
-
-        p2 = cam2_pts[row_idx]
-        p4 = cam4_pts[row_idx] + np.array([width, 0.0])
-        p2_draw = (int(round(p2[0] * vis_scale)), int(round(p2[1] * vis_scale)))
-        p4_draw = (int(round(p4[0] * vis_scale)), int(round(p4[1] * vis_scale)))
-        cv2.line(canvas, p2_draw, p4_draw, LINE_COLOR, thickness, lineType=cv2.LINE_AA)
-        cv2.circle(canvas, p2_draw, radius, CAM2_COLOR, -1, lineType=cv2.LINE_AA)
-        cv2.circle(canvas, p4_draw, radius, CAM4_COLOR, -1, lineType=cv2.LINE_AA)
-
-    return canvas
 
 
 def find_bg_image(bg_dir: Path, cam_id: str, frame_idx: int) -> Path | None:
@@ -159,63 +70,17 @@ def load_bg_image(
     return bg
 
 
-def draw_points_on_bg(
-    pts: np.ndarray,
-    bg: np.ndarray,
-    width: int,
-    height: int,
-    vis_scale: float,
-    point_radius: int,
-    color: tuple[int, int, int],
-) -> np.ndarray:
-    scaled_w, scaled_h = make_scaled_shape(width, height, vis_scale)
-    canvas = cv2.resize(bg, (scaled_w, scaled_h), interpolation=cv2.INTER_AREA) if vis_scale != 1.0 else bg.copy()
-    valid_pts = pts[points_in_bounds(pts, width, height)]
-    radius = max(1, int(round(point_radius * vis_scale)))
-
-    draw_pts = np.rint(valid_pts * vis_scale).astype(np.int32)
-    for x, y in draw_pts:
-        if 0 <= x < scaled_w and 0 <= y < scaled_h:
-            cv2.circle(canvas, (int(x), int(y)), radius, color, -1, lineType=cv2.LINE_AA)
-    return canvas
-
-
-def _npz_scalar(value: np.ndarray) -> object:
-    arr = np.asarray(value)
-    return arr.item() if arr.shape == () else arr.tolist()
-
-
-def load_corr_npz(path: Path, fallback_width: int, fallback_height: int) -> tuple[int, int, int, np.ndarray]:
-    with np.load(path, allow_pickle=False) as data:
-        pairs = data["pairs"].astype(np.float32)
-        width = int(_npz_scalar(data["image_width"])) if "image_width" in data.files else int(fallback_width)
-        height = int(_npz_scalar(data["image_height"])) if "image_height" in data.files else int(fallback_height)
-        if "frame_idx" in data.files:
-            frame_idx = int(_npz_scalar(data["frame_idx"]))
-        else:
-            frame_idx = int(re.match(r"^(\d+)_fisheye_corr\.npz$", path.name).group(1))
-    return frame_idx, width, height, pairs
-
-
-def discover_corr_files(corr_dir: Path, start_frame: int | None, end_frame: int | None) -> list[Path]:
-    input_dir = corr_dir / "fisheye_corr"
-    pattern = re.compile(r"^(\d+)_fisheye_corr\.npz$")
-    paths: list[tuple[int, Path]] = []
-    for path in input_dir.glob("*_fisheye_corr.npz"):
-        match = pattern.match(path.name)
-        if match is None:
-            continue
-        frame_idx = int(match.group(1))
-        if start_frame is not None and frame_idx < start_frame:
-            continue
-        if end_frame is not None and frame_idx > end_frame:
-            continue
-        paths.append((frame_idx, path))
-    return [path for _, path in sorted(paths)]
-
-
 def process_frame(npz_path: Path, output_dir: Path, args: argparse.Namespace) -> None:
-    frame_idx, width, height, pairs = load_corr_npz(npz_path, args.fisheye_width, args.fisheye_height)
+    corr_data = load_corr_npz(
+        npz_path,
+        fallback_width=args.fisheye_width,
+        fallback_height=args.fisheye_height,
+        domain="fisheye",
+    )
+    frame_idx = corr_data["frame_idx"]
+    width = corr_data["image_width"]
+    height = corr_data["image_height"]
+    pairs = corr_data["pairs"]
     frame_key = f"{frame_idx:05d}"
 
     cv2.imwrite(
@@ -228,7 +93,7 @@ def process_frame(npz_path: Path, output_dir: Path, args: argparse.Namespace) ->
     )
     cv2.imwrite(
         str(output_dir / "fisheye_pair_lines" / f"{frame_key}.png"),
-        draw_fisheye_pair_canvas(
+        draw_corr_side_by_side(
             pairs,
             width,
             height,
@@ -269,10 +134,9 @@ def main() -> None:
         (output_dir / "fisheye_points_bg" / "cam2").mkdir(parents=True, exist_ok=True)
         (output_dir / "fisheye_points_bg" / "cam4").mkdir(parents=True, exist_ok=True)
 
-    for npz_path in discover_corr_files(corr_dir, args.start_frame, args.end_frame):
+    for npz_path in list_corr_npz_files(corr_dir, domain="fisheye", start_frame=args.start_frame, end_frame=args.end_frame):
         process_frame(npz_path, output_dir, args)
-        frame_match = re.match(r"^(\d+)_fisheye_corr\.npz$", npz_path.name)
-        frame_key = f"{int(frame_match.group(1)):05d}" if frame_match is not None else npz_path.stem
+        frame_key = f"{load_corr_npz(npz_path, domain='fisheye')['frame_idx']:05d}"
         print(f"[frame {frame_key}] saved")
 
 

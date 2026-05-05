@@ -32,6 +32,8 @@ from lib_pano.human3d.smplx_parts import (
     merge_exclude_vertex_ids,
 )
 from lib_pano.human3d.smplx_sequence import build_segment_index, get_frame_vertices
+from lib_pano.correspondence.sparse_corr_filter import build_keep_mask_from_exclude_ids
+from lib_pano.correspondence.sparse_corr_io import save_corr_npz as write_corr_npz
 
 
 R_CAM2_NP = np.array([1, 0, 0, 0, 0, 1, 0, -1, 0], dtype=np.float64).reshape(3, 3)
@@ -122,30 +124,10 @@ def build_matched_pairs(
     usable_cam4 = mesh_visible_mask_cam4 & valid_mask_cam4
     matched_vertex_ids = np.where(usable_cam2 & usable_cam4)[0].astype(np.int64)
     if len(exclude_vertex_ids) > 0:
-        matched_vertex_ids = matched_vertex_ids[~np.isin(matched_vertex_ids, exclude_vertex_ids)]
+        matched_vertex_ids = matched_vertex_ids[build_keep_mask_from_exclude_ids(matched_vertex_ids, exclude_vertex_ids)]
 
     pairs = np.concatenate([pts_cam2_all[matched_vertex_ids], pts_cam4_all[matched_vertex_ids]], axis=1).astype(np.float32, copy=False)
     return matched_vertex_ids, pairs
-
-
-def save_corr_npz(
-    path: Path,
-    frame_idx: int,
-    segment_name: str,
-    image_width: int,
-    image_height: int,
-    matched_vertex_ids: np.ndarray,
-    pairs: np.ndarray,
-) -> None:
-    np.savez_compressed(
-        path,
-        frame_idx=np.asarray(frame_idx, dtype=np.int64),
-        segment_name=np.asarray(segment_name),
-        image_width=np.asarray(image_width, dtype=np.int64),
-        image_height=np.asarray(image_height, dtype=np.int64),
-        matched_vertex_ids=matched_vertex_ids.astype(np.int64, copy=False),
-        pairs=pairs.astype(np.float32, copy=False),
-    )
 
 
 def process_frame(
@@ -192,15 +174,27 @@ def process_frame(
     ).astype(np.float32, copy=False)
 
     frame_key = f"{frame_idx:05d}"
-    save_corr_npz(output_dir / "erp_corr" / f"{frame_key}_erp_corr.npz", frame_idx, segment_name, erp_width, erp_height, erp_vertex_ids, erp_pairs)
-    save_corr_npz(
+    write_corr_npz(
+        output_dir / "erp_corr" / f"{frame_key}_erp_corr.npz",
+        {
+            "frame_idx": frame_idx,
+            "segment_name": segment_name,
+            "image_width": erp_width,
+            "image_height": erp_height,
+            "matched_vertex_ids": erp_vertex_ids,
+            "pairs": erp_pairs,
+        },
+    )
+    write_corr_npz(
         output_dir / "fisheye_corr" / f"{frame_key}_fisheye_corr.npz",
-        frame_idx,
-        segment_name,
-        fisheye_width,
-        fisheye_height,
-        fisheye_vertex_ids,
-        fisheye_pairs,
+        {
+            "frame_idx": frame_idx,
+            "segment_name": segment_name,
+            "image_width": fisheye_width,
+            "image_height": fisheye_height,
+            "matched_vertex_ids": fisheye_vertex_ids,
+            "pairs": fisheye_pairs,
+        },
     )
     print(f"[frame {frame_key}] erp={len(erp_vertex_ids)} fisheye={len(fisheye_vertex_ids)}")
 

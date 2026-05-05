@@ -2,20 +2,18 @@ from __future__ import annotations
 
 import argparse
 import sys
-import re
 from pathlib import Path
 
 import cv2
 import numpy as np
-from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QImage, QKeyEvent, QMouseEvent, QPainter, QPen, QPixmap
-from PySide6.QtWidgets import QApplication, QHBoxLayout, QLabel, QStatusBar, QVBoxLayout, QWidget
 
 SRC_ROOT = Path(__file__).resolve().parents[2]
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from lib_pano.human3d.smplx_parts import parse_vertex_ids_text, save_exclude_vertex_ids
+from lib_pano.correspondence.sparse_corr_filter import filter_corr_by_vertex_ids
+from lib_pano.correspondence.sparse_corr_io import list_corr_npz_files, load_corr_npz, save_corr_npz
 
 
 def parse_args() -> argparse.Namespace:
@@ -30,21 +28,21 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+if any(arg in ("-h", "--help") for arg in sys.argv[1:]):
+    parse_args()
+    raise SystemExit(0)
+
+
+from PySide6.QtCore import QPointF, QRectF, Qt
+from PySide6.QtGui import QImage, QKeyEvent, QMouseEvent, QPainter, QPen, QPixmap
+from PySide6.QtWidgets import QApplication, QHBoxLayout, QLabel, QStatusBar, QVBoxLayout, QWidget
+
+
 def discover_frames(corr_dir: Path, domain: str, start_frame: int | None, end_frame: int | None) -> list[int]:
-    subdir = corr_dir / f"{domain}_corr"
-    pattern = re.compile(rf"^(\d+)_{domain}_corr\.npz$")
-    frames: list[int] = []
-    for path in subdir.glob(f"*_{domain}_corr.npz"):
-        match = pattern.match(path.name)
-        if match is None:
-            continue
-        frame_idx = int(match.group(1))
-        if start_frame is not None and frame_idx < start_frame:
-            continue
-        if end_frame is not None and frame_idx > end_frame:
-            continue
-        frames.append(frame_idx)
-    return sorted(frames)
+    return [
+        int(load_corr_npz(path, domain=domain)["frame_idx"])
+        for path in list_corr_npz_files(corr_dir, domain=domain, start_frame=start_frame, end_frame=end_frame)
+    ]
 
 
 def corr_path(corr_dir: Path, domain: str, frame_idx: int) -> Path:
@@ -52,8 +50,8 @@ def corr_path(corr_dir: Path, domain: str, frame_idx: int) -> Path:
 
 
 def load_corr(path: Path) -> tuple[np.ndarray, np.ndarray]:
-    with np.load(path, allow_pickle=False) as data:
-        return data["matched_vertex_ids"].astype(np.int64), data["pairs"].astype(np.float32)
+    corr_data = load_corr_npz(path)
+    return corr_data["matched_vertex_ids"], corr_data["pairs"]
 
 
 def load_rgb_image(path: Path) -> np.ndarray:
@@ -73,25 +71,8 @@ def save_frame_ids(exclude_dir: Path, frame_idx: int, ids: set[int]) -> None:
 
 
 def filter_one_corr_npz(input_path: Path, output_path: Path, exclude_ids: set[int]) -> None:
-    with np.load(input_path, allow_pickle=False) as data:
-        matched_vertex_ids = data["matched_vertex_ids"].astype(np.int64)
-        pairs = data["pairs"].astype(np.float32)
-        if exclude_ids:
-            remove_ids = np.asarray(sorted(exclude_ids), dtype=np.int64)
-            keep = ~np.isin(matched_vertex_ids, remove_ids)
-        else:
-            keep = np.ones(len(matched_vertex_ids), dtype=bool)
-
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        np.savez_compressed(
-            output_path,
-            frame_idx=data["frame_idx"],
-            segment_name=data["segment_name"],
-            image_width=data["image_width"],
-            image_height=data["image_height"],
-            matched_vertex_ids=matched_vertex_ids[keep],
-            pairs=pairs[keep],
-        )
+    corr_data = load_corr_npz(input_path)
+    save_corr_npz(output_path, filter_corr_by_vertex_ids(corr_data, exclude_ids))
 
 
 def filter_corr_frame(
