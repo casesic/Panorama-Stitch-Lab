@@ -21,7 +21,7 @@ DEBUG_LIMIT = 1
 WARP_DIRECTION = "cam4_to_cam2"
 USE_SEMANTIC_FLOW = True
 SEMANTIC_FLOW_DIR = DATASET_ROOT / "semantic_flow" / "test_new_sil"
-SEMANTIC_FLOW_WEIGHT_SCALE = 4.0
+SEMANTIC_FLOW_WEIGHT_SCALE = 2.0
 SEMANTIC_FLOW_CONF_THRESH = 0.05
 
 RAFT_MODELS_PATH = os.path.join(ls.PROJECT_ROOT, 'tools/RAFT/models')
@@ -50,7 +50,7 @@ MESH_CONFIG = MeshConfig(
 #     max_propagation_px=400.0,
 #     downsample_factor=2,
 # )
-USE_SEAM_REPAIR = False
+USE_SEAM_REPAIR = True
 SAVE_DEBUG = True
 DEBUG_LEVEL = "minimal"  # options: "none", "minimal", "full"
 
@@ -58,7 +58,7 @@ DEBUG_LEVEL = "minimal"  # options: "none", "minimal", "full"
 ROTATION_MATRIX = np.array([
     1, 0, 0,
     0, 0, 1,
-    0, -1, 0
+    0, 1, 0
 ], dtype=np.float64).reshape(3, 3)
 ROTATION_INV = ROTATION_MATRIX.T
 

@@ -34,7 +34,7 @@ def stitch_with_flow(
     blend_threshold: int = 1,
     blend_erode_kernel_size: int = 1,
     use_seam_repair: bool = True,
-    seam_band_radius: int = 10,
+    seam_band_radius: int = 5,
     inpaint_radius: int = 2,
     photometric_threshold: int = 30,
     photo_sigma: float = 60.0,

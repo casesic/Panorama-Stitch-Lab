@@ -14,12 +14,7 @@ def _dirs_to_equirect_map(
     lat = np.arcsin(y)
 
     map_x = ((lon / (2.0 * np.pi)) + 0.5) * width
-    map_x = np.mod(map_x, width).astype(np.float32)
-
-    
     map_y = ((lat / np.pi) + 0.5) * height
-    map_y = np.clip(map_y, 0.0, height - 1.0).astype(np.float32)
-
 
     return map_x, map_y
 
@@ -48,15 +43,17 @@ def rotate_equirectangular_image(
         width=width,
         height=height,
     )
+    # ERP rotation must wrap horizontally because longitude is periodic.
     map_x = np.mod(map_x, width).astype(np.float32)
-    map_y = np.clip(map_y, 0, height - 1).astype(np.float32)
+    map_y = np.clip(map_y, 0.0, height - 1.0).astype(np.float32)
 
     return cv2.remap(
         input_img,
         map_x,
         map_y,
         interpolation=interpolation,
-        borderMode=cv2.BORDER_CONSTANT,
+        # Keeps linear sampling from falling back to a black border at x=width.
+        borderMode=cv2.BORDER_WRAP,
         borderValue=border_value,
     )
 
