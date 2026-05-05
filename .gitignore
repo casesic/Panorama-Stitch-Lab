@@ -8,7 +8,10 @@ data_process/
 src/script/tools/test_colab.ipynb
 __pycache__/
 **/__pycache__/
-docs/
+docs/*
+!docs/data_flow.md
+!docs/debug_scripts.md
+!docs/pipeline_overview.md
 *.zip
 src/lib_pano/local_setting.py
 *.zip
