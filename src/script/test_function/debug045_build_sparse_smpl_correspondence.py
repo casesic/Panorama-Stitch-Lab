@@ -1,10 +1,7 @@
 from __future__ import annotations
 
 import argparse
-import ast
 import os
-import pickle
-import re
 import sys
 from pathlib import Path
 
@@ -28,6 +25,13 @@ if str(SF_ROOT) not in sys.path:
 
 from tools.fisheye_extractor.config import DS_PARAMS, DS_PARAMS_CAM2, DS_PARAMS_CAM4
 from tools.fisheye_extractor.ds_model import project as ds_project
+from lib_pano.human3d.smplx_model_io import get_smplx_faces_from_model, load_smplx_model
+from lib_pano.human3d.smplx_parts import (
+    get_smplx_hand_vertex_ids,
+    load_exclude_vertex_ids,
+    merge_exclude_vertex_ids,
+)
+from lib_pano.human3d.smplx_sequence import build_segment_index, get_frame_vertices
 
 
 R_CAM2_NP = np.array([1, 0, 0, 0, 0, 1, 0, -1, 0], dtype=np.float64).reshape(3, 3)
@@ -39,17 +43,6 @@ R_EXTRINSIC_CAM4 = np.array(
     [-1.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 1.0],
     dtype=np.float64,
 ).reshape(3, 3)
-HAND_PART_KEYWORDS = (
-    "lefthand", "righthand", "left_hand", "right_hand",
-    "leftwrist", "rightwrist", "left_wrist", "right_wrist",
-    "leftthumb", "rightthumb", "left_thumb", "right_thumb",
-    "leftindex", "rightindex", "left_index", "right_index",
-    "leftmiddle", "rightmiddle", "left_middle", "right_middle",
-    "leftring", "rightring", "left_ring", "right_ring",
-    "leftpinky", "rightpinky", "left_pinky", "right_pinky",
-)
-
-
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build sparse no-hand SMPLX correspondences between cam2 and cam4.")
     parser.add_argument("--fitting_dir", type=str, required=True)
@@ -72,23 +65,6 @@ def select_camera_params(camera_group: str) -> tuple[dict[str, float], dict[str,
     return DS_PARAMS, DS_PARAMS
 
 
-def build_segment_index(fitting_dir: Path) -> dict[int, tuple[Path, Path, int]]:
-    pattern = re.compile(r"^seg_(\d+)_(\d+)_seq\.pkl$")
-    segment_index: dict[int, tuple[Path, Path, int]] = {}
-    for pkl_path_c2 in sorted((fitting_dir / "cam2").glob("seg_*_*_seq.pkl")):
-        match = pattern.match(pkl_path_c2.name)
-        if match is None:
-            continue
-        start = int(match.group(1))
-        end = int(match.group(2))
-        pkl_path_c4 = fitting_dir / "cam4" / pkl_path_c2.name
-        if not pkl_path_c4.exists():
-            continue
-        for frame_idx in range(start, end + 1):
-            segment_index[frame_idx] = (pkl_path_c2, pkl_path_c4, start)
-    return segment_index
-
-
 def select_frame_indices(
     segment_index: dict[int, tuple[Path, Path, int]],
     start_frame: int | None,
@@ -105,112 +81,9 @@ def select_frame_indices(
     return frame_indices
 
 
-def load_all_verts(pkl_path: Path, model) -> np.ndarray:
-    import torch
-    from lib_dynamic_hvip.smpl.smpl_lib import forward_smplx_tensor_batch
-    from single_fitting.debug_shared import load_pickle
-
-    smplx_param = load_pickle(pkl_path)
-    n_frame = smplx_param.num_batch
-    with torch.no_grad():
-        verts_t, _, _ = forward_smplx_tensor_batch(
-            smplx_model=model,
-            global_orient=smplx_param.orient,
-            body_pose=smplx_param.body_pose,
-            left_hand_pose=smplx_param.left_hand_pose,
-            right_hand_pose=smplx_param.right_hand_pose,
-            betas=smplx_param.beta.unsqueeze(0).expand(n_frame, -1),
-            transl=smplx_param.transl,
-            scale=smplx_param.scale.expand(n_frame),
-        )
-    return verts_t.detach().cpu().numpy()
-
-
 def projected_in_bounds(pts_2d: np.ndarray, image_width: int, image_height: int) -> np.ndarray:
     finite = np.isfinite(pts_2d).all(axis=1)
     return finite & (pts_2d[:, 0] >= 0) & (pts_2d[:, 0] < image_width) & (pts_2d[:, 1] >= 0) & (pts_2d[:, 1] < image_height)
-
-
-def load_exclude_vertex_ids(path: str | Path | None) -> np.ndarray:
-    if path is None:
-        return np.empty((0,), dtype=np.int64)
-
-    path = Path(path)
-    if path.suffix.lower() == ".npy":
-        ids = np.load(path)
-    else:
-        ids = [int(item) for item in path.read_text(encoding="utf-8").replace(",", " ").split()]
-    return np.unique(np.asarray(ids, dtype=np.int64).reshape(-1))
-
-
-def _to_numpy(value) -> np.ndarray:
-    if hasattr(value, "detach"):
-        return value.detach().cpu().numpy()
-    return np.asarray(value)
-
-
-def _part_key_is_hand(key: object) -> bool:
-    key_norm = str(key).replace(" ", "").lower()
-    return any(keyword in key_norm for keyword in HAND_PART_KEYWORDS)
-
-
-def _load_segmentation_file(path: Path):
-    if path.suffix.lower() == ".pkl":
-        with path.open("rb") as file:
-            return pickle.load(file)
-    return ast.literal_eval(path.read_text(encoding="utf-8"))
-
-
-def _hand_ids_from_segmentation(segmentation) -> np.ndarray:
-    if not isinstance(segmentation, dict):
-        return np.empty((0,), dtype=np.int64)
-
-    ids: list[int] = []
-    for key, value in segmentation.items():
-        if _part_key_is_hand(key):
-            ids.extend(np.asarray(value, dtype=np.int64).reshape(-1).tolist())
-    return np.unique(np.asarray(ids, dtype=np.int64))
-
-
-def get_lbs_hand_vertex_ids(smplx_model) -> np.ndarray:
-    from smplx.joint_names import JOINT_NAMES
-
-    weights = _to_numpy(smplx_model.lbs_weights)
-    hand_joint_ids = [
-        joint_idx
-        for joint_idx, joint_name in enumerate(JOINT_NAMES[: weights.shape[1]])
-        if any(word in joint_name.lower() for word in ("wrist", "thumb", "index", "middle", "ring", "pinky"))
-    ]
-    if not hand_joint_ids:
-        return np.empty((0,), dtype=np.int64)
-
-    hand_weight = weights[:, hand_joint_ids].sum(axis=1)
-    return np.where(hand_weight > 0.2)[0].astype(np.int64)
-
-
-def get_smplx_hand_vertex_ids(smplx_model) -> np.ndarray:
-    ids: list[np.ndarray] = []
-    names = (
-        "smplx_vert_segmentation.json",
-        "smplx_vertex_segmentation.json",
-        "SMPLX_vert_segmentation.json",
-        "smplx_parts_segm.pkl",
-        "smplx_part_segm.pkl",
-    )
-    for name in names:
-        for path in PROJECT_ROOT.rglob(name):
-            seg_ids = _hand_ids_from_segmentation(_load_segmentation_file(path))
-            if len(seg_ids) > 0:
-                ids.append(seg_ids)
-
-    lbs_ids = get_lbs_hand_vertex_ids(smplx_model)
-    if len(lbs_ids) > 0:
-        ids.append(lbs_ids)
-
-    if ids:
-        return np.unique(np.concatenate(ids)).astype(np.int64)
-
-    raise RuntimeError("Failed to get SMPL-X hand vertex ids")
 
 
 def project_vertices_to_erp(verts_unified: np.ndarray, erp_width: int, erp_height: int) -> tuple[np.ndarray, np.ndarray]:
@@ -339,13 +212,11 @@ def main() -> None:
     (output_dir / "erp_corr").mkdir(parents=True, exist_ok=True)
     (output_dir / "fisheye_corr").mkdir(parents=True, exist_ok=True)
 
-    from flow.visibility import get_smplx_batch
-
-    smplx_model = get_smplx_batch(gender="neutral")
-    faces = _to_numpy(smplx_model.faces).astype(int)
-    hand_vertex_ids = get_smplx_hand_vertex_ids(smplx_model)
+    smplx_model = load_smplx_model(gender="neutral")
+    faces = get_smplx_faces_from_model(smplx_model)
+    hand_vertex_ids = get_smplx_hand_vertex_ids(smplx_model, PROJECT_ROOT)
     user_exclude_ids = load_exclude_vertex_ids(args.exclude_vertex_ids)
-    exclude_vertex_ids = np.unique(np.concatenate([hand_vertex_ids, user_exclude_ids]))
+    exclude_vertex_ids = merge_exclude_vertex_ids(hand_vertex_ids, user_exclude_ids)
 
     segment_index = build_segment_index(fitting_dir)
     frame_indices = select_frame_indices(segment_index, args.start_frame, args.end_frame)
@@ -353,17 +224,14 @@ def main() -> None:
 
     for frame_idx in frame_indices:
         pkl_path_c2, pkl_path_c4, segment_start = segment_index[frame_idx]
-        frame_offset = frame_idx - segment_start
-        if pkl_path_c2 not in segment_cache:
-            segment_cache[pkl_path_c2] = load_all_verts(pkl_path_c2, smplx_model)
-        if pkl_path_c4 not in segment_cache:
-            segment_cache[pkl_path_c4] = load_all_verts(pkl_path_c4, smplx_model)
+        verts_c2 = get_frame_vertices(pkl_path_c2, frame_idx, segment_start, smplx_model, segment_cache)
+        verts_c4 = get_frame_vertices(pkl_path_c4, frame_idx, segment_start, smplx_model, segment_cache)
 
         process_frame(
             frame_idx=frame_idx,
             segment_name=pkl_path_c2.name,
-            verts_c2=segment_cache[pkl_path_c2][frame_offset],
-            verts_c4=segment_cache[pkl_path_c4][frame_offset],
+            verts_c2=verts_c2,
+            verts_c4=verts_c4,
             faces=faces,
             output_dir=output_dir,
             erp_width=args.erp_width,

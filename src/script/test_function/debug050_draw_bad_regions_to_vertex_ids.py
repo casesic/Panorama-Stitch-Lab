@@ -11,6 +11,12 @@ from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QImage, QKeyEvent, QMouseEvent, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QApplication, QHBoxLayout, QLabel, QStatusBar, QVBoxLayout, QWidget
 
+SRC_ROOT = Path(__file__).resolve().parents[2]
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
+
+from lib_pano.human3d.smplx_parts import parse_vertex_ids_text, save_exclude_vertex_ids
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Draw bad projected regions and export matched SMPL vertex ids.")
@@ -55,24 +61,15 @@ def load_rgb_image(path: Path) -> np.ndarray:
     return cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
 
 
-def load_ids_txt(path: Path) -> set[int]:
-    text = path.read_text(encoding="utf-8").replace(",", " ")
-    return {int(item) for item in text.split()}
-
-
 def load_existing_frame_ids(exclude_dir: Path) -> dict[int, set[int]]:
     frame_ids: dict[int, set[int]] = {}
     for path in exclude_dir.glob("*.txt"):
-        frame_ids[int(path.stem)] = load_ids_txt(path)
+        frame_ids[int(path.stem)] = set(parse_vertex_ids_text(path.read_text(encoding="utf-8")).tolist())
     return frame_ids
 
 
 def save_frame_ids(exclude_dir: Path, frame_idx: int, ids: set[int]) -> None:
-    exclude_dir.mkdir(parents=True, exist_ok=True)
-    path = exclude_dir / f"{frame_idx:05d}.txt"
-    with path.open("w", encoding="utf-8") as file:
-        for vertex_id in sorted(ids):
-            file.write(f"{vertex_id}\n")
+    save_exclude_vertex_ids(exclude_dir / f"{frame_idx:05d}.txt", ids)
 
 
 def filter_one_corr_npz(input_path: Path, output_path: Path, exclude_ids: set[int]) -> None:

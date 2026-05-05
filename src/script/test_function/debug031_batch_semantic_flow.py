@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 from pathlib import Path
 
 import cv2
@@ -13,8 +12,9 @@ import config_script
 os.environ.setdefault('KMP_DUPLICATE_LIB_OK', 'TRUE')
 
 from lib_pano.pipeline.bbox_io import load_bbox_dict
-from lib_pano.pipeline.frame_index import discover_frame_indices
 from lib_pano.pipeline.paths import ensure_single_fitting_path
+from lib_pano.human3d.smplx_model_io import load_smplx_faces, load_smplx_model
+from lib_pano.human3d.smplx_sequence import build_segment_index, get_frame_vertices
 
 def _ensure_paths() -> Path:
     return ensure_single_fitting_path()
@@ -24,12 +24,9 @@ REPO_ROOT = _ensure_paths()
 
 from flow.visibility import (
     compute_semantic_flow,
-    get_smplx_batch,
     get_visible_vertices_erp,
     project_verts_to_rotated_erp,
 )
-from lib_dynamic_hvip.smpl.smpl_lib import forward_smplx_tensor_batch
-from single_fitting.debug_shared import load_pickle
 R_CAM2 = torch.tensor([1, 0, 0, 0, 0, 1, 0, -1, 0], dtype=torch.float32).reshape(3, 3)
 R_CAM4 = torch.tensor([-1, 0, 0, 0, 1, 0, 0, 0, -1], dtype=torch.float32).reshape(3, 3)
 R_CAM4_PROJ = R_CAM2   # 用于 cam4 投影
@@ -59,65 +56,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bbox_dir", type=str, default=None, help="Optional crop bbox directory containing cam2/cam4 bbox json.")
     parser.add_argument("--bbox_padding", type=int, default=100, help="Padding added to bbox union when --bbox_dir is provided.")
     return parser.parse_args()
-
-
-def find_segment_pkl(fitting_dir: Path, frame_idx: int):
-    cam2_dir = fitting_dir / "cam2"
-    for pkl_path_c2 in sorted(cam2_dir.glob("seg_*_*_seq.pkl")):
-        stem = pkl_path_c2.stem
-        parts = stem.split("_")
-        if len(parts) != 4:
-            continue
-        _, start_s, end_s, _ = parts
-        start = int(start_s)
-        end = int(end_s)
-        if start <= frame_idx <= end:
-            pkl_path_c4 = fitting_dir / "cam4" / pkl_path_c2.name
-            return pkl_path_c2, pkl_path_c4, start
-    return None, None, None
-
-
-def build_segment_index(fitting_dir: Path) -> dict[int, tuple[Path, Path, int]]:
-    cam2_dir = fitting_dir / "cam2"
-    cam4_dir = fitting_dir / "cam4"
-    pattern = re.compile(r"^seg_(\d+)_(\d+)_seq\.pkl$")
-    segment_index: dict[int, tuple[Path, Path, int]] = {}
-
-    for pkl_path_c2 in sorted(cam2_dir.glob("seg_*_*_seq.pkl")):
-        match = pattern.match(pkl_path_c2.name)
-        if match is None:
-            continue
-        start = int(match.group(1))
-        end = int(match.group(2))
-        pkl_path_c4 = cam4_dir / pkl_path_c2.name
-        if not pkl_path_c4.exists():
-            print(f"Warning: missing cam4 segment for {pkl_path_c2.name}, skipping segment")
-            continue
-        for frame_idx in range(start, end + 1):
-            segment_index[frame_idx] = (pkl_path_c2, pkl_path_c4, start)
-
-    return segment_index
-
-
-def load_all_verts(
-    pkl_path: Path,
-    model,
-    n_expand_beta: int | None = None,
-) -> np.ndarray:
-    smplx_param = load_pickle(pkl_path)
-    n_frame = n_expand_beta if n_expand_beta is not None else smplx_param.num_batch
-    with torch.no_grad():
-        verts_t, _, _ = forward_smplx_tensor_batch(
-            smplx_model=model,
-            global_orient=smplx_param.orient,
-            body_pose=smplx_param.body_pose,
-            left_hand_pose=smplx_param.left_hand_pose,
-            right_hand_pose=smplx_param.right_hand_pose,
-            betas=smplx_param.beta.unsqueeze(0).expand(n_frame, -1),
-            transl=smplx_param.transl,
-            scale=smplx_param.scale.expand(n_frame),
-        )
-    return verts_t.detach().cpu().numpy()
 
 
 def load_invalid_frames(invalid_json_path: Path | None) -> set[int]:
@@ -371,10 +309,9 @@ def main() -> None:
     output_dir = Path(args.output_dir)
     invalid_frames = load_invalid_frames(Path(args.invalid_json) if args.invalid_json else None)
     output_dir.mkdir(parents=True, exist_ok=True)
-    smplx_model = get_smplx_batch(gender="neutral")
-    faces = smplx_model.faces.numpy() if hasattr(smplx_model.faces, "numpy") else np.asarray(smplx_model.faces)
-    faces = np.asarray(faces, dtype=int)
-    segment_index = build_segment_index(fitting_dir)
+    smplx_model = load_smplx_model(gender="neutral")
+    faces = load_smplx_faces(smplx_model)
+    segment_index = build_segment_index(fitting_dir, warn_missing_pair=True)
     frame_indices = sorted(segment_index.keys())
     if args.start_frame is not None:
         frame_indices = [i for i in frame_indices if i >= args.start_frame]
@@ -413,19 +350,8 @@ def main() -> None:
         pkl_path_c2, pkl_path_c4, segment_start = segment_info
 
         try:
-            if pkl_path_c2 not in _segment_cache:
-                _segment_cache[pkl_path_c2] = load_all_verts(pkl_path_c2, smplx_model)
-            if pkl_path_c4 not in _segment_cache:
-                _segment_cache[pkl_path_c4] = load_all_verts(pkl_path_c4, smplx_model)
-            frame_offset = frame_idx - segment_start
-            verts_all_c2 = _segment_cache[pkl_path_c2]
-            verts_all_c4 = _segment_cache[pkl_path_c4]
-            if frame_offset < 0 or frame_offset >= len(verts_all_c2):
-                raise IndexError(f"Frame {frame_idx} out of range for segment {pkl_path_c2.name}")
-            if frame_offset < 0 or frame_offset >= len(verts_all_c4):
-                raise IndexError(f"Frame {frame_idx} out of range for segment {pkl_path_c4.name}")
-            verts_c2 = verts_all_c2[frame_offset]
-            verts_c4 = verts_all_c4[frame_offset]
+            verts_c2 = get_frame_vertices(pkl_path_c2, frame_idx, segment_start, smplx_model, _segment_cache)
+            verts_c4 = get_frame_vertices(pkl_path_c4, frame_idx, segment_start, smplx_model, _segment_cache)
             result = process_frame(
                 frame_idx=frame_idx,
                 verts_c2=verts_c2,
