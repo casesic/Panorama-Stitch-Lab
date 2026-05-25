@@ -41,6 +41,9 @@ tools/SingleFitting/single_fitting/*
 !tools/SingleFitting/single_fitting/fitting/
 tools/SingleFitting/single_fitting/fitting/*
 !tools/SingleFitting/single_fitting/fitting/*.py
+!tools/SingleFitting/single_fitting/fitting/constraints/
+tools/SingleFitting/single_fitting/fitting/constraints/*
+!tools/SingleFitting/single_fitting/fitting/constraints/*.py
 
 !tools/SingleFitting/lib_dynamic_hvip/
 tools/SingleFitting/lib_dynamic_hvip/*

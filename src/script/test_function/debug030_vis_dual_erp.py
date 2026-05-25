@@ -378,11 +378,12 @@ python src\script\test_function\debug030_vis_dual_erp.py `
 '''
 
 r'''
-python src\script\test_function\debug030_vis_dual_erp.py `
-  --result_dir data_process\Output\20260311_riding\fitting\dual_cam_sil_513_518 `
-  --segment 513_518 `
-  --rtm_dir data_process\Output\20260311_riding\rtm_cache\equirect_rotate `
-  --image_dir data_process\Output\20260311_riding\image\equirect_rotate `
-  --output_dir data_process\Output\20260311_riding\vis\dual_erp_sil_513_518 `
-  --mesh  --scale 0.5
+python src/script/test_function/debug030_vis_dual_erp.py \
+  --result_dir data_process/Output/20260311_riding/fitting/debug_densekp_io_test_513_518 \
+  --segment 513_518 \
+  --rtm_dir data_process/Output/20260311_riding/rtm_cache/equirect_rotate \
+  --image_dir data_process/Output/20260311_riding/image/equirect_rotate \
+  --output_dir data_process/Output/20260311_riding/vis/debug_densekp_io_test_513_518 \
+  --mesh  \
+  --scale 0.5
 '''
