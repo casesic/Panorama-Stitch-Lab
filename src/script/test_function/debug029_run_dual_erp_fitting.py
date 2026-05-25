@@ -36,8 +36,8 @@ from lib_pano.fitting.rtm_io import (
     load_det_result,
 )
 from lib_pano.fitting.segments import split_long_segments, split_reconstructable_subsegments
-from single_fitting.fitting import DualCamERPFitter
-from single_fitting.fitting.constraints import prepare_silhouette_data
+from lib_pano.human_fitting import DualCamERPFitter
+from lib_pano.human_fitting.constraints import prepare_silhouette_data
 
 
 R_CAM4 = torch.tensor([-1, 0, 0, 0, 1, 0, 0, 0, -1], dtype=torch.float32).reshape(3, 3)

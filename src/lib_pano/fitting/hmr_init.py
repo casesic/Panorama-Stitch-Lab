@@ -6,7 +6,7 @@ from typing import Any
 import torch
 
 from lib_dynamic_hvip.fitting.smplx_seq_forward_module import SMPLX_Seq_Forward_Module
-from single_fitting.fitting import init_smplx_from_smpl54_seq, slice_smplx_seq
+from lib_pano.human_fitting import init_smplx_from_smpl54_seq, slice_smplx_seq
 
 
 def _build_smpl_init_from_single_frame_pkl(pkl_path: Path):
