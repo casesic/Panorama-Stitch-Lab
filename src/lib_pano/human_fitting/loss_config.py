@@ -15,8 +15,8 @@ class DualCamLossWeights:
     shape_prior: float = 6.0
     shape_bound: float = 20.0
     shape_anchor: float = 30.0
-    shape_norm: float = 15.0
-    densekp: float = 0.01
+    shape_norm: float = 10.0
+    densekp: float = 1.0
 
 
 def build_base_weights(

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Sequence
 
-from lib_dynamic_hvip.fitting.smplx_seq_forward_module import SMPLX_Seq_Forward_Module
+from .smplx_sequence import SMPLX_Seq_Forward_Module
 
 from .utils import build_smpl_init_seq
 

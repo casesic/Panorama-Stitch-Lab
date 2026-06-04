@@ -232,25 +232,20 @@ if __name__ == "__main__":
     main()
 
 r'''
-python src\script\test_function\debug031_batch_semantic_flow.py `
-  --fitting_dir data_process\Output\20260311_riding\fitting\dual_cam_new_sil `
-  --image_dir data_process\Output\20260311_riding\image\equirect_rotate `
-  --output_dir data_process\Output\20260311_riding\semantic_flow\test_new_sil `
-  --start_frame 513 `
-  --end_frame 518 `
-  --invalid_json data_process\Output\20260311_riding\vis\dual_erp\invalid.json `
-  --save_vis
+python src/script/test_function/debug031_batch_semantic_flow.py \
+  --fitting_dir data_process/Output/20260311_riding/fitting/dual_cam_dense \
+  --image_dir data_process/Output/20260311_riding/image/equirect_rotate \
+  --output_dir data_process/Output/20260311_riding/semantic_flow/dual_cam_dense 
 '''
 
 r'''
-python src\script\test_function\debug031_batch_semantic_flow.py `
-  --fitting_dir data_process\Output\20260320_riding_dataset1\fitting\dual_cam `
-  --image_dir data_process\Output\20260320_riding_dataset1\image\equirect_rotate `
-  --output_dir data_process\Output\20260320_riding_dataset1\semantic_flow `
-  --invalid_json data_process\Output\20260320_riding_dataset1\vis\dual_erp_no_sil\invalid.json `
-  --save_vis `
-  --start_frame 890 `
+python src/script/test_function/debug031_batch_semantic_flow.py \
+  --fitting_dir data_process/Output/20260320_riding_dataset1/fitting/dual_cam \
+  --image_dir data_process/Output/20260320_riding_dataset1/image/equirect_rotate \
+  --output_dir data_process/Output/20260320_riding_dataset1/semantic_flow \
+  --invalid_json data_process/Output/20260320_riding_dataset1/vis/dual_erp_no_sil/invalid.json \
+  --save_vis \
+  --start_frame 890 \
   --end_frame 890
 '''
 
-# 这块要改, 要不然要一直改padding参数 现在先改为500, 以后可能直接用前面得到的bbox结果, 这样就不需要建立human_bbox了

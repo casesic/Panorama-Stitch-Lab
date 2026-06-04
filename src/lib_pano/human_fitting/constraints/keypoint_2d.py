@@ -14,7 +14,7 @@ def compute_keypoint_2d_loss_with_proj(
     H: int,
     conf_thresh: float,
 ):
-    from lib_dynamic_hvip.fitting.smplx_seq_forward_module import SMPLX_JOINT_MAP
+    from lib_pano.human_fitting.smplx_sequence import SMPLX_JOINT_MAP
 
     joints_2d_all = project_fn(joints_all, W, H)
     losses = {}

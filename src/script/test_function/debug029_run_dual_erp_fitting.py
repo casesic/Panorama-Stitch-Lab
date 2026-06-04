@@ -137,6 +137,12 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Optional DenseKP npz root directory containing cam2/ and cam4/ subdirectories.",
     )
+    parser.add_argument(
+        "--densekp_filter",
+        type=str,
+        default=None,
+        help="Optional JSON path for DenseKP ID filter (keep_ids / drop_ids).",
+    )
     return parser.parse_args()
 
 
@@ -181,6 +187,7 @@ def main() -> None:
         gender="neutral",
         R_cam4=R_CAM4,
         use_silhouette_loss=args.use_silhouette_loss,
+        densekp_filter_path=args.densekp_filter,
     )
     sil_device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -395,7 +402,7 @@ python src/script/test_function/debug029_run_dual_erp_fitting.py \
   --rtm_dir data_process/Output/20260311_riding/rtm_cache/equirect_rotate_rtmw \
   --hmr_dir data_process/Output/20260311_riding/hmr_cache \
   --seg_dir data_process/Output/20260311_riding/seg/equirect_crop_rotate_sam3 \
-  --output_dir data_process/Output/20260311_riding/fitting/dual_cam_sil_new_513_518 \
+  --output_dir data_process/Output/20260311_riding/fitting/dual_cam_dense \
   --rtm_invalid_json data_process/Output/20260311_riding/rtm_cache/equirect_rotate_rtmw/invalid.json \
   --seg_invalid_json data_process/Output/20260311_riding/seg/invalid.json \
   --hmr_invalid_json data_process/Output/20260311_riding/hmr_cache/invalid.json \

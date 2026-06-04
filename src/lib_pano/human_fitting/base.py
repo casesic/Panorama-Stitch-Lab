@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Callable, Dict, Optional, Sequence
 
 import torch
-from lib_dynamic_hvip.fitting.smplx_seq_forward_module import SMPLX_Seq_Forward_Module
+from .smplx_sequence import SMPLX_Seq_Forward_Module
 
 from .projection import DEFAULT_T_CAM4_INIT
 

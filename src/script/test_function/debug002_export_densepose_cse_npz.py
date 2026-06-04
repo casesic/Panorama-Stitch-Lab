@@ -400,7 +400,7 @@ def main() -> int:
 
     summaries = []
     for i, entry in enumerate(results, 1):
-        if i==1:
+        # if i==1:
             try:
                 summary = export_one_entry(
                     entry=entry,

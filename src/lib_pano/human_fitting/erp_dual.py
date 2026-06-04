@@ -27,6 +27,7 @@ class DualCamERPFitter(BaseSMPLXFitter):
         gender: str = "neutral",
         R_cam4: torch.Tensor | None = None,
         use_silhouette_loss: bool = True,
+        densekp_filter_path: str | None = None,
     ):
         super().__init__(gender=gender)
         self.conf_thresh = 0.57
@@ -43,7 +44,12 @@ class DualCamERPFitter(BaseSMPLXFitter):
         self.loss_weights = DualCamLossWeights()
         project_root = Path(__file__).resolve().parents[3]
         data_dir = project_root / "tools" / "CameraHMR" / "data" / "train-eval-utils"
-        self.densekp_loss = DenseKPLoss(data_dir=data_dir, weight=self.loss_weights.densekp)
+        id_mask = None
+        if densekp_filter_path is not None:
+            from lib_pano.fitting.densekp_filter import load_densekp_filter
+
+            id_mask = load_densekp_filter(densekp_filter_path)
+        self.densekp_loss = DenseKPLoss(data_dir=data_dir, weight=self.loss_weights.densekp, id_mask=id_mask)
         if R_cam4 is None:
             raise ValueError("R_cam4 must be provided for DualCamERPFitter")
         self.R_cam4 = R_cam4.clone().detach().float()
@@ -142,7 +148,7 @@ class DualCamERPFitter(BaseSMPLXFitter):
         densekp_list_c2: list | None = None,
         densekp_list_c4: list | None = None,
     ):
-        from lib_dynamic_hvip.smpl.smpl_lib import forward_smplx_tensor_batch
+        from .smplx_backend import forward_smplx_tensor_batch
 
         assert len(cam2_dets) > 0
         assert len(cam2_dets) == len(cam4_dets)

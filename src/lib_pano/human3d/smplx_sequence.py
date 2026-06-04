@@ -1,12 +1,37 @@
 from __future__ import annotations
 
+import pickle
 import re
+import sys
 from pathlib import Path
 
 import numpy as np
 
 
 _SEGMENT_PATTERN = re.compile(r"^seg_(\d+)_(\d+)_seq\.pkl$")
+
+
+def _ensure_numpy_pickle_compat() -> None:
+    core_mod = getattr(np, "core", None)
+    if core_mod is None:
+        return
+    sys.modules.setdefault("numpy._core", core_mod)
+    for submodule in ("multiarray", "numeric", "umath", "_multiarray_umath"):
+        src = f"numpy.core.{submodule}"
+        dst = f"numpy._core.{submodule}"
+        module = sys.modules.get(src)
+        if module is None:
+            try:
+                module = __import__(src, fromlist=["*"])
+            except Exception:
+                continue
+        sys.modules.setdefault(dst, module)
+
+
+def _load_pickle(path: Path):
+    _ensure_numpy_pickle_compat()
+    with path.open("rb") as f:
+        return pickle.load(f)
 
 
 def discover_segment_pkls(
@@ -68,9 +93,8 @@ def load_segment_vertices(
 ) -> np.ndarray:
     import torch
     from lib_dynamic_hvip.smpl.smpl_lib import forward_smplx_tensor_batch
-    from single_fitting.debug_shared import load_pickle
 
-    smplx_param = load_pickle(pkl_path)
+    smplx_param = _load_pickle(pkl_path)
     n_frame = n_expand_beta if n_expand_beta is not None else smplx_param.num_batch
     with torch.no_grad():
         verts_t, _, _ = forward_smplx_tensor_batch(

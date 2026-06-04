@@ -264,9 +264,9 @@ python src/script/test_function/debug004_vis_densekp_npz.py \
 
 r'''
 python src/script/test_function/debug004_vis_densekp_npz.py \
-  --npz_dir data_process/Output/20260311_riding/camerahmr/densekp_npz/cam4 \
-  --image_dir data_process/Output/20260311_riding/image/equirect_crop_rotate_upright/cam4 \
-  --output_dir data_process/Output/20260311_riding/camerahmr/densekp_vis/cam4 \
+  --npz_dir data_process/Output/20260311_riding/camerahmr/densekp_npz/cam2 \
+  --image_dir data_process/Output/20260311_riding/image/equirect_crop_rotate_upright/cam2 \
+  --output_dir data_process/Output/20260311_riding/camerahmr/densekp_vis/cam2 \
   --coord orig \
   --max_files 20
 '''

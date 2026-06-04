@@ -1,0 +1,52 @@
+[
+    {
+        "name": "20260311_riding",
+        "input_root": "data_process/Output/20260311_riding/image/equirect_crop_rotate",
+        "output_root": "data_process/Output/20260311_riding/image/equirect_crop_rotate_upright",
+        "cams": ["cam2", "cam4"],
+        "unmatched": "copy",
+        "rules": [
+            {"start": 0, "end": 3494, "rotate": "ccw90"},
+            {"start": 3495, "end": 5381, "rotate": "cw90"},
+            {"start": 5951, "end": 5954, "rotate": "ccw90"}
+        ]
+    },
+    {
+        "name": "20260320_riding_dataset1",
+        "input_root": "data_process/Output/20260320_riding_dataset1/image/equirect_crop_rotate",
+        "output_root": "data_process/Output/20260320_riding_dataset1/image/equirect_crop_rotate_upright",
+        "cams": ["cam2", "cam4"],
+        "unmatched": "copy",
+        "rules": [
+            {"start": 0, "end": 36, "rotate": "cw90"},
+            {"start": 512, "end": 3090, "rotate": "ccw90"},
+            {"start": 3390, "end": 5506, "rotate": "cw90"}
+        ]
+    },
+    {
+        "name": "20260320_riding_dataset2",
+        "input_root": "data_process/Output/20260320_riding_dataset2/image/equirect_crop_rotate",
+        "output_root": "data_process/Output/20260320_riding_dataset2/image/equirect_crop_rotate_upright",
+        "cams": ["cam2", "cam4"],
+        "unmatched": "copy",
+        "rules": [
+            {"start": 216, "end": 3831, "rotate": "ccw90"},
+            {"start": 5242, "end": 5253, "rotate": "cw90"}
+        ]
+    },
+    {
+        "name": "20260320_riding_dataset3",
+        "input_root": "data_process/Output/20260320_riding_dataset3/image/equirect_crop_rotate",
+        "output_root": "data_process/Output/20260320_riding_dataset3/image/equirect_crop_rotate_upright",
+        "cams": ["cam2", "cam4"],
+        "unmatched": "copy",
+        "rules": [
+            {"start": 651, "end": 659, "rotate": "ccw90"},
+            {"start": 1142, "end": 1154, "rotate": "cw90"},
+            {"start": 1325, "end": 1343, "rotate": "ccw90"},
+            {"start": 1380, "end": 1653, "rotate": "cw90"},
+            {"start": 1696, "end": 3167, "rotate": "ccw90"},
+            {"start": 3453, "end": 8356, "rotate": "cw90"}
+        ]
+    }
+]

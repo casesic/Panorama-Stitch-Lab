@@ -3,14 +3,16 @@ from __future__ import annotations
 import pickle
 from pathlib import Path
 
+import numpy as np
 import torch
 
 
 class DenseKPLoss:
-    def __init__(self, data_dir: Path, weight: float = 0.01):
+    def __init__(self, data_dir: Path, weight: float = 0.01, id_mask: np.ndarray | None = None):
         self._data_dir = data_dir
         self.weight = weight
         self._regressor: torch.Tensor | None = None
+        self.id_mask = id_mask  # [138] bool, or None (use all 138 points)
 
     def _get_regressor(self, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
         if self._regressor is not None:
@@ -47,11 +49,17 @@ class DenseKPLoss:
         densekp_pts_3d = torch.einsum("kv,tvc->tkc", R, verts_world)
         proj = project_fn(densekp_pts_3d, W, H)
 
+        id_mask_t = None
+        if self.id_mask is not None:
+            id_mask_t = torch.from_numpy(self.id_mask).to(device=device)
+
         losses = []
         for t, densekp in enumerate(densekp_list):
             if densekp is None:
                 continue
             valid = densekp.valid
+            if id_mask_t is not None:
+                valid = valid & id_mask_t.cpu().numpy()
             if not valid.any():
                 continue
 
