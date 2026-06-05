@@ -1,4 +1,5 @@
 from .densekp import DenseKPLoss
 from .keypoint_2d import compute_keypoint_2d_loss_with_proj
+from .mask_fill import MaskFillLoss, prepare_mask_fill_samples_for_sequence
 from .regularization import compute_shape_regularization_losses, suffix_non_shape_losses
 from .silhouette import compute_silhouette_loss, prepare_silhouette_data

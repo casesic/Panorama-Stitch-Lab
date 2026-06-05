@@ -143,6 +143,17 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Optional JSON path for DenseKP ID filter (keep_ids / drop_ids).",
     )
+    parser.add_argument(
+        "--mask_fill_stage3",
+        action="store_true",
+        help="Enable Stage 3 mask fill refine (requires --image_root).",
+    )
+    parser.add_argument(
+        "--image_root",
+        type=str,
+        default=None,
+        help="Equirect image root (required when --mask_fill_stage3 is set).",
+    )
     return parser.parse_args()
 
 
@@ -188,6 +199,10 @@ def main() -> None:
         R_cam4=R_CAM4,
         use_silhouette_loss=args.use_silhouette_loss,
         densekp_filter_path=args.densekp_filter,
+        enable_mask_fill_stage3=args.mask_fill_stage3,
+        image_root=args.image_root,
+        seg_dir=args.seg_dir,
+        bbox_dir=args.bbox_dir,
     )
     sil_device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -342,6 +357,8 @@ def main() -> None:
                 bbox_list_c4=bbox_list_c4,
                 densekp_list_c2=densekp_list_c2,
                 densekp_list_c4=densekp_list_c4,
+                output_dir=output_dir / subsegment_key if args.mask_fill_stage3 else None,
+                frame_indices=sub_frame_idxs,
             )
             save_segment_result(
                 result_c2=result_c2,
@@ -397,21 +414,25 @@ if __name__ == "__main__":
 
 
 r'''
+# Stage 3 mask fill refine (minimal example, single segment)
 python src/script/test_function/debug029_run_dual_erp_fitting.py \
   --reviewed data_process/Input/20260311_riding/review.json \
   --rtm_dir data_process/Output/20260311_riding/rtm_cache/equirect_rotate_rtmw \
   --hmr_dir data_process/Output/20260311_riding/hmr_cache \
   --seg_dir data_process/Output/20260311_riding/seg/equirect_crop_rotate_sam3 \
-  --output_dir data_process/Output/20260311_riding/fitting/dual_cam_dense \
+  --output_dir data_process/Output/20260311_riding/fitting/kp_densekp_bbox_filter_maskfill_stage3 \
   --rtm_invalid_json data_process/Output/20260311_riding/rtm_cache/equirect_rotate_rtmw/invalid.json \
   --seg_invalid_json data_process/Output/20260311_riding/seg/invalid.json \
   --hmr_invalid_json data_process/Output/20260311_riding/hmr_cache/invalid.json \
   --bbox_dir data_process/Output/20260311_riding/image/equirect_crop_rotate \
+  --image_root data_process/Output/20260311_riding/image/equirect_rotate \
   --densekp_dir data_process/Output/20260311_riding/camerahmr/densekp_npz \
   --max_segment_len 10 \
-  --start_frame 513 --end_frame 518 \
+  --start_frame 704 --end_frame 711 \
+  --mask_fill_stage3 \
   --no_silhouette_loss
 
+# Standard fitting with silhouette loss
 python src/script/test_function/debug029_run_dual_erp_fitting.py `
   --reviewed data_process/Input/20260320_riding/dataset1/review.json `
   --rtm_dir data_process/Output/20260320_riding_dataset1/rtm_cache/equirect_rotate `

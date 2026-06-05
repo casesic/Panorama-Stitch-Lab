@@ -61,6 +61,11 @@ def load_densekp_result(
     keypoints_upright = data["keypoints_orig_xy"].astype(np.float32)
     keypoint_value = data["keypoint_value"].astype(np.float32)
 
+    # CameraHMR bbox in upright crop coordinates — used to filter implausible points
+    densekp_bbox = data.get("bbox_xyxy")
+    if densekp_bbox is not None:
+        densekp_bbox = densekp_bbox.astype(np.float32)
+
     x1, y1, x2, y2 = [int(v) for v in crop_bbox]
     crop_width = x2 - x1
     crop_height = y2 - y1
@@ -74,6 +79,18 @@ def load_densekp_result(
     x_in = (keypoints_full[:, 0] >= 0) & (keypoints_full[:, 0] < image_width)
     y_in = (keypoints_full[:, 1] >= 0) & (keypoints_full[:, 1] < image_height)
     valid = finite & x_in & y_in
+
+    # Require keypoints to fall within CameraHMR's own detection bbox (upright coords)
+    if densekp_bbox is not None and len(densekp_bbox) == 4:
+        margin = 5.0
+        bx1, by1, bx2, by2 = densekp_bbox
+        inside_densekp_bbox = (
+            (keypoints_upright[:, 0] >= bx1 - margin)
+            & (keypoints_upright[:, 0] <= bx2 + margin)
+            & (keypoints_upright[:, 1] >= by1 - margin)
+            & (keypoints_upright[:, 1] <= by2 + margin)
+        )
+        valid = valid & inside_densekp_bbox
 
     return DenseKPResult(
         keypoints_2d=keypoints_full,

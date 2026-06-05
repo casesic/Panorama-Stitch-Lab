@@ -92,7 +92,7 @@ def draw_keypoints(
     keypoints_xy: np.ndarray,
     keypoint_value: np.ndarray,
     radius: int = 3,
-    draw_index: bool = False,
+    label_mode: str = "none",
 ) -> np.ndarray:
     vis = image.copy()
     h, w = vis.shape[:2]
@@ -116,17 +116,17 @@ def draw_keypoints(
         cv2.circle(vis, (xi, yi), radius, color, -1)
         cv2.circle(vis, (xi, yi), radius + 1, (0, 0, 0), 1)
 
-        if draw_index:
-            cv2.putText(
-                vis,
-                str(i),
-                (xi + 3, yi - 3),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.35,
-                (255, 255, 255),
-                1,
-                cv2.LINE_AA,
-            )
+        if label_mode == "index":
+            text = str(i)
+        elif label_mode == "value":
+            text = f"{keypoint_value[i]:.2f}"
+        else:
+            text = None
+
+        if text is not None:
+            tx, ty = xi + 3, yi - 3
+            cv2.putText(vis, text, (tx, ty), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 0, 0), 2, cv2.LINE_AA)
+            cv2.putText(vis, text, (tx, ty), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (255, 255, 255), 1, cv2.LINE_AA)
 
     return vis
 
@@ -157,7 +157,7 @@ def save_vis(
     coord: str,
     crop_size: int,
     radius: int,
-    draw_index: bool,
+    label_mode: str,
     draw_bbox_on_orig: bool,
 ) -> None:
     item = load_densekp_npz(npz_path)
@@ -184,7 +184,7 @@ def save_vis(
             keypoints_xy=item["keypoints_orig_xy"],
             keypoint_value=item["keypoint_value"],
             radius=radius,
-            draw_index=draw_index,
+            label_mode=label_mode,
         )
         suffix = "" if coord == "orig" else "_orig"
         out_path = output_dir / f"{npz_path.stem}{suffix}.jpg"
@@ -198,7 +198,7 @@ def save_vis(
             keypoints_xy=item["keypoints_crop_xy"],
             keypoint_value=item["keypoint_value"],
             radius=radius,
-            draw_index=draw_index,
+            label_mode=label_mode,
         )
         suffix = "" if coord == "crop" else "_crop"
         out_path = output_dir / f"{npz_path.stem}{suffix}.jpg"
@@ -215,7 +215,12 @@ def main() -> int:
     parser.add_argument("--coord", choices=["orig", "crop", "both"], default="orig")
     parser.add_argument("--crop_size", type=int, default=256)
     parser.add_argument("--radius", type=int, default=3)
-    parser.add_argument("--draw_index", action="store_true")
+    parser.add_argument(
+        "--label_mode",
+        choices=["none", "index", "value"],
+        default="none",
+        help="Text label mode for DenseKP points.",
+    )
     parser.add_argument("--no_bbox", action="store_true")
     parser.add_argument("--max_files", type=int, default=None)
     args = parser.parse_args()
@@ -242,7 +247,7 @@ def main() -> int:
             coord=args.coord,
             crop_size=args.crop_size,
             radius=args.radius,
-            draw_index=args.draw_index,
+            label_mode=args.label_mode,
             draw_bbox_on_orig=not args.no_bbox,
         )
 
@@ -253,14 +258,6 @@ if __name__ == "__main__":
     raise SystemExit(main())
 
 
-r'''
-python src/script/test_function/debug004_vis_densekp_npz.py \
-  --npz_path data_process/Output/20260311_riding/camerahmr/densekp_npz/cam2/00513_0.npz \
-  --image_dir data_process/Output/20260311_riding/image/equirect_crop_rotate_upright/cam2 \
-  --output_dir data_process/Output/20260311_riding/camerahmr/densekp_vis/cam2 \
-  --coord orig \
-  --draw_index
-'''
 
 r'''
 python src/script/test_function/debug004_vis_densekp_npz.py \
@@ -268,6 +265,15 @@ python src/script/test_function/debug004_vis_densekp_npz.py \
   --image_dir data_process/Output/20260311_riding/image/equirect_crop_rotate_upright/cam2 \
   --output_dir data_process/Output/20260311_riding/camerahmr/densekp_vis/cam2 \
   --coord orig \
+  --label_mode value \
+  --max_files 20
+
+python src/script/test_function/debug004_vis_densekp_npz.py \
+  --npz_dir data_process/Output/20260311_riding/camerahmr/densekp_npz/cam4 \
+  --image_dir data_process/Output/20260311_riding/image/equirect_crop_rotate_upright/cam4 \
+  --output_dir data_process/Output/20260311_riding/camerahmr/densekp_vis/cam4 \
+  --coord orig \
+  --label_mode value \
   --max_files 20
 '''
 

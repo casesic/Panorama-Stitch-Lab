@@ -50,7 +50,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--pad",
         type=int,
-        default=80,
+        default=200,
         help="Padding around bbox for debug panel crops.",
     )
     parser.add_argument(
@@ -500,10 +500,10 @@ if __name__ == "__main__":
 r'''
 python src/script/test_function/debug007_fitted_densekp_sparse_composite.py \
   --image_root data_process/Output/20260311_riding/image/equirect_rotate \
-  --result_dir data_process/Output/20260311_riding/fitting/dual_cam_new_sil \
-  --segment 513_518 \
+  --result_dir data_process/Output/20260311_riding/fitting/dual_cam_dense_filter \
+  --segment 704_711 \
   --bbox_dir data_process/Output/20260311_riding/image/equirect_crop_rotate \
-  --output_dir data_process/Output/20260311_riding/tps_result/kp_sil_fitted \
+  --output_dir data_process/Output/20260311_riding/tps_result/kp_densekp_fitted_filter \
   --src_cam cam4 \
   --tgt_cam cam2 \
   --image_width 5760 \
