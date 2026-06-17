@@ -40,98 +40,15 @@ from lib_pano.correspondence.sam3dbody_pairs import (
     restore_sam3dbody_pairs_to_full,
     filter_pairs_inside_image,
 )
+from lib_pano.composite.cpw_warp import (
+    generate_cpw_backward_map,
+    warp_image_with_backward_map,
+    directional_erode_valid_mask,
+    target_priority_composite,
+)
 
 ERP_W = 5760
 ERP_H = 2880
-
-
-# ---------------------------------------------------------------------------
-# rotation rule (hardcoded for 20260311_riding)
-# ---------------------------------------------------------------------------
-# NOTE: moved to lib_pano.human3d.crop_upright_coord, kept here for CPW helpers
-
-
-# ---------------------------------------------------------------------------
-# coordinate restore
-# ---------------------------------------------------------------------------
-# NOTE: moved to lib_pano.human3d.crop_upright_coord.upright_points_to_equirect_rotate
-
-
-# ---------------------------------------------------------------------------
-# CPW backward map
-# ---------------------------------------------------------------------------
-def generate_cpw_backward_map(
-    target_pts: np.ndarray,
-    source_pts: np.ndarray,
-    crop_bbox: tuple[int, int, int, int],
-    source_w: int,
-    source_h: int,
-    knn: int = 12,
-    power: float = 2.0,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    x1, y1, x2, y2 = crop_bbox
-    crop_h = y2 - y1
-    crop_w = x2 - x1
-    if crop_h <= 0 or crop_w <= 0:
-        return (
-            np.zeros((0, 0), dtype=np.float32),
-            np.zeros((0, 0), dtype=np.float32),
-            np.zeros((0, 0), dtype=bool),
-        )
-    disp = source_pts - target_pts
-    N = len(target_pts)
-    k = min(knn, N)
-    eps = 1e-8
-    yy, xx = np.mgrid[y1:y2, x1:x2].astype(np.float32)
-    q_grid = np.stack([xx, yy], axis=-1)
-    q_flat = q_grid.reshape(-1, 2)
-    diff = q_flat[:, None, :] - target_pts[None, :, :]
-    dist2 = np.sum(diff * diff, axis=-1)
-    if k < N:
-        knn_idx = np.argpartition(dist2, k - 1, axis=1)[:, :k]
-        knn_dist2 = np.take_along_axis(dist2, knn_idx, axis=1)
-        knn_disp = disp[knn_idx]
-    else:
-        knn_dist2 = dist2
-        knn_disp = disp[None, :, :]
-    exact_mask = knn_dist2 < 1e-8
-    weights = 1.0 / (knn_dist2 ** (power * 0.5) + eps)
-    weights = weights / (weights.sum(axis=1, keepdims=True) + eps)
-    exact_any = exact_mask.any(axis=1)
-    weighted_disp = np.sum(weights[..., None] * knn_disp, axis=1)
-    if exact_any.any():
-        first_exact = np.argmax(exact_mask, axis=1)
-        exact_disp = knn_disp[np.arange(knn_disp.shape[0]), first_exact]
-        weighted_disp[exact_any] = exact_disp[exact_any]
-    q_src = q_flat + weighted_disp
-    map_x = q_src[:, 0].reshape(crop_h, crop_w).astype(np.float32)
-    map_y = q_src[:, 1].reshape(crop_h, crop_w).astype(np.float32)
-    inside = (
-        (map_x >= 0) & (map_x < source_w) &
-        (map_y >= 0) & (map_y < source_h)
-    )
-    return map_x, map_y, inside
-
-
-# ---------------------------------------------------------------------------
-# directional erosion
-# ---------------------------------------------------------------------------
-def directional_erode_valid_mask(
-    valid_mask: np.ndarray,
-    direction: str,
-    ksize: int,
-) -> np.ndarray:
-    if ksize <= 1:
-        return valid_mask
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, ksize))
-    if direction == "down":
-        anchor = (0, 0)
-    elif direction == "up":
-        anchor = (0, ksize - 1)
-    else:
-        raise ValueError(f"Unknown direction: {direction}")
-    eroded = cv2.erode(valid_mask.astype(np.uint8), kernel, anchor=anchor)
-    return eroded > 0
 
 
 # ---------------------------------------------------------------------------
@@ -437,35 +354,37 @@ def main() -> None:
         print(f"[{frame_key}] disp: mean={d_mean:.2f} median={d_median:.2f} std={d_std:.2f}")
 
         # --------------------------------------------------------------
-        # 8. CPW backward map
+        # 8. CPW backward map (via library)
         # --------------------------------------------------------------
-        map_x, map_y, inside = generate_cpw_backward_map(
-            dst_pts, src_pts, crop_bbox, src_w, src_h,
-            knn=args.cpw_knn, power=args.cpw_power,
-        )
-        if map_x.size == 0:
+        crop_h = y2 - y1
+        crop_w = x2 - x1
+        if crop_h <= 0 or crop_w <= 0:
             print(f"[{frame_key}] SKIP: empty crop")
             csv_writer.writerow([frame_idx, "skip", "empty crop", *([""] * 7)])
             n_skip += 1
             continue
 
-        warped_crop = cv2.remap(
-            src_img, map_x, map_y, cv2.INTER_LINEAR,
-            borderMode=cv2.BORDER_CONSTANT, borderValue=0,
+        backward_map, stats = generate_cpw_backward_map(
+            src_pts, dst_pts, (crop_h, crop_w),
+            k=args.cpw_knn, power=args.cpw_power,
         )
+
+        warped_crop = warp_image_with_backward_map(src_img, backward_map)
         tgt_crop = tgt_img[y1:y2, x1:x2]
         src_crop = src_img[sy1:sy2, sx1:sx2]
 
         content_valid = np.max(warped_crop, axis=2) > args.black_thresh
+        inside = (
+            (backward_map[..., 0] >= 0) & (backward_map[..., 0] < src_w) &
+            (backward_map[..., 1] >= 0) & (backward_map[..., 1] < src_h)
+        )
         warp_valid = inside & content_valid
         target_valid = np.max(tgt_crop, axis=2) > args.black_thresh
 
-        # target-priority with directional erosion
+        # target-priority with directional erosion (via library)
         tgt_valid_eroded = directional_erode_valid_mask(target_valid, "down", args.erode_px)
         warp_valid_eroded = directional_erode_valid_mask(warp_valid, "up", args.erode_px)
-        fill_mask = (~tgt_valid_eroded) & warp_valid_eroded
-        composite_tp = tgt_crop.copy()
-        composite_tp[fill_mask] = warped_crop[fill_mask]
+        composite_tp = target_priority_composite(tgt_crop, warped_crop, tgt_valid_eroded, warp_valid_eroded)
 
         # full-size warp
         warped_full = np.zeros_like(tgt_img)
