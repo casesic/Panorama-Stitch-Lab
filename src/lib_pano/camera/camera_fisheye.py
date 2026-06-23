@@ -1,18 +1,11 @@
+"""3D 空间点投影：将相机坐标系下的空间点投影到等距柱状或鱼眼像素坐标（torch 实现）。"""
+
 import torch
 import numpy as np
 
 
 def _project_to_equirect(pts_3d, out_w, out_h, R=None, mask_back=True):
-    '''
-    Project 3D points in camera frame to equirectangular pixels.
-    Camera frame convention follows project_to_equirect.py:
-    X right, Y down, Z forward.
-
-    pts_3d: (B, N, 3)
-    out_w, out_h: equirect image width/height
-    R: optional (3, 3) rotation
-    mask_back: if True, set z<=0 projections as invalid (-1, -1)
-    '''
+    """Project 3D camera-frame points (B,N,3) to equirectangular pixel coordinates (B,N,2)."""
     if R is not None:
         pts_3d = torch.einsum('ij, bnj -> bni', R, pts_3d)
 
@@ -41,13 +34,7 @@ def _project_to_equirect(pts_3d, out_w, out_h, R=None, mask_back=True):
     return uv
 
 def omni_project(pts_3d, K, D, xi, R):
-    '''
-    pts_3d: (Batch, N, 3)
-    K: (3, 3)
-    D: (4,)
-    xi: (1,)
-    R: (3, 3)
-    '''
+    """Project 3D points (B,N,3) to fisheye pixels using the Omni + RadTan lens model."""
     if(R is not None):
         pts_3d = torch.einsum('ij, bnj -> bni', R, pts_3d) 
     X, Y, Z = pts_3d[..., 0], pts_3d[..., 1], pts_3d[..., 2]
@@ -63,14 +50,7 @@ def omni_project(pts_3d, K, D, xi, R):
     return torch.stack([u, v], dim=-1)
 
 def double_sphere_project(pts_3d, K, alpha, xi, R):
-    '''
-    pts_3d: (Batch, N, 3)
-    K: (3, 3)
-    alpha: (1,)
-    xi: (1,)
-    R: (3, 3)
-    because the 3d_points from equirectangular image, so we should not use t, only use R to rotate
-    '''
+    """Project 3D points (B,N,3) to fisheye pixels using the Double Sphere lens model."""
     if(R is not None):
         pts_3d = torch.einsum('ij, bnj -> bni', R, pts_3d) 
     X, Y, Z = pts_3d[..., 0], pts_3d[..., 1], pts_3d[..., 2]
@@ -89,21 +69,11 @@ def double_sphere_project(pts_3d, K, alpha, xi, R):
 
 
 def omni_radtan_project_to_equirect(pts_3d, out_w, out_h, R=None, mask_back=True):
-    '''
-    pts_3d: (B, N, 3)
-    out_w, out_h: equirect output size
-    R: optional (3, 3) rotation
-    mask_back: mask z<=0 to (-1, -1)
-    '''
+    """Shortcut: project 3D points to equirect pixels via Omni+RadTan model (delegates to _project_to_equirect)."""
     return _project_to_equirect(pts_3d, out_w=out_w, out_h=out_h, R=R, mask_back=mask_back)
 
 
 def double_sphere_project_to_equirect(pts_3d, out_w, out_h, R=None, mask_back=True):
-    '''
-    pts_3d: (B, N, 3)
-    out_w, out_h: equirect output size
-    R: optional (3, 3) rotation
-    mask_back: mask z<=0 to (-1, -1)
-    '''
+    """Shortcut: project 3D points to equirect pixels via Double Sphere model (delegates to _project_to_equirect)."""
     return _project_to_equirect(pts_3d, out_w=out_w, out_h=out_h, R=R, mask_back=mask_back)
     

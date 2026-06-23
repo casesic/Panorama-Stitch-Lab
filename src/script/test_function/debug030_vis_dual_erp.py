@@ -204,20 +204,18 @@ if __name__ == "__main__":
 
 r'''
 python src/script/test_function/debug030_vis_dual_erp.py \
-  --result_dir data_process/Output/20260320_riding_dataset1/fitting/dual_cam_sil_886_895 \
-  --segment 886_895 \
-  --image_dir data_process/Output/20260320_riding_dataset1/image/equirect_rotate \
-  --output_dir data_process/Output/20260320_riding_dataset1/vis/dual_erp_sil_886_895_no_rtm \
+  --result_dir data_process/Output/20260311_riding/fitting/dual_cam_sam3d_dense \
+  --image_dir data_process/Output/20260311_riding/image/equirect_rotate \
+  --output_dir data_process/Output/20260311_riding/vis/dual_erp_sam3d_dense \
   --mesh --scale 0.5
 '''
 
 r'''
 python src/script/test_function/debug030_vis_dual_erp.py \
-  --result_dir data_process/Output/20260311_riding/fitting/kp_densekp_bbox_filter_maskfill_stage3 \
-  --segment 704_711 \
-  --rtm_dir data_process/Output/20260311_riding/rtm_cache/equirect_rotate \
-  --image_dir data_process/Output/20260311_riding/image/equirect_rotate \
-  --output_dir data_process/Output/20260311_riding/vis/kp_densekp_bbox_filter_maskfill_stage3 \
+  --result_dir data_process/Output/20260320_riding_dataset2/fitting/dual_cam_dense_filter_all \
+  --rtm_dir data_process/Output/20260320_riding_dataset2/rtm_cache/equirect_rotate \
+  --image_dir data_process/Output/20260320_riding_dataset2/image/equirect_rotate \
+  --output_dir data_process/Output/20260320_riding_dataset2/vis/dual_cam_dense_filter_all \
   --mesh  \
   --scale 0.5
 '''

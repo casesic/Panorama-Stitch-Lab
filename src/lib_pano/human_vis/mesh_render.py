@@ -1,3 +1,5 @@
+"""网格渲染：将 SMPL-X 网格投影到 ERP 并以法向着色或纯色半透明叠加到图像上。"""
+
 from __future__ import annotations
 
 from typing import Tuple
@@ -7,6 +9,7 @@ import numpy as np
 
 
 def _erp_project_np(points_3d: np.ndarray, width: int, height: int) -> np.ndarray:
+    """将 3D 点投影为 ERP 像素坐标 (u,v)（numpy 版）。"""
     x = points_3d[..., 0]
     y = points_3d[..., 1]
     z = points_3d[..., 2]
@@ -29,6 +32,7 @@ def _render_mesh_numpy_shading(
     light_dir: Tuple[float, float, float] = (0.5, -1.0, 0.8),
     ambient: float = 0.35,
 ) -> np.ndarray:
+    """按面片法向做朗伯着色、深度排序后绘制并半透明叠加，附带轮廓线。"""
     img_h, img_w = img.shape[:2]
     overlay = img.copy().astype(np.float32)
     v2d = _erp_project_np(verts, width, height)
@@ -74,6 +78,7 @@ def _render_mesh_simple(
     alpha: float = 0.35,
     color: Tuple[int, int, int] = (60, 120, 200),
 ) -> np.ndarray:
+    """将网格面片以单一颜色填充并半透明叠加（不做着色，跳过跨经度/出界面片）。"""
     overlay = img.copy()
     v2d = _erp_project_np(verts, width, height).astype(np.int32)
     img_h, img_w = img.shape[:2]
@@ -98,6 +103,7 @@ def render_mesh(
     alpha: float = 0.6,
     use_shader: bool = True,
 ) -> np.ndarray:
+    """网格渲染入口：use_shader 时走法向着色版，否则走纯色叠加版。"""
     if use_shader:
         return _render_mesh_numpy_shading(img, verts, faces, width, height, alpha=alpha)
     return _render_mesh_simple(img, verts, faces, width, height, alpha=alpha)

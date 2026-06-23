@@ -1,3 +1,5 @@
+"""人体可视化工具集：2D 关键点/骨架绘制、网格渲染、SMPL-X 前向与双视角 ERP 可视化。"""
+
 from lib_pano.human_vis.draw_2d import draw_pts, draw_skel
 from lib_pano.human_vis.dual_erp_vis import (
     COCO_PAIRS,

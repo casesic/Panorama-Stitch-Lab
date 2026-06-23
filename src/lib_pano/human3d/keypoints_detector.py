@@ -2,7 +2,7 @@ import numpy as np
 import logging
 import cv2 as cv
 from typing import Dict, Tuple, Optional
-from lib_pano.human3d.skeletion_constant import (
+from lib_pano.human3d.skeleton_constant import (
     COCO_17_KEYPOINTS, COCO_17_SKELETON_TOPOLOGY,
     COCO_133_KEYPOINTS
 )

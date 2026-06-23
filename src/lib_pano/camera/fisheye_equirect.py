@@ -1,11 +1,12 @@
+"""鱼眼图像到等距柱状全景的整图转换：LUT 构建、remap、valid mask 生成。"""
+
 from __future__ import annotations
 
 import cv2
 import numpy as np
 from tqdm import tqdm
 
-from tools.fisheye_extractor.config import DS_PARAMS, DS_PARAMS_CAM2, DS_PARAMS_CAM4
-from tools.fisheye_extractor.ds_model import project
+from lib_pano.camera.ds_camera_params import DS_PARAMS, DS_PARAMS_CAM2, DS_PARAMS_CAM4, project
 
 
 ERP_WIDTH = 5760
@@ -181,6 +182,7 @@ def build_valid_mask_from_lut(
     lut: tuple[np.ndarray, np.ndarray],
     output_size: tuple[int, int],
 ) -> np.ndarray:
+    """Build a binary ERP valid mask from LUT coverage (pixels where the LUT maps to a fisheye source)."""
     map_x, map_y = lut
     valid = ((map_x >= 0) & (map_y >= 0)).astype(np.uint8) * 255
     out_w, out_h = output_size

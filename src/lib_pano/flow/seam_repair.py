@@ -1,3 +1,5 @@
+"""接缝修复：在 source/target 重叠区的边界带上用 inpaint 抹平拼接缝隙。"""
+
 import cv2
 import numpy as np
 
@@ -9,6 +11,7 @@ def repair_seam(
     seam_band_radius: int = 15,
     inpaint_radius: int = 3,
 ) -> np.ndarray:
+    """在 source 边界膨胀出的接缝带（限定在重叠区内）上做 TELEA inpaint，消除拼接缝；无接缝则原图返回。"""
     source_mask = np.where(source_mask > 0, 255, 0).astype(np.uint8)
     target_mask = np.where(target_mask > 0, 255, 0).astype(np.uint8)
 

@@ -1,3 +1,5 @@
+"""语义光流的读写工具：当前格式为 .npy + flow_meta.json，NPZ 仅作兼容辅助。"""
+
 from __future__ import annotations
 
 import json
@@ -10,18 +12,21 @@ import numpy as np
 # NPZ helpers are compatibility helpers only, not the default output.
 
 def save_semantic_flow_npz(path: Path, data: dict[str, Any]) -> None:
+    """将字典压缩保存为 .npz（兼容辅助格式）。"""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(path, **data)
 
 
 def load_semantic_flow_npz(path: Path) -> dict[str, Any]:
+    """从 .npz 加载所有数组，返回字典。"""
     path = Path(path)
     with np.load(path, allow_pickle=False) as data:
         return {key: data[key] for key in data.files}
 
 
 def save_flow_meta_json(meta_path: Path, meta: list[dict[str, Any]]) -> None:
+    """将光流元信息列表写入 JSON 文件。"""
     meta_path = Path(meta_path)
     meta_path.parent.mkdir(parents=True, exist_ok=True)
     with meta_path.open("w", encoding="utf-8") as file:
@@ -33,6 +38,7 @@ def save_semantic_flow_frame_npy(
     human_bbox: tuple[int, int, int, int],
     flow_results: dict[str, tuple[np.ndarray, np.ndarray] | None],
 ) -> None:
+    """保存单帧语义光流：c2↔c4 双向的光流与置信度 .npy，以及 human_bbox.npy。"""
     frame_output_dir = Path(frame_output_dir)
     frame_output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -52,6 +58,7 @@ def save_semantic_flow_frame_npy(
 
 
 def save_flow_visualization_paths(frame_output_dir: Path) -> dict[str, Path]:
+    """返回单帧各类可视化文件（mesh 投影、光流彩图/箭头图）的输出路径字典。"""
     frame_output_dir = Path(frame_output_dir)
     return {
         "mesh_cam2": frame_output_dir / "mesh_on_erp_cam2.jpg",
@@ -64,5 +71,6 @@ def save_flow_visualization_paths(frame_output_dir: Path) -> dict[str, Path]:
 
 
 def list_semantic_flow_files(flow_dir: Path) -> list[Path]:
+    """递归列出目录下所有 frame_*/semantic_flow*.npy 文件并排序。"""
     flow_dir = Path(flow_dir)
     return sorted(flow_dir.glob("frame_*/semantic_flow*.npy"))

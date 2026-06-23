@@ -35,7 +35,7 @@ def parse_args() -> argparse.Namespace:
         "--steps",
         type=str,
         default=None,
-        help="Comma-separated step ids, e.g. 020,021,035,040,041,025,026,024,038,043,029,030,031,037",
+        help="Comma-separated step ids, e.g. 020,021,035,040,041,025,026,024,038,029,030,031,037",
     )
     parser.add_argument(
         "--datasets",
@@ -379,64 +379,6 @@ def build_args_038(dataset_name: str, dataset_config: dict[str, Any]) -> list[st
     ]
 
 
-def build_args_043(dataset_name: str, dataset_config: dict[str, Any]) -> list[str]:
-    seg_dir = _require_field(dataset_name, dataset_config, "seg_dir")
-    input_seg_dir = _get_field_with_default(
-        dataset_config,
-        "mask_fusion_input_seg_dir",
-        str(Path(seg_dir) / "equirect_crop_rotate_sam3"),
-    )
-    output_dir = _get_field_with_default(
-        dataset_config,
-        "mask_fusion_output_dir",
-        str(Path(seg_dir) / "equirect_crop_rotate_sam3_fused_translation"),
-    )
-    bbox_dir = _get_field_with_default(
-        dataset_config,
-        "mask_fusion_bbox_dir",
-        _require_field(dataset_name, dataset_config, "equirect_crop_rotate_dir"),
-    )
-    cmd = [
-        "--crop_image_dir",
-        _require_field(dataset_name, dataset_config, "equirect_crop_rotate_dir"),
-        "--seg_dir",
-        input_seg_dir,
-        "--bbox_dir",
-        bbox_dir,
-        "--output_dir",
-        output_dir,
-        "--method",
-        str(_get_field_with_default(dataset_config, "mask_fusion_method", "loftr")),
-        "--max_width",
-        str(_get_field_with_default(dataset_config, "mask_fusion_max_width", 640)),
-        "--max_height",
-        str(_get_field_with_default(dataset_config, "mask_fusion_max_height", 480)),
-        "--min_matches",
-        str(_get_field_with_default(dataset_config, "mask_fusion_min_matches", 20)),
-        "--min_inliers",
-        str(_get_field_with_default(dataset_config, "mask_fusion_min_inliers", 8)),
-        "--max_mad",
-        str(_get_field_with_default(dataset_config, "mask_fusion_max_mad", 25.0)),
-        "--image_width",
-        str(_get_field_with_default(dataset_config, "image_width", 5760)),
-        "--image_height",
-        str(_get_field_with_default(dataset_config, "image_height", 2880)),
-        "--min_component_area",
-        str(_get_field_with_default(dataset_config, "mask_fusion_min_component_area", 0)),
-        "--close_kernel",
-        str(_get_field_with_default(dataset_config, "mask_fusion_close_kernel", 0)),
-    ]
-    start_frame = dataset_config.get("mask_fusion_start_frame")
-    if start_frame is not None:
-        cmd.extend(["--start_frame", str(start_frame)])
-    end_frame = dataset_config.get("mask_fusion_end_frame")
-    if end_frame is not None:
-        cmd.extend(["--end_frame", str(end_frame)])
-    if bool(_get_field_with_default(dataset_config, "mask_fusion_save_vis", False)):
-        cmd.append("--save_vis")
-    return cmd
-
-
 def build_args_037(dataset_name: str, dataset_config: dict[str, Any]) -> list[str]:
     return [
         "--reviewed",
@@ -467,7 +409,6 @@ STEP_SPECS: dict[str, dict[str, Any]] = {
     "027": {"script": "debug027_run_rtmw_mmpose.py", "builder": build_args_027, "description": "Run RTMW MMPose on ERP crops"},
     "024": {"script": "debug024_run_hmr_convert.py", "builder": build_args_024, "description": "Convert 4D Humans outputs"},
     "038": {"script": "debug038_seg_sam3.py", "builder": build_args_038, "description": "Segment ERP crops with SAM3"},
-    "043": {"script": "debug043_mask_translation_fusion.py", "builder": build_args_043, "description": "Fuse dual-camera SAM3 masks with translation baseline"},
     "029": {"script": "debug029_run_dual_erp_fitting.py", "builder": build_args_029, "description": "Run dual ERP SMPL-X fitting"},
     "030": {"script": "debug030_vis_dual_erp.py", "builder": build_args_030, "description": "Visualize dual ERP fitting"},
     "031": {"script": "debug031_batch_semantic_flow.py", "builder": build_args_031, "description": "Generate semantic flow"},
@@ -629,7 +570,7 @@ if __name__ == "__main__":
 r'''
 python src/script/test_function/run_pipeline.py \
   --config data_process/Output/config.json \
-  --steps 020,021,035,040,041,025,026,024,038,043,029,030,031,037
+  --steps 020,021,035,040,041,025,026,024,038,029,030,031,037
 
 python src/script/test_function/run_pipeline.py `
   --config data_process/Output/config.json `

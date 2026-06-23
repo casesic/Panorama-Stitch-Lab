@@ -1,3 +1,5 @@
+"""语义光流可视化：顶点投影点绘制、光流彩色/箭头图、叠加图及调试图像批量保存。"""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -9,6 +11,7 @@ from lib_pano.flow.semantic_flow_io import save_flow_visualization_paths
 
 
 def visualize_projected_vertices(img, pts_2d, color=(0, 255, 0), radius=2):
+    """在图像上将投影到 2D 的顶点画成实心圆点。"""
     canvas = img.copy()
     if pts_2d is None or len(pts_2d) == 0:
         return canvas
@@ -22,6 +25,7 @@ def visualize_projected_vertices(img, pts_2d, color=(0, 255, 0), radius=2):
 
 
 def visualize_flow_color(flow_roi, confidence_roi):
+    """将光流以 HSV 色轮编码（方向→色相，幅值→明度）转为 BGR，置信度为 0 处置黑。"""
     flow_mag = np.linalg.norm(flow_roi, axis=2)
     flow_angle = np.arctan2(flow_roi[..., 1], flow_roi[..., 0])
 
@@ -36,6 +40,7 @@ def visualize_flow_color(flow_roi, confidence_roi):
 
 
 def visualize_flow_arrows(flow_roi, confidence_roi):
+    """按固定步长采样绘制光流箭头，按置信度等级着色（2→绿，1→蓝）。"""
     flow_arrows = np.zeros((flow_roi.shape[0], flow_roi.shape[1], 3), dtype=np.uint8)
     step = 20
     for r in range(0, flow_roi.shape[0], step):
@@ -57,6 +62,7 @@ def visualize_flow_arrows(flow_roi, confidence_roi):
 
 
 def visualize_flow_overlay(image, flow_roi, confidence_roi):
+    """将光流彩图与原图各半透明叠加；尺寸不匹配时退化为仅返回光流彩图。"""
     flow_color = visualize_flow_color(flow_roi, confidence_roi)
     if image.shape[:2] != flow_color.shape[:2]:
         return flow_color
@@ -71,6 +77,7 @@ def save_flow_debug_images(
     pts_2d_cam4,
     flow_results: dict[str, tuple[np.ndarray, np.ndarray] | None],
 ) -> None:
+    """保存单帧调试图：两相机的顶点投影图，以及 c2↔c4 双向光流的彩图与箭头图。"""
     paths = save_flow_visualization_paths(frame_output_dir)
 
     mesh_cam2 = visualize_projected_vertices(img_cam2, pts_2d_cam2)

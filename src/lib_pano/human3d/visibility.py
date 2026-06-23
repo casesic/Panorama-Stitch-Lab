@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from lib_pano.human_fitting.smplx_backend import forward_smplx_tensor_batch, get_smplx_batch
+from lib_pano.human_fitting.smplx_sequence import forward_smplx_tensor_batch, get_smplx_batch
 
 
 def _ensure_numpy_pickle_compat() -> None:

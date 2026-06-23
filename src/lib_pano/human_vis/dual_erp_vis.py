@@ -1,3 +1,5 @@
+"""双视角 ERP 可视化：SMPL-X 关节常量与骨架连接、RTM 关键点读取、cam2/cam4 投影与整帧可视化绘制。"""
+
 from __future__ import annotations
 
 from typing import Callable, Optional
@@ -48,15 +50,17 @@ _R_CAM2_NP = np.array([1, 0, 0, 0, 0, 1, 0, -1, 0], dtype=np.float32).reshape(3,
 
 
 def project_cam2(points_3d: torch.Tensor, W: int, H: int) -> torch.Tensor:
+    """带 cam2 旋转的 ERP 投影（转发到 human_fitting.projection）。"""
     return _project_cam2(points_3d, W, H)
 
 
 def project_cam4(points_3d: torch.Tensor, W: int, H: int) -> torch.Tensor:
-    """cam4 visualization projection: uses the same rotation as cam2 (R_CAM4_PROJ = R_CAM2)."""
+    """cam4 可视化投影：与 cam2 用相同旋转（R_CAM4_PROJ = R_CAM2）。"""
     return _project_cam2(points_3d, W, H)
 
 
 def load_rtm_keypoints(rtm_pkl_path) -> tuple[Optional[np.ndarray], dict]:
+    """读取 RTM 检测 pkl，返回首个人的 133 关键点与归一化后的关键点格式；缺失/格式不符则返回 None。"""
     import numpy as np
     from pathlib import Path
 
@@ -85,6 +89,7 @@ def project_points_erp(
     height: int,
     project_fn: Callable[[torch.Tensor, int, int], torch.Tensor],
 ) -> np.ndarray:
+    """用给定投影函数将 3D 点投影到 ERP 并返回 numpy 2D 坐标。"""
     points_t = torch.from_numpy(np.asarray(points_3d, dtype=np.float32))
     points_2d = project_fn(points_t, width, height)
     return points_2d.detach().cpu().numpy()
@@ -103,6 +108,7 @@ def visualize_frame(
     thresh: float = 0.1,
     mesh_alpha: float = 0.6,
 ) -> tuple[np.ndarray, np.ndarray, Optional[np.ndarray]]:
+    """单帧可视化：前向 SMPL-X，按需叠加网格，绘制匹配的身体骨架/关键点及面部/双手关键点，返回 (图, 顶点, 面片)。"""
     vis = img.copy()
 
     verts, joints_all, joints_body = forwarder.forward_param_to_numpy(smplx_param)

@@ -1,14 +1,16 @@
+"""变形策略：根据网格 warp 场生成单向/双向 remap，封装 source/target 的变形与遮罩。"""
+
 import cv2
 import numpy as np
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
 from lib_pano.flow.mesh_warp_field import MeshWarpField
-from lib_pano.flow.distance_warp_field import DistanceWarpField
 
 
 @dataclass
 class MeshConfig:
+    """网格变形场参数配置。"""
     grid_size: int = 32
     decay_radius: float = 6.0
     max_propagation: float = 8.0
@@ -21,24 +23,15 @@ class MeshConfig:
 
 
 @dataclass
-class DistanceConfig:
-    decay_radius_px: float = 200.0
-    max_propagation_px: float = 400.0
-    seed_erode_kernel: int = 3
-    hole_close_kernel: int = 7
-    extrapolation_blur_sigma: float = 8.0
-    downsample_factor: int = 2
-
-
 class WarpStrategy(Enum):
+    """变形策略枚举：单向（仅 source 向 target 变形）或双向（各变形一半）。"""
     MESH_UNIDIRECTIONAL = 'mesh_unidirectional'
     MESH_BIDIRECTIONAL = 'mesh_bidirectional'
-    DISTANCE_UNIDIRECTIONAL = 'distance_unidirectional'
-    DISTANCE_BIDIRECTIONAL = 'distance_bidirectional'
 
 
 @dataclass
 class WarpResult:
+    """变形结果：变形后的 source/target 图像、对应有效遮罩与全图光流。"""
     warped_source: np.ndarray
     warped_target: np.ndarray
     warped_source_mask: Optional[np.ndarray]
@@ -47,6 +40,7 @@ class WarpResult:
 
 
 def _build_mesh_warper(img_shape: tuple, mesh_config: MeshConfig) -> MeshWarpField:
+    """根据图像尺寸和配置构建 MeshWarpField 实例。"""
     h, w = img_shape[:2]
     return MeshWarpField(
         full_h=h,
@@ -63,20 +57,6 @@ def _build_mesh_warper(img_shape: tuple, mesh_config: MeshConfig) -> MeshWarpFie
     )
 
 
-def _build_distance_warper(img_shape: tuple, distance_config: DistanceConfig) -> DistanceWarpField:
-    h, w = img_shape[:2]
-    return DistanceWarpField(
-        full_h=h,
-        full_w=w,
-        decay_radius_px=distance_config.decay_radius_px,
-        max_propagation_px=distance_config.max_propagation_px,
-        seed_erode_kernel=distance_config.seed_erode_kernel,
-        hole_close_kernel=distance_config.hole_close_kernel,
-        extrapolation_blur_sigma=distance_config.extrapolation_blur_sigma,
-        downsample_factor=distance_config.downsample_factor,
-    )
-
-
 def _warp_unidirectional(
     warper,
     img_source: np.ndarray,
@@ -88,10 +68,8 @@ def _warp_unidirectional(
     source_valid_mask: Optional[np.ndarray],
     target_valid_mask: Optional[np.ndarray],
 ) -> WarpResult:
-    if isinstance(warper, MeshWarpField):
-        map_x, map_y, full_flow = warper.compute(flow_roi, roi_bbox, valid_mask, weight_map=weight_map)
-    else:
-        map_x, map_y, full_flow = warper.compute(flow_roi, roi_bbox, valid_mask)
+    """单向变形：仅将 source 按全图光流 remap 到 target 坐标系，target 保持不变。"""
+    map_x, map_y, full_flow = warper.compute(flow_roi, roi_bbox, valid_mask, weight_map=weight_map)
 
     warped_source = cv2.remap(
         img_source,
@@ -135,6 +113,7 @@ def _warp_bidirectional(
     source_valid_mask: Optional[np.ndarray],
     target_valid_mask: Optional[np.ndarray],
 ) -> WarpResult:
+    """双向变形：source 和 target 各沿光流方向变形一半，在中间位置汇合。"""
     if isinstance(warper, MeshWarpField):
         _, _, full_flow = warper.compute(flow_roi, roi_bbox, valid_mask, weight_map=weight_map)
     else:
@@ -206,9 +185,9 @@ def apply_warp(
     source_valid_mask: Optional[np.ndarray] = None,
     target_valid_mask: Optional[np.ndarray] = None,
     mesh_config: MeshConfig = MeshConfig(),
-    distance_config: DistanceConfig = DistanceConfig(),
     weight_map: Optional[np.ndarray] = None,
 ) -> WarpResult:
+    """变形入口：根据策略选择单向或双向网格变形并返回 WarpResult。"""
     if strategy == WarpStrategy.MESH_UNIDIRECTIONAL:
         warper = _build_mesh_warper(img_source.shape, mesh_config)
         return _warp_unidirectional(
@@ -233,34 +212,6 @@ def apply_warp(
             roi_bbox=roi_bbox,
             valid_mask=valid_mask,
             weight_map=weight_map,
-            source_valid_mask=source_valid_mask,
-            target_valid_mask=target_valid_mask,
-        )
-
-    if strategy == WarpStrategy.DISTANCE_UNIDIRECTIONAL:
-        warper = _build_distance_warper(img_source.shape, distance_config)
-        return _warp_unidirectional(
-            warper=warper,
-            img_source=img_source,
-            img_target=img_target,
-            flow_roi=flow_roi,
-            roi_bbox=roi_bbox,
-            valid_mask=valid_mask,
-            weight_map=None,
-            source_valid_mask=source_valid_mask,
-            target_valid_mask=target_valid_mask,
-        )
-
-    if strategy == WarpStrategy.DISTANCE_BIDIRECTIONAL:
-        warper = _build_distance_warper(img_source.shape, distance_config)
-        return _warp_bidirectional(
-            warper=warper,
-            img_source=img_source,
-            img_target=img_target,
-            flow_roi=flow_roi,
-            roi_bbox=roi_bbox,
-            valid_mask=valid_mask,
-            weight_map=None,
             source_valid_mask=source_valid_mask,
             target_valid_mask=target_valid_mask,
         )

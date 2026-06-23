@@ -1,3 +1,5 @@
+"""Mask 填充约束：对比 SAM3 mask 与 SMPL-X 轮廓栅格，在欠填充区采样点并构造可微填充损失。"""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -19,6 +21,7 @@ DEFAULT_SAMPLE_POINTS = 200
 # mask loading
 # ---------------------------------------------------------------------------
 def _get_rotate_code(frame_id: int):
+    """按 20260311_riding 数据集的帧号区间返回该帧 mask 的旋转码（ccw90/cw90/None）。"""
     if frame_id < 3495:
         return cv2.ROTATE_90_COUNTERCLOCKWISE
     if 3495 <= frame_id <= 5381:
@@ -29,6 +32,7 @@ def _get_rotate_code(frame_id: int):
 
 
 def _upright_mask_to_crop(mask_upright: np.ndarray, frame_id: int) -> np.ndarray:
+    """将「竖直摆正」的 mask 按该帧旋转码反向旋转回裁剪原始朝向。"""
     code = _get_rotate_code(frame_id)
     if code is None:
         return mask_upright
@@ -48,7 +52,7 @@ def load_mask_full_erp(
     erp_w: int,
     frame_id: int,
 ) -> np.ndarray | None:
-    """Load SAM3 mask and place it into a full-ERP binary mask."""
+    """加载 SAM3 mask，自动识别朝向/尺寸并放置到全图 ERP 二值 mask 中。"""
     mask_path = seg_dir / cam / "mask" / f"{frame_idx:05d}.png"
     if not mask_path.exists():
         return None
@@ -84,6 +88,7 @@ _R_CAM2_NP = np.array([1, 0, 0, 0, 0, 1, 0, -1, 0], dtype=np.float32).reshape(3,
 
 
 def _erp_project_np(points_3d: np.ndarray, width: int, height: int) -> np.ndarray:
+    """将 3D 点投影为 ERP 像素坐标 (u,v)（numpy 版，经度→u，纬度→v）。"""
     x = points_3d[..., 0]
     y = points_3d[..., 1]
     z = points_3d[..., 2]
@@ -101,7 +106,7 @@ def rasterize_smplx_mask_np(
     erp_w: int,
     erp_h: int,
 ) -> np.ndarray:
-    """Rasterize SMPL-X mesh faces into a full-ERP binary mask."""
+    """将 SMPL-X 网格面片栅格化为全图 ERP 二值 mask（跳过跨经度接缝/出界的面片）。"""
     verts_rot = verts @ _R_CAM2_NP.T
     v2d = _erp_project_np(verts_rot, erp_w, erp_h).astype(np.int32)
 
@@ -127,7 +132,7 @@ def compute_mask_fill_regions(
     mask_s: np.ndarray,
     image: np.ndarray | None = None,
 ) -> dict:
-    """Compute underfill/overfill/covered regions and connected components."""
+    """对比 mask 与 SMPL 轮廓，计算欠填充/过填充/覆盖区域及欠填充连通域统计。"""
     M = mask_m.copy()
     S = mask_s.copy()
 
@@ -173,6 +178,7 @@ def compute_mask_fill_regions(
 def _analyze_underfill_components(
     underfill: np.ndarray, min_area: int
 ) -> tuple[np.ndarray, list[dict]]:
+    """对欠填充区做连通域分析，过滤掉小于 min_area 的小块，返回过滤后 mask 与各连通域信息。"""
     u8 = underfill.astype(np.uint8) * 255
     n_labels, labels, stats_arr, centroids = cv2.connectedComponentsWithStats(u8, connectivity=8)
     components = []
@@ -206,7 +212,7 @@ def sample_underfill_points(
     n_samples: int,
     rng: np.random.RandomState,
 ) -> np.ndarray:
-    """Sample underfill points, allocating at least a few per component."""
+    """在欠填充区采样点，按连通域面积分配名额且每个连通域至少保底若干点。"""
     if not components or underfill.sum() == 0:
         return np.empty((0, 2), dtype=np.int32)
 
@@ -265,12 +271,7 @@ def prepare_mask_fill_samples_for_sequence(
     n_sample_points: int = DEFAULT_SAMPLE_POINTS,
     rng: np.random.RandomState | None = None,
 ) -> tuple[list[np.ndarray], list[dict]]:
-    """Generate underfill sample points for a sequence of frames.
-
-    Returns:
-        samples_list: list of [K_i, 2] arrays in full ERP coords
-        stats_list: per-frame region stats
-    """
+    """为整段序列逐帧生成欠填充采样点，返回 (各帧全图 ERP 坐标采样点列表, 各帧区域统计列表)。"""
     if rng is None:
         rng = np.random.RandomState(0)
 
@@ -333,7 +334,9 @@ def prepare_mask_fill_samples_for_sequence(
 # MaskFillLoss (differentiable)
 # ---------------------------------------------------------------------------
 class MaskFillLoss:
+    """可微 mask 填充损失：惩罚欠填充采样点到最近 SMPL-X 顶点投影的距离（鲁棒核）。"""
     def __init__(self, image_width: int, image_height: int, robust_scale: float = 100.0):
+        """记录 ERP 宽高与鲁棒核尺度。"""
         self.W = image_width
         self.H = image_height
         self.robust_scale = robust_scale
@@ -344,13 +347,7 @@ class MaskFillLoss:
         samples_list: list[np.ndarray | None],
         project_fn,
     ) -> torch.Tensor:
-        """Compute mask fill loss for a sequence.
-
-        Args:
-            verts_seq: [T, V, 3] vertices
-            samples_list: list of [K_i, 2] underfill sample points (numpy, full ERP)
-            project_fn: ERP projection function (Tensor, W, H) -> Tensor [N, 2]
-        """
+        """逐帧将顶点投影到 ERP，分块计算每个欠填充采样点到最近顶点的距离，鲁棒核后求均值。"""
         device = verts_seq.device
         dtype = verts_seq.dtype
         losses = []

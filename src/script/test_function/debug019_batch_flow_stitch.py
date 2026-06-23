@@ -10,16 +10,16 @@ import lib_pano.local_setting as ls
 from lib_pano.calibration.rotate_equirect import rotate_equirectangular_image
 from lib_pano.flow.debug_writer import DebugWriter
 from lib_pano.flow.raft_flow import RAFTFlow
-from lib_pano.flow.warp_strategy import WarpStrategy, MeshConfig, DistanceConfig
+from lib_pano.flow.warp_strategy import WarpStrategy, MeshConfig
 from lib_pano.stitch.flow_stitcher import stitch_with_flow
 
 DATASET_ROOT = Path(r"data_process/Output/20260311_riding")
 INPUT_DIR = DATASET_ROOT / "image" / "equirect_rotate_for_flow_use"
 OUTPUT_DIR = DATASET_ROOT / "raft_stitch"
 REVIEWED_PATH = Path(r"data_process/Input/20260311_riding/review.json")
-DEBUG_LIMIT = 5
-WARP_DIRECTION = "cam4_to_cam2"
-USE_SEMANTIC_FLOW = True
+DEBUG_LIMIT = 6
+WARP_DIRECTION = "cam2_to_cam4"
+USE_SEMANTIC_FLOW = False
 SEMANTIC_FLOW_DIR = DATASET_ROOT / "semantic_flow" / "test_new_sil"
 SEMANTIC_FLOW_WEIGHT_SCALE = 2.0
 SEMANTIC_FLOW_CONF_THRESH = 0.05
@@ -44,12 +44,6 @@ MESH_CONFIG = MeshConfig(
     min_weight=0.02,
     min_weight_ratio=0.005,
 )
-# WARP_STRATEGY = WarpStrategy.DISTANCE_UNIDIRECTIONAL
-# DISTANCE_CONFIG = DistanceConfig(
-#     decay_radius_px=200.0,
-#     max_propagation_px=400.0,
-#     downsample_factor=2,
-# )
 USE_SEAM_REPAIR = True
 SAVE_DEBUG = True
 DEBUG_LEVEL = "minimal"  # options: "none", "minimal", "full"
@@ -172,7 +166,6 @@ def process_frame(frame_idx, raft_flow):
         target_valid_mask=target_valid,
         strategy=WARP_STRATEGY,
         mesh_config=MESH_CONFIG,
-        distance_config=DistanceConfig(),
         bidirectional=BIDIRECTIONAL,
         extend_y=EXTEND_Y,
         blend_threshold=BLEND_THRESHOLD,
@@ -188,6 +181,7 @@ def process_frame(frame_idx, raft_flow):
         semantic_conf_thresh=SEMANTIC_FLOW_CONF_THRESH,
         debug_dir=str(output_dir) if SAVE_DEBUG else None,
         debug_level=DEBUG_LEVEL,
+        save_full_flow_path=str(output_dir / f"raft_full_flow_{WARP_DIRECTION}_frame_{frame_idx:05d}.npy"),
     )
 
     output_path = output_dir / f"raft_{WARP_DIRECTION}_frame_{frame_idx:05d}.png"

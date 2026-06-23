@@ -1,3 +1,5 @@
+"""光流拼接调试输出：将中间 flow/mask/warp 结果按调试等级选择性保存为 PNG 图像。"""
+
 import os
 import cv2
 import numpy as np
@@ -15,6 +17,7 @@ MINIMAL_DEBUG_FILES = {
 
 
 def _visualize_flow_bgr(flow: np.ndarray) -> np.ndarray:
+    """将光流 (dx,dy) 可视化为 HSV 彩色图，色调=方向，亮度=大小。"""
     magnitude, angle = cv2.cartToPolar(flow[..., 0], flow[..., 1], angleInDegrees=False)
     hsv = np.zeros((flow.shape[0], flow.shape[1], 3), dtype=np.uint8)
     hsv[..., 0] = ((angle * 180.0 / np.pi) / 2.0).astype(np.uint8)
@@ -25,6 +28,7 @@ def _visualize_flow_bgr(flow: np.ndarray) -> np.ndarray:
 
 
 class DebugWriter:
+    """按调试等级 (minimal/full/none) 选择性保存中间结果图像。"""
     def __init__(self, debug_dir: str, enabled: bool = True, debug_level: str = "minimal"):
         self.debug_dir = debug_dir
         self.enabled = enabled
@@ -33,6 +37,7 @@ class DebugWriter:
             os.makedirs(debug_dir, exist_ok=True)
 
     def _should_save(self, filename: str) -> bool:
+        """根据调试等级判断该文件是否应该保存。"""
         if not self.enabled:
             return False
         if self.debug_level == "none":
@@ -44,28 +49,34 @@ class DebugWriter:
         raise ValueError(f"Unsupported debug_level: {self.debug_level}")
 
     def _save(self, filename: str, image: np.ndarray):
+        """受控写入：先检查 _should_save，通过则保存到 debug_dir。"""
         if not self._should_save(filename):
             return
         cv2.imwrite(os.path.join(self.debug_dir, filename), image)
 
     def write_image(self, name: str, image: np.ndarray):
+        """保存任意图像（自动补 .png 后缀）。"""
         filename = name if name.lower().endswith(".png") else f"{name}.png"
         self._save(filename, image)
 
     def write_crops(self, crop_source: np.ndarray, crop_target: np.ndarray):
+        """保存 ROI 裁剪后的 source 和 target 图像。"""
         self._save('crop_source.png', crop_source)
         self._save('crop_target.png', crop_target)
 
     def write_flow(self, flow_roi: np.ndarray, valid_mask: Optional[np.ndarray] = None):
+        """保存 ROI 光流可视化图和可选的有效性 mask。"""
         self._save('flow_roi_vis.png', _visualize_flow_bgr(flow_roi))
         if valid_mask is not None:
             self.write_mask('flow_validity_mask.png', valid_mask)
 
     def write_flow_vis(self, name: str, flow: np.ndarray):
+        """以指定名称保存光流可视化图。"""
         filename = name if name.lower().endswith(".png") else f"{name}.png"
         self._save(filename, _visualize_flow_bgr(flow))
 
     def write_weight_map(self, name: str, weight: np.ndarray, max_value: float | None = None):
+        """保存权重图（自动归一化到 0-255）。"""
         filename = name if name.lower().endswith(".png") else f"{name}.png"
 
         weight = np.nan_to_num(weight.astype(np.float32), nan=0.0, posinf=0.0, neginf=0.0)
@@ -79,6 +90,7 @@ class DebugWriter:
         self._save(filename, vis)
 
     def write_mask(self, name: str, mask: np.ndarray):
+        """保存 mask（自动处理 bool/float/uint8 各种类型）。"""
         filename = name if name.lower().endswith('.png') else f'{name}.png'
         mask_to_save = mask
         if mask_to_save.dtype == np.bool_:
@@ -101,6 +113,7 @@ class DebugWriter:
         crop_target: np.ndarray,
         flow_roi: np.ndarray,
     ):
+        """保存 warp 前/后的 overlay 对比图，用于快速检查光流对齐效果。"""
         h, w = flow_roi.shape[:2]
         grid_y, grid_x = np.mgrid[0:h, 0:w].astype(np.float32)
         map_x = grid_x + flow_roi[..., 0].astype(np.float32)
@@ -130,6 +143,7 @@ class DebugWriter:
         self._save('alignment_after.png', after)
 
     def write_warp_result(self, warp_result: WarpResult):
+        """保存双向 warp 结果和全图光流可视化。"""
         self._save('warped_source.png', warp_result.warped_source)
         self._save('warped_target.png', warp_result.warped_target)
         self._save('full_flow_vis.png', _visualize_flow_bgr(warp_result.full_flow))
@@ -139,6 +153,7 @@ class DebugWriter:
             self._save('warped_target_mask.png', (warp_result.warped_target_mask > 0).astype(np.uint8) * 255)
 
     def write_final(self, image: np.ndarray, valid_mask: Optional[np.ndarray] = None):
+        """保存最终合成图及其 valid mask。"""
         self._save('final_composed.png', image)
         if valid_mask is not None:
             self._save('final_valid_mask.png', valid_mask)

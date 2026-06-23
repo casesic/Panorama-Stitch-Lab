@@ -1,3 +1,5 @@
+"""双相机拟合的损失配置：各损失项权重、按帧数缩放的基础权重表、分阶段优化的阶段定义。"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -5,7 +7,8 @@ from dataclasses import dataclass
 
 @dataclass
 class DualCamLossWeights:
-    body_2d: float = 1.0
+    """双相机 SMPL-X 拟合各损失项的权重配置。"""
+    body_2d: float = 0.1
     silhouette: float = 0.3
     pose_prior: float = 0.05
     hand_prior: float = 0.02
@@ -17,6 +20,7 @@ class DualCamLossWeights:
     shape_anchor: float = 30.0
     shape_norm: float = 10.0
     densekp: float = 1.0
+    sam3d_dense: float = 0.5
 
 
 def build_base_weights(
@@ -24,6 +28,7 @@ def build_base_weights(
     use_silhouette_loss: bool,
     weights: DualCamLossWeights,
 ) -> dict:
+    """按帧数缩放各权重，生成 c2/c4 双相机各损失项的基础权重字典（轮廓损失可关闭）。"""
     sil_weight = weights.silhouette if use_silhouette_loss else 0.0
     return {
         "body_2d_det_c2": n_frame * weights.body_2d,
@@ -46,6 +51,8 @@ def build_base_weights(
         "loss_shape_norm": n_frame * weights.shape_norm,
         "loss_densekp_c2": n_frame * weights.densekp,
         "loss_densekp_c4": n_frame * weights.densekp,
+        "loss_sam3d_dense_c2": n_frame * weights.sam3d_dense,
+        "loss_sam3d_dense_c4": n_frame * weights.sam3d_dense,
     }
 
 
@@ -56,6 +63,10 @@ def build_optimization_stages(
     shared_body_pose,
     shared_beta,
 ) -> list:
+    """定义两阶段 LBFGS 优化：
+    Stage 1 仅优化平移/朝向；
+    Stage 2 加入 body pose、shape、DenseKP、silhouette 与 SAM dense surface 辅助约束。
+    """
     return [
         (
             "stage1_transl_orient",
@@ -83,6 +94,8 @@ def build_optimization_stages(
                 "loss_shape_norm": 0.0,
                 "loss_densekp_c2": 0.0,
                 "loss_densekp_c4": 0.0,
+                "loss_sam3d_dense_c2": 0.0,
+                "loss_sam3d_dense_c4": 0.0,
             },
         ),
         (
@@ -118,6 +131,8 @@ def build_optimization_stages(
                 "loss_shape_norm": 1.0,
                 "loss_densekp_c2": 1.0,
                 "loss_densekp_c4": 1.0,
+                "loss_sam3d_dense_c2": 1.0,
+                "loss_sam3d_dense_c4": 1.0,
             },
         ),
     ]

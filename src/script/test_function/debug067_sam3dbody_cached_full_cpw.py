@@ -12,16 +12,15 @@ Pipeline per frame:
   3. Restore coordinates to equirect_rotate full-image coords
   4. CPW composite + debug panel
 
-Output:
+Output (debug_panel only, both directions under output_dir):
   output_dir/
-    warp/, overlay/, composite_target_priority/, debug_panel/, points/, pairs_npz/
-    summary.csv
+    cam4_to_cam2/debug_panel/{frame}.jpg
+    cam2_to_cam4/debug_panel/{frame}.jpg
 """
 
 from __future__ import annotations
 
 import argparse
-import csv
 import json
 import sys
 from pathlib import Path
@@ -131,16 +130,144 @@ def build_debug_panel(
 
 
 # ---------------------------------------------------------------------------
-# output dirs
+# direction handling + per-direction run (debug_panel only)
 # ---------------------------------------------------------------------------
-def ensure_output_dirs(base: Path) -> dict:
-    subs = ["warp", "overlay", "composite_target_priority", "debug_panel", "points", "pairs_npz"]
-    dirs = {}
-    for s in subs:
-        d = base / s
-        d.mkdir(parents=True, exist_ok=True)
-        dirs[s] = d
-    return dirs
+def get_direction_pairs(direction: str) -> list[tuple[str, str, str]]:
+    """把 --direction 解析为 (src_cam, tgt_cam, direction_name) 列表。"""
+    table = {
+        "cam4_to_cam2": ("cam4", "cam2", "cam4_to_cam2"),
+        "cam2_to_cam4": ("cam2", "cam4", "cam2_to_cam4"),
+    }
+    if direction == "both":
+        return [table["cam4_to_cam2"], table["cam2_to_cam4"]]
+    if direction not in table:
+        raise ValueError(f"unknown --direction: {direction}")
+    return [table[direction]]
+
+
+def run_direction(
+    direction_name: str,
+    src_cam: str,
+    tgt_cam: str,
+    frame_indices: list[int],
+    recon_dir: Path,
+    full_dir: Path,
+    bbox_by_cam: dict,
+    out_base: Path,
+    args: argparse.Namespace,
+    rng: np.random.RandomState,
+) -> tuple[int, int]:
+    """对单个方向逐帧做 CPW + target-priority 合成，只输出 out_base/<direction>/debug_panel/{frame}.jpg。"""
+    panel_dir = out_base / direction_name / "debug_panel"
+    panel_dir.mkdir(parents=True, exist_ok=True)
+    bbox_src = bbox_by_cam[src_cam]
+    bbox_tgt = bbox_by_cam[tgt_cam]
+
+    print(f"\n[DIR] {direction_name}  source={src_cam}  target={tgt_cam}")
+    n_ok = 0
+    n_skip = 0
+
+    for frame_idx in frame_indices:
+        frame_key = f"{frame_idx:05d}"
+
+        npz_src = recon_dir / src_cam / f"{frame_key}.npz"
+        npz_tgt = recon_dir / tgt_cam / f"{frame_key}.npz"
+        if not npz_src.exists() or not npz_tgt.exists():
+            print(f"[{frame_key}][{direction_name}] SKIP: missing recon npz")
+            n_skip += 1
+            continue
+
+        recon_src = load_sam3dbody_recon(npz_src)
+        recon_tgt = load_sam3dbody_recon(npz_tgt)
+
+        src_up, dst_up, vertex_ids = pair_sam3dbody_vertices(recon_src, recon_tgt)
+        if len(vertex_ids) == 0:
+            print(f"[{frame_key}][{direction_name}] SKIP: no shared valid points")
+            n_skip += 1
+            continue
+
+        src_full, dst_full = restore_sam3dbody_pairs_to_full(
+            src_up, dst_up, bbox_src[str(frame_idx)], bbox_tgt[str(frame_idx)], frame_idx,
+        )
+
+        src_img_path = full_dir / src_cam / f"{frame_key}.jpg"
+        tgt_img_path = full_dir / tgt_cam / f"{frame_key}.jpg"
+        if not src_img_path.exists() or not tgt_img_path.exists():
+            print(f"[{frame_key}][{direction_name}] SKIP: missing full image")
+            n_skip += 1
+            continue
+
+        src_img = cv2.imread(str(src_img_path))
+        tgt_img = cv2.imread(str(tgt_img_path))
+        src_h, src_w = src_img.shape[:2]
+        tgt_h, tgt_w = tgt_img.shape[:2]
+
+        src_pts, dst_pts, _ = filter_pairs_inside_image(
+            src_full, dst_full, vertex_ids, src_img.shape, tgt_img.shape,
+        )
+        if len(src_pts) == 0:
+            print(f"[{frame_key}][{direction_name}] SKIP: no valid full-coord points")
+            n_skip += 1
+            continue
+
+        if args.max_points > 0 and len(src_pts) > args.max_points:
+            sampled = rng.choice(len(src_pts), args.max_points, replace=False)
+            src_pts = src_pts[sampled]
+            dst_pts = dst_pts[sampled]
+        n_used = len(src_pts)
+
+        # target crop bbox（由 dst/target 点决定）
+        x1 = max(0, int(np.floor(dst_pts[:, 0].min())) - args.pad)
+        y1 = max(0, int(np.floor(dst_pts[:, 1].min())) - args.pad)
+        x2 = min(tgt_w, int(np.ceil(dst_pts[:, 0].max())) + args.pad)
+        y2 = min(tgt_h, int(np.ceil(dst_pts[:, 1].max())) + args.pad)
+        crop_h, crop_w = y2 - y1, x2 - x1
+        if crop_h <= 0 or crop_w <= 0:
+            print(f"[{frame_key}][{direction_name}] SKIP: empty crop")
+            n_skip += 1
+            continue
+
+        # source crop bbox（仅供 debug panel 显示）
+        sx1 = max(0, int(np.floor(src_pts[:, 0].min())) - args.pad)
+        sy1 = max(0, int(np.floor(src_pts[:, 1].min())) - args.pad)
+        sx2 = min(src_w, int(np.ceil(src_pts[:, 0].max())) + args.pad)
+        sy2 = min(src_h, int(np.ceil(src_pts[:, 1].max())) + args.pad)
+
+        # grid 仅覆盖 target crop（image_shape=crop），target 点转 crop-local，
+        # source 点保持全局 → 输出 backward map 直接是 source 全图采样坐标。
+        dst_local = dst_pts - np.array([x1, y1], dtype=dst_pts.dtype)
+        backward_map, _ = generate_cpw_backward_map(
+            src_pts, dst_local, (crop_h, crop_w), k=args.cpw_knn, power=args.cpw_power,
+        )
+        warped_crop = warp_image_with_backward_map(src_img, backward_map)
+        tgt_crop = tgt_img[y1:y2, x1:x2]
+        src_crop = src_img[sy1:sy2, sx1:sx2]
+
+        content_valid = np.max(warped_crop, axis=2) > args.black_thresh
+        inside = (
+            (backward_map[..., 0] >= 0) & (backward_map[..., 0] < src_w) &
+            (backward_map[..., 1] >= 0) & (backward_map[..., 1] < src_h)
+        )
+        warp_valid = inside & content_valid
+        target_valid = np.max(tgt_crop, axis=2) > args.black_thresh
+
+        # cam2 在底部 → "down"，cam4 在顶部 → "up"
+        tgt_dir = "down" if tgt_cam == "cam2" else "up"
+        src_dir = "down" if src_cam == "cam2" else "up"
+        tgt_valid_eroded = directional_erode_valid_mask(target_valid, tgt_dir, args.erode_px)
+        warp_valid_eroded = directional_erode_valid_mask(warp_valid, src_dir, args.erode_px)
+        composite_tp = target_priority_composite(tgt_crop, warped_crop, tgt_valid_eroded, warp_valid_eroded)
+
+        panel = build_debug_panel(
+            src_crop, tgt_crop, warped_crop, composite_tp,
+            src_pts, dst_pts, (sx1, sy1), (x1, y1), args.panel_size,
+            max_draw=min(args.max_points, 500),
+        )
+        cv2.imwrite(str(panel_dir / f"{frame_key}.jpg"), panel, [cv2.IMWRITE_JPEG_QUALITY, 95])
+        print(f"[{frame_key}][{direction_name}] used={n_used} crop=({x1},{y1},{x2},{y2}) saved")
+        n_ok += 1
+
+    return n_ok, n_skip
 
 
 # ---------------------------------------------------------------------------
@@ -190,7 +317,7 @@ def main() -> None:
     parser.add_argument("--segment", type=str, nargs="+", default=["all"])
     parser.add_argument("--output_dir", type=str, required=True)
     parser.add_argument("--direction", type=str, default="cam4_to_cam2")
-    parser.add_argument("--max_points", type=int, default=1500)
+    parser.add_argument("--max_points", type=int, default=400)
     parser.add_argument("--pad", type=int, default=200)
     parser.add_argument("--cpw_knn", type=int, default=12)
     parser.add_argument("--cpw_power", type=float, default=2.0)
@@ -204,269 +331,26 @@ def main() -> None:
     recon_dir = Path(args.recon_dir)
     out = Path(args.output_dir)
     out.mkdir(parents=True, exist_ok=True)
-    out_dirs = ensure_output_dirs(out)
 
     rng = np.random.RandomState(args.seed)
 
-    # resolve frames from cached npz
     frame_indices = resolve_frame_indices(args.segment, recon_dir)
     print(f"[INFO] resolved {len(frame_indices)} frames: {frame_indices[0]:05d} ... {frame_indices[-1]:05d}")
 
-    # load bboxes
     bbox_dir = dataset_root / "image" / "equirect_crop_rotate"
-    bbox_cam2 = json.loads((bbox_dir / "cam2_bboxes.json").read_text(encoding="utf-8"))
-    bbox_cam4 = json.loads((bbox_dir / "cam4_bboxes.json").read_text(encoding="utf-8"))
-
-    # image dirs
+    bbox_by_cam = {
+        "cam2": json.loads((bbox_dir / "cam2_bboxes.json").read_text(encoding="utf-8")),
+        "cam4": json.loads((bbox_dir / "cam4_bboxes.json").read_text(encoding="utf-8")),
+    }
     full_dir = dataset_root / "image" / "equirect_rotate"
 
-    # summary csv
-    csv_path = out / "summary.csv"
-    csv_file = open(str(csv_path), "w", newline="")
-    csv_writer = csv.writer(csv_file)
-    csv_writer.writerow([
-        "frame", "status", "reason",
-        "raw_points", "valid_points", "used_points",
-        "crop_x1", "crop_y1", "crop_x2", "crop_y2",
-        "disp_mean", "disp_median", "disp_std",
-    ])
-
-    n_ok = 0
-    n_skip = 0
-
-    for frame_idx in frame_indices:
-        frame_key = f"{frame_idx:05d}"
-        print(f"\n[{frame_key}] processing ...")
-
-        # --------------------------------------------------------------
-        # 1. read cached npz via library
-        # --------------------------------------------------------------
-        npz2_path = recon_dir / "cam2" / f"{frame_key}.npz"
-        npz4_path = recon_dir / "cam4" / f"{frame_key}.npz"
-
-        if not npz2_path.exists():
-            print(f"[{frame_key}] SKIP: missing {npz2_path}")
-            csv_writer.writerow([frame_idx, "skip", "missing cam2 npz", *([""] * 8)])
-            n_skip += 1
-            continue
-        if not npz4_path.exists():
-            print(f"[{frame_key}] SKIP: missing {npz4_path}")
-            csv_writer.writerow([frame_idx, "skip", "missing cam4 npz", *([""] * 8)])
-            n_skip += 1
-            continue
-
-        recon_cam2 = load_sam3dbody_recon(npz2_path)
-        recon_cam4 = load_sam3dbody_recon(npz4_path)
-
-        # --------------------------------------------------------------
-        # 2. pair vertices by vertex id
-        # --------------------------------------------------------------
-        src_pts_upright, dst_pts_upright, vertex_ids = pair_sam3dbody_vertices(recon_cam4, recon_cam2)
-        n_raw = len(vertex_ids)
-        print(f"[{frame_key}] raw points: {n_raw}")
-
-        if n_raw == 0:
-            print(f"[{frame_key}] SKIP: no valid shared vertex points")
-            csv_writer.writerow([frame_idx, "skip", "no valid shared points", 0, *([""] * 7)])
-            n_skip += 1
-            continue
-
-        # --------------------------------------------------------------
-        # 3. restore to equirect_rotate (via library)
-        # --------------------------------------------------------------
-        bb2 = bbox_cam2[str(frame_idx)]
-        bb4 = bbox_cam4[str(frame_idx)]
-
-        src_pts_full, dst_pts_full = restore_sam3dbody_pairs_to_full(
-            src_pts_upright, dst_pts_upright, bb4, bb2, frame_idx,
+    for src_cam, tgt_cam, direction_name in get_direction_pairs(args.direction):
+        n_ok, n_skip = run_direction(
+            direction_name, src_cam, tgt_cam, frame_indices,
+            recon_dir, full_dir, bbox_by_cam, out, args, rng,
         )
-
-        # --------------------------------------------------------------
-        # 4. load full images
-        # --------------------------------------------------------------
-        src_img_path = full_dir / "cam4" / f"{frame_key}.jpg"
-        tgt_img_path = full_dir / "cam2" / f"{frame_key}.jpg"
-
-        if not src_img_path.exists():
-            print(f"[{frame_key}] SKIP: missing {src_img_path}")
-            csv_writer.writerow([frame_idx, "skip", "missing cam4 full image", *([""] * 8)])
-            n_skip += 1
-            continue
-        if not tgt_img_path.exists():
-            print(f"[{frame_key}] SKIP: missing {tgt_img_path}")
-            csv_writer.writerow([frame_idx, "skip", "missing cam2 full image", *([""] * 8)])
-            n_skip += 1
-            continue
-
-        src_img = cv2.imread(str(src_img_path))
-        tgt_img = cv2.imread(str(tgt_img_path))
-        src_h, src_w = src_img.shape[:2]
-        tgt_h, tgt_w = tgt_img.shape[:2]
-
-        # --------------------------------------------------------------
-        # 5. filter full-coord points (via library)
-        # --------------------------------------------------------------
-        src_pts, dst_pts, used_vertex_ids = filter_pairs_inside_image(
-            src_pts_full, dst_pts_full, vertex_ids, src_img.shape, tgt_img.shape,
-        )
-        n_valid_full = len(src_pts)
-        print(f"[{frame_key}] valid points (full coord): {n_valid_full}")
-
-        if n_valid_full == 0:
-            print(f"[{frame_key}] SKIP: no valid full-coord points")
-            csv_writer.writerow([frame_idx, "skip", "no valid full-coord points", *([""] * 7)])
-            n_skip += 1
-            continue
-
-        if args.max_points > 0 and n_valid_full > args.max_points:
-            sampled = rng.choice(len(src_pts), args.max_points, replace=False)
-            src_pts = src_pts[sampled]
-            dst_pts = dst_pts[sampled]
-            used_vertex_ids = used_vertex_ids[sampled]
-        n_used = len(src_pts)
-        print(f"[{frame_key}] used points: {n_used}")
-
-        # --------------------------------------------------------------
-        # 6. crop bbox
-        # --------------------------------------------------------------
-        x1 = int(np.floor(dst_pts[:, 0].min())) - args.pad
-        y1 = int(np.floor(dst_pts[:, 1].min())) - args.pad
-        x2 = int(np.ceil(dst_pts[:, 0].max())) + args.pad
-        y2 = int(np.ceil(dst_pts[:, 1].max())) + args.pad
-        x1 = max(0, x1); y1 = max(0, y1)
-        x2 = min(tgt_w, x2); y2 = min(tgt_h, y2)
-        crop_bbox = (x1, y1, x2, y2)
-        print(f"[{frame_key}] crop_bbox: {crop_bbox}")
-
-        sx1 = int(np.floor(src_pts[:, 0].min())) - args.pad
-        sy1 = int(np.floor(src_pts[:, 1].min())) - args.pad
-        sx2 = int(np.ceil(src_pts[:, 0].max())) + args.pad
-        sy2 = int(np.ceil(src_pts[:, 1].max())) + args.pad
-        sx1 = max(0, sx1); sy1 = max(0, sy1)
-        sx2 = min(src_w, sx2); sy2 = min(src_h, sy2)
-
-        # --------------------------------------------------------------
-        # 7. displacement stats
-        # --------------------------------------------------------------
-        disp = src_pts - dst_pts
-        disp_norm = np.linalg.norm(disp, axis=1)
-        d_mean, d_median, d_std = disp_norm.mean(), np.median(disp_norm), disp_norm.std()
-        print(f"[{frame_key}] disp: mean={d_mean:.2f} median={d_median:.2f} std={d_std:.2f}")
-
-        # --------------------------------------------------------------
-        # 8. CPW backward map (via library)
-        # --------------------------------------------------------------
-        crop_h = y2 - y1
-        crop_w = x2 - x1
-        if crop_h <= 0 or crop_w <= 0:
-            print(f"[{frame_key}] SKIP: empty crop")
-            csv_writer.writerow([frame_idx, "skip", "empty crop", *([""] * 7)])
-            n_skip += 1
-            continue
-
-        backward_map, stats = generate_cpw_backward_map(
-            src_pts, dst_pts, (crop_h, crop_w),
-            k=args.cpw_knn, power=args.cpw_power,
-        )
-
-        warped_crop = warp_image_with_backward_map(src_img, backward_map)
-        tgt_crop = tgt_img[y1:y2, x1:x2]
-        src_crop = src_img[sy1:sy2, sx1:sx2]
-
-        content_valid = np.max(warped_crop, axis=2) > args.black_thresh
-        inside = (
-            (backward_map[..., 0] >= 0) & (backward_map[..., 0] < src_w) &
-            (backward_map[..., 1] >= 0) & (backward_map[..., 1] < src_h)
-        )
-        warp_valid = inside & content_valid
-        target_valid = np.max(tgt_crop, axis=2) > args.black_thresh
-
-        # target-priority with directional erosion (via library)
-        tgt_valid_eroded = directional_erode_valid_mask(target_valid, "down", args.erode_px)
-        warp_valid_eroded = directional_erode_valid_mask(warp_valid, "up", args.erode_px)
-        composite_tp = target_priority_composite(tgt_crop, warped_crop, tgt_valid_eroded, warp_valid_eroded)
-
-        # full-size warp
-        warped_full = np.zeros_like(tgt_img)
-        warped_full[y1:y2, x1:x2] = warped_crop
-
-        # --------------------------------------------------------------
-        # 9. save outputs
-        # --------------------------------------------------------------
-        cv2.imwrite(str(out_dirs["warp"] / f"{frame_key}.jpg"), warped_full, [cv2.IMWRITE_JPEG_QUALITY, 95])
-        cv2.imwrite(str(out_dirs["composite_target_priority"] / f"{frame_key}.jpg"), composite_tp, [cv2.IMWRITE_JPEG_QUALITY, 95])
-        ov = cv2.addWeighted(tgt_crop, 0.5, warped_crop, 0.5, 0)
-        cv2.imwrite(str(out_dirs["overlay"] / f"{frame_key}.jpg"), ov, [cv2.IMWRITE_JPEG_QUALITY, 95])
-
-        # points
-        src_pts_img = draw_points(src_img, src_pts, (0, 0), (0, 255, 0), radius=5, max_pts=args.max_points)
-        tgt_pts_img = draw_points(tgt_img, dst_pts, (0, 0), (0, 255, 255), radius=5, max_pts=args.max_points)
-        cv2.imwrite(str(out_dirs["points"] / f"{frame_key}_cam4_restored_points.jpg"), src_pts_img, [cv2.IMWRITE_JPEG_QUALITY, 95])
-        cv2.imwrite(str(out_dirs["points"] / f"{frame_key}_cam2_restored_points.jpg"), tgt_pts_img, [cv2.IMWRITE_JPEG_QUALITY, 95])
-
-        # side-by-side pair lines
-        pair_full_h = max(src_h, tgt_h)
-        pair_canvas = np.zeros((pair_full_h, src_w + tgt_w, 3), dtype=np.uint8)
-        pair_canvas[:src_h, :src_w] = src_img
-        pair_canvas[:tgt_h, src_w:] = tgt_img
-        n_pts = len(src_pts)
-        if n_pts > args.max_points:
-            plt_idx = np.linspace(0, n_pts - 1, args.max_points).astype(int)
-            s_vis = src_pts[plt_idx]
-            d_vis = dst_pts[plt_idx]
-        else:
-            s_vis = src_pts
-            d_vis = dst_pts
-        for i in range(len(s_vis)):
-            sx_ = int(round(s_vis[i, 0]))
-            sy_ = int(round(s_vis[i, 1]))
-            dx_ = int(round(d_vis[i, 0])) + src_w
-            dy_ = int(round(d_vis[i, 1]))
-            cv2.line(pair_canvas, (sx_, sy_), (dx_, dy_), (180, 180, 180), 1, lineType=cv2.LINE_AA)
-        for i in range(len(s_vis)):
-            sx_ = int(round(s_vis[i, 0]))
-            sy_ = int(round(s_vis[i, 1]))
-            dx_ = int(round(d_vis[i, 0])) + src_w
-            dy_ = int(round(d_vis[i, 1]))
-            cv2.circle(pair_canvas, (sx_, sy_), 4, (0, 255, 0), -1)
-            cv2.circle(pair_canvas, (dx_, dy_), 4, (0, 255, 255), -1)
-        cv2.imwrite(str(out_dirs["points"] / f"{frame_key}_pair_lines.jpg"), pair_canvas, [cv2.IMWRITE_JPEG_QUALITY, 95])
-
-        # debug panel
-        panel = build_debug_panel(
-            src_crop, tgt_crop, warped_crop, composite_tp,
-            src_pts, dst_pts, (sx1, sy1), (x1, y1), args.panel_size,
-            max_draw=min(args.max_points, 500),
-        )
-        cv2.imwrite(str(out_dirs["debug_panel"] / f"{frame_key}.jpg"), panel, [cv2.IMWRITE_JPEG_QUALITY, 95])
-
-        # pairs npz
-        np.savez_compressed(
-            str(out_dirs["pairs_npz"] / f"{frame_key}_cam4_to_cam2_pairs_equirect_rotate.npz"),
-            src_cam="cam4",
-            dst_cam="cam2",
-            src_pts=src_pts,
-            dst_pts=dst_pts,
-            vertex_ids=used_vertex_ids,
-            frame_idx=frame_idx,
-            crop_bbox=np.array([x1, y1, x2, y2], dtype=np.int32),
-            image_path_src=str(src_img_path.resolve()),
-            image_path_tgt=str(tgt_img_path.resolve()),
-        )
-
-        csv_writer.writerow([
-            frame_idx, "ok", "",
-            n_raw, n_valid_full, n_used,
-            x1, y1, x2, y2,
-            f"{d_mean:.2f}", f"{d_median:.2f}", f"{d_std:.2f}",
-        ])
-
-        print(f"[{frame_key}] saved debug_panel/{frame_key}.jpg")
-        n_ok += 1
-
-    csv_file.close()
-    print(f"\n[DONE] {n_ok} ok, {n_skip} skipped (total {len(frame_indices)} frames)")
-    print(f"summary: {csv_path}")
+        print(f"[DONE] {direction_name}: {n_ok} ok, {n_skip} skipped (total {len(frame_indices)} frames)")
+        print(f"panels: {out / direction_name / 'debug_panel'}")
 
 
 if __name__ == "__main__":
@@ -477,11 +361,11 @@ r'''
 # Example usage:
 python src/script/test_function/debug067_sam3dbody_cached_full_cpw.py \
   --dataset_root data_process/Output/20260311_riding \
-  --recon_dir data_process/Output/20260311_riding/sam3dbody_recon \
-  --segment 513_518 \
-  --output_dir data_process/Vis/debug067_sam3dbody_cached_full_cpw/513_518 \
-  --direction cam4_to_cam2 \
-  --max_points 1500 \
+  --recon_dir data_process/Output/20260311_riding/sam3dbody/recon \
+  --segment 704_711 \
+  --output_dir data_process/Vis/debug067_sam3dbody_cached_full_cpw \
+  --direction both \
+  --max_points 400 \
   --pad 200 \
   --cpw_knn 12 \
   --cpw_power 2.0 \
@@ -493,9 +377,10 @@ python src/script/test_function/debug067_sam3dbody_cached_full_cpw.py \
 # All cached frames:
 python src/script/test_function/debug067_sam3dbody_cached_full_cpw.py \
   --dataset_root data_process/Output/20260311_riding \
-  --recon_dir data_process/Output/20260311_riding/sam3dbody_recon \
+  --recon_dir data_process/Output/20260311_riding/sam3dbody/recon \
+  --direction cam2_to_cam4 \
   --segment all \
-  --output_dir data_process/Vis/debug067_sam3dbody_cached_full_cpw/all \
-  --max_points 1500 --pad 200 --cpw_knn 12 --cpw_power 2.0 \
+  --output_dir data_process/Vis/debug067_sam3dbody_cached_full_cpw \
+  --max_points 400 --pad 200 --cpw_knn 12 --cpw_power 2.0 \
   --black_thresh 3 --erode_px 20 --panel_size 420 --seed 0
 '''

@@ -1,5 +1,8 @@
+"""光流拼接编排器：计算 ROI、跑 RAFT、融合语义先验、构建变形场、混合并修复接缝。"""
+
 import cv2
 import numpy as np
+from pathlib import Path
 from typing import Optional, Tuple
 from lib_pano.flow.raft_flow import RAFTFlow
 from lib_pano.flow.roi_process import (
@@ -15,7 +18,7 @@ from lib_pano.flow.roi_process import (
     build_semantic_weight_map,
     combine_flow_with_semantic_prior,
 )
-from lib_pano.flow.warp_strategy import apply_warp, WarpStrategy, MeshConfig, DistanceConfig
+from lib_pano.flow.warp_strategy import apply_warp, WarpStrategy, MeshConfig
 from lib_pano.flow.seam_repair import repair_seam
 from lib_pano.flow.debug_writer import DebugWriter
 
@@ -28,7 +31,6 @@ def stitch_with_flow(
     target_valid_mask: np.ndarray,
     strategy: WarpStrategy = WarpStrategy.MESH_BIDIRECTIONAL,
     mesh_config: MeshConfig = MeshConfig(),
-    distance_config: DistanceConfig = DistanceConfig(),
     bidirectional: bool = True,
     extend_y: int = 0,
     blend_threshold: int = 1,
@@ -46,8 +48,9 @@ def stitch_with_flow(
     semantic_conf_thresh: float = 0.05,
     debug_dir: Optional[str] = None,
     debug_level: str = "minimal",
+    save_full_flow_path: Optional[str] = None,
 ) -> Tuple[np.ndarray, np.ndarray]:
-    
+    """两相机光流拼接主流程：ROI→RAFT 光流→语义先验融合→变形→优先级混合→接缝修复，返回 (拼接图, 有效遮罩)。"""
 
     writer = DebugWriter(
         debug_dir=debug_dir,
@@ -159,10 +162,13 @@ def stitch_with_flow(
         source_valid_mask=source_valid_mask,
         target_valid_mask=target_valid_mask,
         mesh_config=mesh_config,
-        distance_config=distance_config,
         weight_map=combined_weight_map,
     )
     writer.write_warp_result(warp_result)
+
+    if save_full_flow_path is not None:
+        Path(save_full_flow_path).parent.mkdir(parents=True, exist_ok=True)
+        np.save(save_full_flow_path, warp_result.full_flow.astype(np.float32))
 
     blended = blend_priority(
         image_source=warp_result.warped_source,

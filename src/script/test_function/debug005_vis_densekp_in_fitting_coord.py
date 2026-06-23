@@ -12,7 +12,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 import config_script
-from lib_pano.fitting.densekp_io import load_densekp_result
+from lib_pano.fitting_io.densekp_io import load_densekp_result
 from lib_pano.pipeline.bbox_io import load_bbox_dict
 
 
@@ -124,6 +124,7 @@ def main() -> int:
     parser.add_argument("--image_height", type=int, default=2880)
     parser.add_argument("--full_image_dir", default=None)
     parser.add_argument("--max_files", type=int, default=None)
+    parser.add_argument("--frame_range", type=str, default=None, help="e.g. 886_895, both inclusive")
     parser.add_argument("--radius", type=int, default=3)
     args = parser.parse_args()
 
@@ -141,6 +142,19 @@ def main() -> int:
     if not npz_paths:
         print(f"[ERROR] no npz files in {npz_dir}")
         return 1
+
+    if args.frame_range is not None:
+        parts = args.frame_range.split("_")
+        if len(parts) != 2:
+            print(f"[ERROR] --frame_range must be start_end, got: {args.frame_range}")
+            return 1
+        fr_start = int(parts[0])
+        fr_end = int(parts[1])
+        filtered = [p for p in npz_paths if fr_start <= int(p.stem.split("_")[0]) <= fr_end]
+        if not filtered:
+            print(f"[ERROR] no npz files matched frame_range {args.frame_range}")
+            return 1
+        npz_paths = filtered
 
     if args.max_files is not None:
         npz_paths = npz_paths[: args.max_files]
@@ -171,16 +185,27 @@ if __name__ == "__main__":
 
 
 r'''
-python src/script/test_function/debug005_vis_densekp_in_fitting_coord.py \
-  --densekp_npz_dir data_process/Output/20260311_riding/camerahmr/densekp_npz/cam2 \
-  --bbox_json data_process/Output/20260311_riding/image/equirect_crop_rotate/cam2_bboxes.json \
-  --output_dir data_process/Output/20260311_riding/camerahmr/densekp_vis_in_fitting_coord/cam2 \
-  --max_files 20
-
+# Visualize first 20 files (original behavior)
 python src/script/test_function/debug005_vis_densekp_in_fitting_coord.py \
   --densekp_npz_dir data_process/Output/20260311_riding/camerahmr/densekp_npz/cam2 \
   --bbox_json data_process/Output/20260311_riding/image/equirect_crop_rotate/cam2_bboxes.json \
   --output_dir data_process/Output/20260311_riding/camerahmr/densekp_vis_in_fitting_coord/cam2 \
   --full_image_dir data_process/Output/20260311_riding/image/equirect_rotate/cam2 \
   --max_files 20
+
+# Visualize a specific frame range
+python src/script/test_function/debug005_vis_densekp_in_fitting_coord.py \
+  --densekp_npz_dir data_process/Output/20260311_riding/camerahmr/densekp_npz/cam2 \
+  --bbox_json data_process/Output/20260311_riding/image/equirect_crop_rotate/cam2_bboxes.json \
+  --output_dir data_process/Output/20260311_riding/camerahmr/densekp_vis_in_fitting_coord/cam2 \
+  --full_image_dir data_process/Output/20260311_riding/image/equirect_rotate/cam2 \
+  --frame_range 886_895
+
+# Frame range + max_files: filter by range first, then truncate
+python src/script/test_function/debug005_vis_densekp_in_fitting_coord.py \
+  --densekp_npz_dir data_process/Output/20260320_riding_dataset2/camerahmr/densekp_npz/cam2 \
+  --bbox_json data_process/Output/20260320_riding_dataset2/image/equirect_crop_rotate/cam2_bboxes.json \
+  --output_dir data_process/Output/20260320_riding_dataset2/camerahmr/densekp_vis_in_fitting_coord/cam2 \
+  --full_image_dir data_process/Output/20260320_riding_dataset2/image/equirect_rotate/cam2 \
+  --frame_range 3580_3592
 '''

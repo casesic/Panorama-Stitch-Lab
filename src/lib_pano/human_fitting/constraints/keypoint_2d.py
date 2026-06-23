@@ -1,3 +1,5 @@
+"""2D 关键点重投影损失：将 SMPL-X 关节投影到 ERP，与检测关键点按置信度加权求距离。"""
+
 from __future__ import annotations
 
 from typing import Dict
@@ -14,6 +16,7 @@ def compute_keypoint_2d_loss_with_proj(
     H: int,
     conf_thresh: float,
 ):
+    """将关节投影到 2D，按关节名映射到检测关键点，计算置信度加权的 body_2d_det 重投影损失。"""
     from lib_pano.human_fitting.smplx_sequence import SMPLX_JOINT_MAP
 
     joints_2d_all = project_fn(joints_all, W, H)

@@ -258,7 +258,7 @@ class ComparePoseVisReviewer(QWidget):
         output_path: Path,
     ) -> None:
         super().__init__()
-        self.setWindowTitle(f"Compare Pose Vis: {method_a_name} vs {method_b_name}")
+        self.setWindowTitle(f"Select Best TPS Direction: {method_a_name} vs {method_b_name}")
 
         self.method_a_dir = method_a_dir
         self.method_b_dir = method_b_dir
@@ -362,7 +362,8 @@ class ComparePoseVisReviewer(QWidget):
             f"frame {frame_idx:05d} | "
             f"image {self.current_index + 1}/{len(self.frame_indices)} | "
             f"current={current} | "
-            f"A={method_a_name} | B={method_b_name}"
+            f"A={method_a_name} | B={method_b_name} | "
+            f"1=A better, 2=B better, 3=tie, 4=both bad, S=save, Left/Right=prev/next, R=reset view"
         )
         self.status_bar.showMessage(status)
 
@@ -405,18 +406,39 @@ class ComparePoseVisReviewer(QWidget):
 
     def build_output(self) -> dict:
         valid_frames = set(self.frame_indices)
-        frames = {
-            f"{frame_idx:05d}": {"decision": decision}
-            for frame_idx, decision in sorted(self.decisions.items())
-            if frame_idx in valid_frames and decision in DECISIONS
-        }
+        frames = {}
+        for frame_idx, decision in sorted(self.decisions.items()):
+            if frame_idx not in valid_frames or decision not in DECISIONS:
+                continue
+
+            if decision == "a_better":
+                selected_method = self.method_a_name
+                selected_image = str(self.method_a_images.get(frame_idx, ""))
+            elif decision == "b_better":
+                selected_method = self.method_b_name
+                selected_image = str(self.method_b_images.get(frame_idx, ""))
+            else:
+                selected_method = decision
+                selected_image = None
+
+            if selected_image is not None and not Path(selected_image).exists():
+                selected_image = None
+
+            frames[f"{frame_idx:05d}"] = {
+                "decision": decision,
+                "selected_method": selected_method,
+                "selected_image": selected_image,
+            }
+
         return {
             "meta": {
+                "task": "select_best_tps_direction",
                 "method_a_name": self.method_a_name,
                 "method_b_name": self.method_b_name,
                 "method_a_dir": str(self.method_a_dir),
                 "method_b_dir": str(self.method_b_dir),
                 "total_frames": len(self.frame_indices),
+                "output_usage": "Use selected_image to generate final video.",
             },
             "frames": frames,
             "summary": self.summary(),
@@ -464,10 +486,11 @@ if __name__ == "__main__":
     raise SystemExit(main())
 
 r"""
+# Compare cam2_to_cam4 vs cam4_to_cam2 directional filled prior
 python src/script/test_function/debug042_compare_pose_vis.py `
-  --method_a_dir data_process/Output/20260320_riding_dataset2/rtm_cache/equirect_rotate/vis/cam2 `
-  --method_b_dir data_process/Output/20260320_riding_dataset2/rtm_cache/equirect_rotate_rtmw/vis/cam2 `
-  --method_a_name rtmlib `
-  --method_b_name mmpose `
-  --output data_process/Output/20260320_riding_dataset2/rtm_cache/compare_rtmlib_vs_mmpose_cam2.json
+  --method_a_dir data_process/Output/20260311_riding/tps_result/kp_densekp_fitted_filter_all/cam2_to_cam4/directional_filled_prior `
+  --method_b_dir data_process/Output/20260311_riding/tps_result/kp_densekp_fitted_filter_all/cam4_to_cam2/directional_filled_prior `
+  --method_a_name cam2_to_cam4 `
+  --method_b_name cam4_to_cam2 `
+  --output data_process/Output/20260311_riding/tps_result/kp_densekp_fitted_filter_all/best_direction_selection.json
 """

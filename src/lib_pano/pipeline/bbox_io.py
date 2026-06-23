@@ -47,7 +47,7 @@ def union_bboxes(bboxes: list[list[int]]) -> list[int] | None:
     ]
 
 
-def bbox_area(bbox: list[int] | None) -> int:
+def bbox_area(bbox) -> int:
     if bbox is None:
         return 0
     return max(0, bbox[2] - bbox[0]) * max(0, bbox[3] - bbox[1])

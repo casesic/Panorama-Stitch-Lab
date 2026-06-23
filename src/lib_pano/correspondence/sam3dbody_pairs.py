@@ -1,7 +1,4 @@
-"""SAM 3D Body vertex pairing across cam2/cam4 and coordinate restore.
-
-Extracted from debug067_sam3dbody_cached_full_cpw.py.
-"""
+"""SAM 3D Body 跨相机顶点配对、坐标还原和全图范围内的点过滤。"""
 
 from __future__ import annotations
 
@@ -31,15 +28,7 @@ def pair_sam3dbody_vertices(
     src_recon: Sam3DBodyRecon,
     dst_recon: Sam3DBodyRecon,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Pair vertices from src and dst SAM 3D Body reconstructions by vertex id.
-
-    Filters: valid_z (both), inside (both).
-
-    Returns:
-        src_pts_upright [M, 2] float32
-        dst_pts_upright [M, 2] float32
-        vertex_ids     [M] int64
-    """
+    """跨视角同名 vertex 配对：筛选 valid_z 且 inside 的顶点，输出 src/dst 对应点数组和 vertex id。"""
     valid = src_recon.valid_z & dst_recon.valid_z & src_recon.inside & dst_recon.inside
     vertex_ids = np.where(valid)[0].astype(np.int64)
     src_pts = src_recon.vertices_2d[vertex_ids].astype(np.float32)
@@ -54,12 +43,7 @@ def restore_sam3dbody_pairs_to_full(
     dst_bbox: list[int],
     frame_idx: int,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Restore crop_upright point pairs to equirect_rotate full-image coordinates.
-
-    Returns:
-        src_pts_full [M, 2] float32
-        dst_pts_full [M, 2] float32
-    """
+    """将 crop_upright 坐标下的点对还原到 equirect_rotate 全图坐标。"""
     src_full = upright_points_to_equirect_rotate(src_pts_upright, src_bbox, frame_idx)
     dst_full = upright_points_to_equirect_rotate(dst_pts_upright, dst_bbox, frame_idx)
     return src_full, dst_full
@@ -72,15 +56,7 @@ def filter_pairs_inside_image(
     src_shape: tuple[int, int] | tuple[int, int, int],
     dst_shape: tuple[int, int] | tuple[int, int, int],
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Filter point pairs to those within both source and target image bounds.
-
-    Also filters NaN/inf.
-
-    Returns:
-        src_pts    [K, 2] float32
-        dst_pts    [K, 2] float32
-        vertex_ids [K] int64
-    """
+    """过滤点对：保留 finite 且在两张全图范围内的点。"""
     src_h, src_w = src_shape[:2]
     dst_h, dst_w = dst_shape[:2]
 

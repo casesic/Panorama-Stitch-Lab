@@ -22,20 +22,21 @@ def _ensure_paths() -> Path:
 
 REPO_ROOT = _ensure_paths()
 
-from lib_pano.fitting.fitting_result_io import save_segment_result
-from lib_pano.fitting.hmr_init import (
+from lib_pano.fitting_io.fitting_result_io import save_segment_result
+from lib_pano.fitting_io.hmr_init import (
     build_hmr_init_for_frame,
     build_segment_smplx_init,
     try_load_smplx_init,
 )
-from lib_pano.fitting.densekp_io import load_densekp_result
-from lib_pano.fitting.mask_io import get_mask_paths, is_seg_valid
-from lib_pano.fitting.rtm_io import (
+from lib_pano.fitting_io.densekp_io import load_densekp_result
+from lib_pano.fitting_io.sam3d_dense_io import load_sam3d_dense_result
+from lib_pano.fitting_io.mask_io import get_mask_paths, is_seg_valid
+from lib_pano.fitting_io.rtm_io import (
     infer_keypoints_format_and_dim,
     is_rtm_det_valid,
     load_det_result,
 )
-from lib_pano.fitting.segments import split_long_segments, split_reconstructable_subsegments
+from lib_pano.fitting_io.segments import split_long_segments, split_reconstructable_subsegments
 from lib_pano.human_fitting import DualCamERPFitter
 from lib_pano.human_fitting.constraints import prepare_silhouette_data
 
@@ -117,13 +118,19 @@ def parse_args() -> argparse.Namespace:
         "--start_frame",
         type=int,
         default=None,
-        help="Only process segments whose end frame is >= this frame index.",
+        help="[legacy] Only process segments whose end frame is >= this frame index.",
     )
     parser.add_argument(
         "--end_frame",
         type=int,
         default=None,
-        help="Only process segments whose start frame is <= this frame index.",
+        help="[legacy] Only process segments whose start frame is <= this frame index.",
+    )
+    parser.add_argument(
+        "--segments",
+        type=str,
+        default=None,
+        help='Explicit segments, e.g. "513_518" or "513_518,704_711". Overrides --start_frame/--end_frame.',
     )
     parser.add_argument(
         "--max_segment_len",
@@ -136,6 +143,15 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default=None,
         help="Optional DenseKP npz root directory containing cam2/ and cam4/ subdirectories.",
+    )
+    parser.add_argument(
+        "--sam3d_dense_dir",
+        type=str,
+        default=None,
+        help=(
+            "Optional SAM 3D Body dense SMPL-X observation root "
+            "containing cam2/ and cam4/ subdirectories."
+        ),
     )
     parser.add_argument(
         "--densekp_filter",
@@ -157,6 +173,29 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def parse_segments_arg(segments_str: str) -> list[list[int]]:
+    """Parse --segments string like "513_518" or "513_518,704_711".
+
+    Returns a list of frame-index lists, one per segment.
+    """
+    result: list[list[int]] = []
+    for item in segments_str.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        parts = item.split("_")
+        if len(parts) != 2:
+            raise ValueError(f"Invalid segment format: {item!r}. Expected start_end, e.g. 513_518.")
+        start = int(parts[0])
+        end = int(parts[1])
+        if start > end:
+            raise ValueError(f"Segment start must be <= end, got: {item!r}.")
+        result.append(list(range(start, end + 1)))
+    if not result:
+        raise ValueError(f"No valid segment entries found in: {segments_str!r}")
+    return result
+
+
 def main() -> None:
     args = parse_args()
 
@@ -170,12 +209,52 @@ def main() -> None:
     seg_invalid_path = Path(args.seg_invalid_json) if args.seg_invalid_json is not None else None
     hmr_invalid_path = Path(args.hmr_invalid_json) if args.hmr_invalid_json is not None else None
     densekp_dir = Path(args.densekp_dir) if args.densekp_dir is not None else None
+    sam3d_dense_dir = (
+        Path(args.sam3d_dense_dir)
+        if args.sam3d_dense_dir is not None
+        else None
+    )
 
     frame_indices = load_reviewed_frame_indices(reviewed_path)
-    segments = split_frame_segments(frame_indices)
-    if args.max_segment_len > 0:
-        segments = split_long_segments(segments, args.max_segment_len)
-        print(f"切段后共 {len(segments)} 段，最大段长 {args.max_segment_len}")
+    reviewed_frame_set = set(frame_indices)
+
+    if args.segments is not None and (args.start_frame is not None or args.end_frame is not None):
+        print("[ERROR] --segments cannot be used together with --start_frame/--end_frame.")
+        return
+
+    if args.segments is not None:
+        specified = parse_segments_arg(args.segments)
+        print(f"[INFO] using explicit segments: {args.segments}")
+
+        segments = []
+        for seg in specified:
+            seg_key = f"{seg[0]}_{seg[-1]}"
+            missing = [idx for idx in seg if idx not in reviewed_frame_set]
+            if missing:
+                print(f"[WARN] segment {seg_key} has frames not in reviewed.json: {missing}")
+            filtered = [idx for idx in seg if idx in reviewed_frame_set]
+            if not filtered:
+                print(f"[WARN] segment {seg_key} has no reviewed frames, skipping")
+                continue
+            if filtered != seg:
+                filtered_key = f"{filtered[0]}_{filtered[-1]}"
+                print(f"[INFO] actual segment after reviewed filter: {seg_key} -> {filtered_key}")
+            segments.append(filtered)
+
+        if not segments:
+            print("[ERROR] no reviewed frames in any specified segment, exiting.")
+            return
+    else:
+        segments = split_frame_segments(frame_indices)
+        if args.max_segment_len > 0:
+            segments = split_long_segments(segments, args.max_segment_len)
+            print(f"切段后共 {len(segments)} 段，最大段长 {args.max_segment_len}")
+
+        if args.start_frame is not None:
+            segments = [frame_idxs for frame_idxs in segments if frame_idxs[-1] >= args.start_frame]
+        if args.end_frame is not None:
+            segments = [frame_idxs for frame_idxs in segments if frame_idxs[0] <= args.end_frame]
+
     rtm_invalid_frames = load_invalid_frames(rtm_invalid_path, label="rtm_invalid_json", recurse_all=False)
     seg_invalid_frames = load_invalid_frames(seg_invalid_path, label="seg_invalid_json", recurse_all=False)
     hmr_invalid_frames = load_invalid_frames(hmr_invalid_path, label="hmr_invalid_json", recurse_all=False)
@@ -188,11 +267,6 @@ def main() -> None:
     cam4_bboxes = load_bbox_json(bbox_dir / "cam4_bboxes.json")
     default_keypoints_format_c2, num_keypoints_c2 = infer_keypoints_format_and_dim(frame_indices, rtm_dir, "cam2")
     default_keypoints_format_c4, num_keypoints_c4 = infer_keypoints_format_and_dim(frame_indices, rtm_dir, "cam4")
-
-    if args.start_frame is not None:
-        segments = [frame_idxs for frame_idxs in segments if frame_idxs[-1] >= args.start_frame]
-    if args.end_frame is not None:
-        segments = [frame_idxs for frame_idxs in segments if frame_idxs[0] <= args.end_frame]
 
     fitter = DualCamERPFitter(
         gender="neutral",
@@ -324,6 +398,19 @@ def main() -> None:
                 densekp_list_c2 = None
                 densekp_list_c4 = None
 
+            if sam3d_dense_dir is not None:
+                sam3d_dense_list_c2 = [
+                    load_sam3d_dense_result(frame_idx, sam3d_dense_dir, "cam2", args.image_width, args.image_height, crop_bbox=cam2_bboxes.get(str(frame_idx)),)
+                    for frame_idx in sub_frame_idxs
+                ]
+                sam3d_dense_list_c4 = [
+                    load_sam3d_dense_result(frame_idx, sam3d_dense_dir, "cam4", args.image_width, args.image_height, crop_bbox=cam4_bboxes.get(str(frame_idx)),)
+                    for frame_idx in sub_frame_idxs
+                ]
+            else:
+                sam3d_dense_list_c2 = None
+                sam3d_dense_list_c4 = None
+
             boundary_pts_list_c2, boundary_pts_list_c4 = [], []
             bbox_list_c2, bbox_list_c4 = [], []
             for frame_idx in sub_frame_idxs:
@@ -357,6 +444,8 @@ def main() -> None:
                 bbox_list_c4=bbox_list_c4,
                 densekp_list_c2=densekp_list_c2,
                 densekp_list_c4=densekp_list_c4,
+                sam3d_dense_list_c2=sam3d_dense_list_c2,
+                sam3d_dense_list_c4=sam3d_dense_list_c4,
                 output_dir=output_dir / subsegment_key if args.mask_fill_stage3 else None,
                 frame_indices=sub_frame_idxs,
             )
@@ -414,33 +503,51 @@ if __name__ == "__main__":
 
 
 r'''
-# Stage 3 mask fill refine (minimal example, single segment)
+python src/script/test_function/debug029_run_dual_erp_fitting.py \
+  --reviewed data_process/Input/20260320_riding/dataset2/review.json \
+  --rtm_dir data_process/Output/20260320_riding_dataset2/rtm_cache/equirect_rotate_rtmw \
+  --hmr_dir data_process/Output/20260320_riding_dataset2/hmr_cache \
+  --seg_dir data_process/Output/20260320_riding_dataset2/seg/equirect_crop_rotate_sam3 \
+  --output_dir data_process/Output/20260320_riding_dataset2/fitting/dual_cam_dense_filter_all \
+  --rtm_invalid_json data_process/Output/20260320_riding_dataset2/rtm_cache/equirect_rotate_rtmw/invalid.json \
+  --seg_invalid_json data_process/Output/20260320_riding_dataset2/seg/invalid.json \
+  --hmr_invalid_json data_process/Output/20260320_riding_dataset2/hmr_cache/invalid.json \
+  --bbox_dir data_process/Output/20260320_riding_dataset2/image/equirect_crop_rotate \
+  --image_root data_process/Output/20260320_riding_dataset2/image/equirect_rotate \
+  --densekp_dir data_process/Output/20260320_riding_dataset2/camerahmr/densekp_npz \
+  --max_segment_len 10 \
+  --segments 216_226,519_531,695_704,1231_1240,1241_1250,1251_1263,1555_1561,1769_1771,2850_2853,3110_3118,3580_3592,3819_3831 \
+  --no_silhouette_loss
+
+# Multiple segments
 python src/script/test_function/debug029_run_dual_erp_fitting.py \
   --reviewed data_process/Input/20260311_riding/review.json \
   --rtm_dir data_process/Output/20260311_riding/rtm_cache/equirect_rotate_rtmw \
   --hmr_dir data_process/Output/20260311_riding/hmr_cache \
   --seg_dir data_process/Output/20260311_riding/seg/equirect_crop_rotate_sam3 \
-  --output_dir data_process/Output/20260311_riding/fitting/kp_densekp_bbox_filter_maskfill_stage3 \
+  --output_dir data_process/Output/20260311_riding/fitting/dual_cam_sam3d_dense \
   --rtm_invalid_json data_process/Output/20260311_riding/rtm_cache/equirect_rotate_rtmw/invalid.json \
   --seg_invalid_json data_process/Output/20260311_riding/seg/invalid.json \
   --hmr_invalid_json data_process/Output/20260311_riding/hmr_cache/invalid.json \
   --bbox_dir data_process/Output/20260311_riding/image/equirect_crop_rotate \
   --image_root data_process/Output/20260311_riding/image/equirect_rotate \
   --densekp_dir data_process/Output/20260311_riding/camerahmr/densekp_npz \
+  --sam3d_dense_dir data_process/Output/20260311_riding/sam3dbody/smplx_dense \
   --max_segment_len 10 \
-  --start_frame 704 --end_frame 711 \
-  --mask_fill_stage3 \
+  --segments 513_518,704_711 \
   --no_silhouette_loss
 
-# Standard fitting with silhouette loss
-python src/script/test_function/debug029_run_dual_erp_fitting.py `
-  --reviewed data_process/Input/20260320_riding/dataset1/review.json `
-  --rtm_dir data_process/Output/20260320_riding_dataset1/rtm_cache/equirect_rotate `
-  --hmr_dir data_process/Output/20260320_riding_dataset1/hmr_cache `
-  --output_dir data_process/Output/20260320_riding_dataset1/fitting/dual_cam_sil_886_895 `
-  --rtm_invalid_json data_process/Output/20260320_riding_dataset1/invalid_detections.json `
-  --seg_dir data_process/Output/20260320_riding_dataset1/seg/equirect_crop_rotate_sam3 `
-  --bbox_dir data_process/Output/20260320_riding_dataset1/image/equirect_crop_rotate `
-  --start_frame 886 --end_frame 895 `
+# Standard fitting with silhouette loss, single segment
+python src/script/test_function/debug029_run_dual_erp_fitting.py \
+  --reviewed data_process/Input/20260320_riding/dataset1/review.json \
+  --rtm_dir data_process/Output/20260320_riding_dataset1/rtm_cache/equirect_rotate \
+  --hmr_dir data_process/Output/20260320_riding_dataset1/hmr_cache \
+  --output_dir data_process/Output/20260320_riding_dataset1/fitting/dual_cam_sil_886_895 \
+  --rtm_invalid_json data_process/Output/20260320_riding_dataset1/invalid_detections.json \
+  --seg_dir data_process/Output/20260320_riding_dataset1/seg/equirect_crop_rotate_sam3 \
+  --bbox_dir data_process/Output/20260320_riding_dataset1/image/equirect_crop_rotate \
+  --segments 886_895 \
   --use_silhouette_loss
+  
+0320_riding_dataset1: segments 886_895,1143_1151,3741_3745,5103_5121,5352_5363,5501_5506
 '''

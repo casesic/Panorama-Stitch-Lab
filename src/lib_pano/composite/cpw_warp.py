@@ -1,9 +1,4 @@
-"""
-CPW (Control Point Weighted) warp, directional erosion, and compositing.
-
-Extracted from debug067_sam3dbody_cached_full_cpw.py.
-Pure numpy + opencv, no torch.
-"""
+"""基于控制点的加权变形 (CPW)、方向侵蚀和 target-priority 合成，纯 numpy + opencv。"""
 
 from __future__ import annotations
 
@@ -19,25 +14,7 @@ def generate_cpw_backward_map(
     power: float = 2.0,
     max_points: int | None = None,
 ) -> tuple[np.ndarray, dict]:
-    """
-    Generate a CPW backward warp map from source to target.
-
-    Given control point pairs (src_pts on source image, dst_pts on target image),
-    produce a backward map that, when used with cv2.remap(source, map_x, map_y),
-    warps the source image such that dst_pts[i] lands on src_pts[i].
-
-    Args:
-        src_pts: [N, 2] control points on the source image.
-        dst_pts: [N, 2] control points on the target (destination) image.
-        image_shape: (H, W) of the target crop region.
-        k: number of nearest neighbours for interpolation.
-        power: distance weighting power.
-        max_points: if set, randomly sample up to this many points.
-
-    Returns:
-        backward_map: [H, W, 2] float32, channels ordered (x, y).
-        stats: dict with num_points, k, power, disp_mean, disp_median, disp_max.
-    """
+    """通过控制点对的逆距离加权插值生成 CPW backward warp map。(H, W, 2) float32, channels (x, y)。"""
     h, w = image_shape[:2]
 
     if max_points is not None and len(src_pts) > max_points:
@@ -105,12 +82,7 @@ def warp_image_with_backward_map(
     border_mode: int = cv2.BORDER_CONSTANT,
     border_value: int | tuple[int, int, int] = 0,
 ) -> np.ndarray:
-    """Apply a backward warp map to an image via cv2.remap.
-
-    Args:
-        image: source image [H, W, C].
-        backward_map: [H_out, W_out, 2] float32, channels (x, y).
-    """
+    """用 backward map 对图像做 cv2.remap 的语义化封装。"""
     map_x = backward_map[..., 0].astype(np.float32)
     map_y = backward_map[..., 1].astype(np.float32)
     return cv2.remap(image, map_x, map_y, interpolation, borderMode=border_mode, borderValue=border_value)
@@ -121,11 +93,7 @@ def directional_erode_valid_mask(
     direction: str,
     erode_px: int,
 ) -> np.ndarray:
-    """Erode a boolean valid mask from one boundary only.
-
-    direction="up":    top boundary eroded inward.
-    direction="down":  bottom boundary eroded inward.
-    """
+    """从单一边界方向向内侵蚀 bool mask，direction="up" 侵蚀顶部，"down" 侵蚀底部。"""
     if erode_px <= 1:
         return mask.astype(bool)
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, erode_px))
@@ -145,18 +113,7 @@ def target_priority_composite(
     target_valid_mask: np.ndarray,
     source_valid_mask: np.ndarray | None = None,
 ) -> np.ndarray:
-    """Composite warped source into target using target-priority logic.
-
-    target valid pixels -> use target.
-    target invalid but source valid -> use warped source.
-    both invalid -> use target (or zero).
-
-    Args:
-        target_img: target image.
-        warped_source_img: warped source image (same shape as target_img).
-        target_valid_mask: bool mask of valid target pixels.
-        source_valid_mask: bool mask of valid source pixels. If None, all are valid.
-    """
+    """target 优先合成：target 有效区域用 target，target 无效但 source 有效则用 warped source 填充。"""
     if source_valid_mask is None:
         source_valid_mask = np.ones(target_img.shape[:2], dtype=bool)
     fill_mask = (~target_valid_mask) & source_valid_mask

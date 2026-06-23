@@ -1,11 +1,41 @@
+"""对等距柱状图施加 3D 旋转，通过光线重投影实现全景图的视角旋转。"""
+
 import cv2
 import numpy as np
+
+def _build_equirect_dirs(
+    out_h: int,
+    out_w: int,
+    rotation_matrix: np.ndarray | None = None,
+):
+    """Generate ray direction vectors (x,y,z) for each pixel of an equirectangular image."""
+    u = np.arange(out_w, dtype=np.float32)
+    v = np.arange(out_h, dtype=np.float32)
+    uu, vv = np.meshgrid(u, v)
+
+    lat = (vv / float(out_h) - 0.5) * np.pi
+    lon = (uu / float(out_w) - 0.5) * (2.0 * np.pi)
+
+    cos_lat = np.cos(lat)
+    x = cos_lat * np.sin(lon)
+    y = np.sin(lat)
+    z = cos_lat * np.cos(lon)
+
+    if rotation_matrix is not None:
+        dirs = np.stack([x, y, z], axis=-1)
+        rotated = dirs @ np.asarray(rotation_matrix, dtype=np.float32).T
+        x = rotated[..., 0]
+        y = rotated[..., 1]
+        z = rotated[..., 2]
+
+    return x, y, z
 
 def _dirs_to_equirect_map(
     dirs: np.ndarray,
     width: int,
     height: int,
 ):
+    """Convert ray direction vectors to equirectangular pixel coordinates (map_x, map_y)."""
     x = dirs[..., 0]
     y = np.clip(dirs[..., 1], -1.0, 1.0)
     z = dirs[..., 2]
@@ -25,6 +55,7 @@ def rotate_equirectangular_image(
     interpolation: int = cv2.INTER_LINEAR,
     border_value=0,
 ):
+    """Apply a 3D rotation to an equirectangular image via ray reprojection."""
     if input_img is None:
         raise ValueError("input_img is None")
 
@@ -56,30 +87,3 @@ def rotate_equirectangular_image(
         borderMode=cv2.BORDER_WRAP,
         borderValue=border_value,
     )
-
-
-def _build_equirect_dirs(
-    out_h: int,
-    out_w: int,
-    rotation_matrix: np.ndarray | None = None,
-):
-    u = np.arange(out_w, dtype=np.float32)
-    v = np.arange(out_h, dtype=np.float32)
-    uu, vv = np.meshgrid(u, v)
-
-    lat = (vv / float(out_h) - 0.5) * np.pi
-    lon = (uu / float(out_w) - 0.5) * (2.0 * np.pi)
-
-    cos_lat = np.cos(lat)
-    x = cos_lat * np.sin(lon)  
-    y = np.sin(lat)
-    z = cos_lat * np.cos(lon)  
-
-    if rotation_matrix is not None:
-        dirs = np.stack([x, y, z], axis=-1)
-        rotated = dirs @ np.asarray(rotation_matrix, dtype=np.float32).T
-        x = rotated[..., 0]
-        y = rotated[..., 1]
-        z = rotated[..., 2]
-
-    return x, y, z

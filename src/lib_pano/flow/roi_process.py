@@ -1,9 +1,12 @@
+"""光流拼接的 ROI 预处理与权重构建：重叠区提取、语义先验融合、落地有效性/光度一致性权重、优先级混合。"""
+
 import cv2
 import numpy as np
 from typing import Optional, Tuple
 
 
 def _ensure_binary_mask(mask: np.ndarray) -> np.ndarray:
+    """将任意 mask 归一化为 0/255 的二值 uint8。"""
     return (mask > 0).astype(np.uint8) * 255
 
 
@@ -12,6 +15,7 @@ def soft_overlap_from_masks(
     mask_2: np.ndarray,
     extend_y: int = 0,
 ) -> np.ndarray:
+    """求两 mask 的重叠行区间并上下扩展 extend_y，返回覆盖该行带的全宽矩形 mask。"""
     mask_1 = _ensure_binary_mask(mask_1)
     mask_2 = _ensure_binary_mask(mask_2)
 
@@ -38,6 +42,7 @@ def extract_overlap_roi(
     image_2: np.ndarray,
     overlap_mask: np.ndarray
 ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], Optional[Tuple[int, int, int, int]]]:
+    """按重叠 mask 的外接矩形裁剪两幅图像，返回裁剪结果与 roi_bbox (x_min,y_min,x_max,y_max)。"""
     y_indices, x_indices = np.where(overlap_mask > 0)
     if len(y_indices) == 0:
         return None, None, None
@@ -56,11 +61,13 @@ def extract_overlap_roi(
 
 
 def crop_mask_by_bbox(mask: np.ndarray, roi_bbox: Tuple[int, int, int, int]) -> np.ndarray:
+    """按 roi_bbox 裁剪 mask 并返回副本。"""
     x_min, y_min, x_max, y_max = roi_bbox
     return mask[y_min:y_max, x_min:x_max].copy()
 
 
 def crop_bbox_dense_semantic_to_roi(semantic_prior, roi_bbox):
+    """将语义先验（bbox 局部坐标系的稠密光流+置信度）对齐重叠到 ROI 坐标系，返回 (flow_roi, conf_roi)。"""
     if semantic_prior is None:
         return None, None
 
@@ -104,6 +111,7 @@ def build_semantic_weight_map(
     semantic_weight_scale: float = 1.0,
     semantic_conf_thresh: float = 0.05,
 ):
+    """由语义置信度构建权重图：归一化、阈值截断后乘以缩放系数。"""
     if semantic_confidence_roi is None:
         return None
 
@@ -118,6 +126,7 @@ def combine_flow_with_semantic_prior(
     semantic_flow_roi=None,
     semantic_weight_map=None,
 ):
+    """按权重融合 RAFT 光流与语义光流（加权平均），合并权重取两者逐像素最大值。"""
     if semantic_flow_roi is None or semantic_weight_map is None:
         return raft_flow_roi, raft_weight_map
 
@@ -143,6 +152,7 @@ def compute_landed_source_valid_mask(
     flow_roi: np.ndarray,
     source_valid_roi: np.ndarray,
 ) -> np.ndarray:
+    """将 source 有效 mask 沿光流 remap 到 target 坐标系，得到「落地点处 source 是否有效」的 mask。"""
     h, w = flow_roi.shape[:2]
     grid_y, grid_x = np.mgrid[0:h, 0:w].astype(np.float32)
     map_x = grid_x + flow_roi[..., 0].astype(np.float32)
@@ -165,6 +175,7 @@ def compute_photometric_mask(
     flow_roi: np.ndarray,
     threshold: int = 30,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """按光流 warp source 到 target，计算逐像素颜色误差，返回 (一致性 mask, warp 后 source, 误差图)。"""
     h, w = flow_roi.shape[:2]
     grid_y, grid_x = np.mgrid[0:h, 0:w].astype(np.float32)
     map_x = grid_x + flow_roi[..., 0].astype(np.float32)
@@ -192,6 +203,7 @@ def build_flow_seed_mask(
     raft_valid_mask: Optional[np.ndarray] = None,
     photometric_mask: Optional[np.ndarray] = None,
 ) -> np.ndarray:
+    """构建光流种子 mask：target 有效 ∧ source 落地有效，再与 RAFT 一致性、光度一致性逐项相与。"""
     flow_seed_mask = (target_valid_roi > 0) & (source_valid_at_landed > 0)
 
     if raft_valid_mask is not None:
@@ -215,6 +227,7 @@ def build_flow_weight_map(
     raft_invalid_multiplier: float = 0.35,
     min_weight: float = 0.0,
 ) -> np.ndarray:
+    """构建光流权重图：以 target 有效区为基底，按 support/落地有效/RAFT 一致性/光度误差逐项加权，裁剪到 [0,1]。"""
     weight = (target_valid_roi > 0).astype(np.float32)
 
     if support_roi_roi is not None:
@@ -245,11 +258,7 @@ def blend_priority(
     erode_kernel_size: int = 0,
     source_valid_mask: Optional[np.ndarray] = None,
 ) -> np.ndarray:
-    """
-    使用灰度值判断, 避免单通道为0的问题
-    :erode_kernel_size: 腐蚀Mask的核大小, 用于去除边缘插值产生的杂色. 默认为0.
-    :source_valid_mask: 若提供则直接使用几何mask, 否则从灰度值推断.
-    """
+    """优先级混合：source 有效处（几何 mask 或灰度推断，可选腐蚀去边缘杂色）用 source，其余用 target 填充。"""
     image_to_process = image_source
 
     if source_valid_mask is not None:

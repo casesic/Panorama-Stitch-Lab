@@ -23,7 +23,7 @@ from lib_pano.human3d.keypoints_detector import (
     Result_Single_Human_Single_Frame,
     draw_keypoints,
 )
-from lib_pano.human3d.skeletion_constant import COCO_133_KEYPOINTS
+from lib_pano.human3d.skeleton_constant import COCO_133_KEYPOINTS
 from mmpose.apis import inference_topdown, init_model
 
 try:

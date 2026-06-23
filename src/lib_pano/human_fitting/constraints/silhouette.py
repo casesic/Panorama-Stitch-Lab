@@ -1,3 +1,5 @@
+"""轮廓约束：从 mask 边界采样点，与 SMPL-X 顶点投影的最近距离构成轮廓对齐损失。"""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -12,6 +14,7 @@ def prepare_silhouette_data(
     n_samples: int = 300,
     device: str = "cpu",
 ) -> torch.Tensor | None:
+    """从 mask 提取外轮廓（先腐蚀、按面积过滤）并等间隔采样边界点，返回 [N,2] 张量。"""
     mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
     if mask is None:
         return None
@@ -51,6 +54,7 @@ def compute_silhouette_loss(
     erp_w: int,
     erp_h: int,
 ) -> torch.Tensor:
+    """将顶点投影到 ERP 并平移到裁剪局部系，取每个边界点到顶点投影的最近距离均值为损失。"""
     proj = project_fn(verts_world, erp_w, erp_h)
     x1, y1, x2, y2 = bbox
     offset = proj.new_tensor([x1, y1])

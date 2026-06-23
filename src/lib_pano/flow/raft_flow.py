@@ -1,3 +1,5 @@
+"""RAFT 光流封装：加载模型，计算双向光流，执行 forward-backward 一致性检验。"""
+
 import sys
 import os
 import torch
@@ -59,7 +61,7 @@ def _flow_warp(image_source: torch.Tensor, flow: torch.Tensor, mode: str = 'bili
 
 
 class SafeInputPadder:
-    """ Pads images such that dimensions are divisible by 8 and at least min_size """
+    """将输入填充到尺寸为 8 的倍数且不小于 min_size，支持 unpadding 还原。"""
     def __init__(self, dims, mode='sintel', min_size=64):
         self.ht, self.wd = dims[-2:]
 
@@ -90,6 +92,7 @@ class SafeInputPadder:
 
 
 class RAFTFlow:
+    """RAFT 光流计算器：封装模型加载、预处理、推理、后处理和一致性检验。"""
     def __init__(self, model_path=None, device=None, iters=20, consistency_thresh=20.0):
         if device is None:
             self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -126,14 +129,17 @@ class RAFTFlow:
         self.consistency_thresh = consistency_thresh
 
     def _preprocess(self, img_np):
+        """将 numpy 图像转为 [1, C, H, W] torch tensor 并移到设备。"""
         img = torch.from_numpy(img_np).permute(2, 0, 1).float()
         return img[None].to(self.device)
 
     def _run_raft(self, t1, t2):
+        """执行 RAFT 推理，输入 target(t1) 和 source(t2)，返回 target→source 的光流。"""
         _, flow_up = self.model(t1, t2, iters=self.iters, test_mode=True)
         return flow_up
 
     def _consistency_check(self, flow_tgt2src, flow_src2tgt):
+        """Forward-backward 一致性检验：|flow_tgt2src + warped(flow_src2tgt)| < threshold。"""
         # 将 flow_src2tgt 沿 flow_tgt2src 方向 warp 到 target 坐标系
         # 一致性条件：flow_tgt2src + warped(flow_src2tgt) ≈ 0
         flow_src2tgt_warped = _flow_warp(flow_src2tgt, flow_tgt2src)
@@ -142,6 +148,7 @@ class RAFTFlow:
         return (diff_norm < self.consistency_thresh).float()
 
     def _postprocess_flow(self, flow_tensor, padder, scale, orig_size):
+        """Unpad + 缩放还原 + numpy 转换，返回 [H, W, 2] numpy 光流。"""
         flow_np = padder.unpad(flow_tensor)[0].permute(1, 2, 0).cpu().numpy()
         flow_np = np.nan_to_num(flow_np, nan=0.0, posinf=0.0, neginf=0.0)
 
@@ -153,6 +160,7 @@ class RAFTFlow:
         return flow_np
 
     def _postprocess_mask(self, mask_tensor, padder, scale, orig_size):
+        """Unpad + 缩放还原 + numpy 转换，返回 [H, W] 一致性 mask。"""
         if mask_tensor is None:
             return None
 
@@ -167,6 +175,7 @@ class RAFTFlow:
         return mask_np
 
     def compute(self, img_source, img_target, bidirectional=True):
+        """主入口：调整尺寸 → 推理 → 一致性检验 → 后处理，返回 (flow, valid_mask)。"""
         if img_target.shape[:2] != img_source.shape[:2]:
             h, w = img_target.shape[:2]
             print(f"[RAFTFlow] Warning: Input size mismatch. Resizing source {img_source.shape[:2]} to target {img_target.shape[:2]}")

@@ -1,3 +1,5 @@
+"""稠密关键点损失：用回归矩阵从 SMPL-X 顶点算出 138 个稠密关键点，与检测值做重投影距离。"""
+
 from __future__ import annotations
 
 import pickle
@@ -8,13 +10,16 @@ import torch
 
 
 class DenseKPLoss:
+    """稠密关键点重投影损失：缓存回归矩阵，支持 id_mask 选择参与的关键点子集。"""
     def __init__(self, data_dir: Path, weight: float = 0.01, id_mask: np.ndarray | None = None):
+        """记录回归矩阵数据目录、损失权重和可选的关键点 id 掩码。"""
         self._data_dir = data_dir
         self.weight = weight
         self._regressor: torch.Tensor | None = None
         self.id_mask = id_mask  # [138] bool, or None (use all 138 points)
 
     def _get_regressor(self, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
+        """懒加载并缓存 138×10475 的稠密关键点回归矩阵（下采样矩阵 @ smplx2smpl）。"""
         if self._regressor is not None:
             return self._regressor.to(device=device, dtype=dtype)
 
@@ -39,6 +44,7 @@ class DenseKPLoss:
         W: int,
         H: int,
     ) -> torch.Tensor:
+        """逐帧将稠密关键点投影到 ERP，与检测关键点按 valid/id_mask 过滤后求重投影距离均值。"""
         if densekp_list is None:
             return verts_world.new_zeros(())
 

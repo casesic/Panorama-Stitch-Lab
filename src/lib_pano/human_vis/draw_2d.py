@@ -1,3 +1,5 @@
+"""2D 绘制工具：在图像上画关键点圆点和按连接对绘制骨架线，支持置信度阈值过滤。"""
+
 from __future__ import annotations
 
 from typing import Optional, Sequence, Tuple
@@ -14,6 +16,7 @@ def draw_pts(
     r: int = 5,
     color: Tuple[int, int, int] = (0, 220, 0),
 ) -> np.ndarray:
+    """在图像上将 2D 关键点画为实心圆，低于置信度阈值或越界的点跳过。"""
     h, w = img.shape[:2]
     for i, (u, v) in enumerate(pts2d):
         if conf is not None and float(conf[i]) < thresh:
@@ -33,6 +36,7 @@ def draw_skel(
     color: Tuple[int, int, int] = (0, 180, 0),
     thick: int = 2,
 ) -> np.ndarray:
+    """按关节连接对在图像上绘制骨架线段，端点低于置信度阈值或越界则跳过。"""
     h, w = img.shape[:2]
     for i, j in pairs:
         if i >= len(pts2d) or j >= len(pts2d):

@@ -1,9 +1,12 @@
+"""基于网格的光流变形场：将 ROI 光流采样到稀疏网格，通过传播和平滑生成全图 warp map。"""
+
 import cv2
 import numpy as np
 from typing import Optional, Tuple
 
 
 class MeshWarpField:
+    """将 ROI 光流在网格上采样、填充无效格点、平滑后上采样为全图 warp。"""
     def __init__(
         self,
         full_h: int,
@@ -41,6 +44,7 @@ class MeshWarpField:
         valid_mask: Optional[np.ndarray],
         weight_map: Optional[np.ndarray] = None,
     ) -> Tuple[np.ndarray, np.ndarray]:
+        """将 ROI 内的光流按网格单元采样，支持加权平均和 valid_ratio 过滤。"""
         x_min, y_min, x_max, y_max = roi_bbox
         grid_flow = np.zeros((self.grid_h, self.grid_w, 2), dtype=np.float32)
         grid_mask = np.zeros((self.grid_h, self.grid_w), dtype=np.bool_)
@@ -115,6 +119,7 @@ class MeshWarpField:
         return grid_flow, grid_mask
 
     def _build_base_flow(self, grid_flow: np.ndarray, grid_mask: np.ndarray) -> np.ndarray:
+        """填充网格中的无效格点：水平外推 + 垂直线性插值。"""
         base_flow = grid_flow.copy()
         has_data_rows = np.any(grid_mask, axis=1)
         for gy in range(self.grid_h):
@@ -149,6 +154,7 @@ class MeshWarpField:
         return base_flow
 
     def _build_weight_mask(self, grid_mask: np.ndarray) -> np.ndarray:
+        """生成网格权重 mask：有效格点附近权重为 1，距离衰减，支持 freeze 策略。"""
         mask_uint8 = grid_mask.astype(np.uint8)
         inv_mask = 1 - mask_uint8
 
@@ -179,6 +185,7 @@ class MeshWarpField:
         valid_mask: Optional[np.ndarray] = None,
         weight_map: Optional[np.ndarray] = None,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """完整流程：网格采样 → 填充 → 加权 → 上采样，返回 (map_x, map_y, full_flow)。"""
         grid_flow, grid_mask = self._sample_grid_flow(flow_roi, roi_bbox, valid_mask, weight_map)
         base_flow = self._build_base_flow(grid_flow, grid_mask)
         weight_mask = self._build_weight_mask(grid_mask)
