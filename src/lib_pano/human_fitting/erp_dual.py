@@ -14,7 +14,6 @@ from .constraints import (
     DenseKPLoss,
     compute_keypoint_2d_loss_with_proj,
     compute_shape_regularization_losses,
-    compute_silhouette_loss,
     suffix_non_shape_losses,
 )
 from .loss_config import DualCamLossWeights, build_base_weights, build_optimization_stages
@@ -33,7 +32,6 @@ class DualCamERPFitter(BaseSMPLXFitter):
         self,
         gender: str = "neutral",
         R_cam4: torch.Tensor | None = None,
-        use_silhouette_loss: bool = True,
         densekp_filter_path: str | None = None,
         sam3d_dense_num_points: int = 1024,
     ):
@@ -49,7 +47,6 @@ class DualCamERPFitter(BaseSMPLXFitter):
         self.max_iter_closure = 60
         self.stop_ratio = 1e-3
         self.hand_overall_weight = 2.0
-        self.use_silhouette_loss = use_silhouette_loss
         self.sam3d_dense_num_points = int(sam3d_dense_num_points)
         self.loss_weights = DualCamLossWeights()
         project_root = Path(__file__).resolve().parents[3]
@@ -156,10 +153,6 @@ class DualCamERPFitter(BaseSMPLXFitter):
         image_size,
         smplx_init_c2=None,
         smplx_init_c4=None,
-        boundary_pts_list_c2: list[torch.Tensor | None] | None = None,
-        boundary_pts_list_c4: list[torch.Tensor | None] | None = None,
-        bbox_list_c2: list[list[int] | None] | None = None,
-        bbox_list_c4: list[list[int] | None] | None = None,
         densekp_list_c2: list | None = None,
         densekp_list_c4: list | None = None,
         sam3d_dense_list_c2: list | None = None,
@@ -195,7 +188,6 @@ class DualCamERPFitter(BaseSMPLXFitter):
 
         base_weights = build_base_weights(
             n_frame=n_frame,
-            use_silhouette_loss=self.use_silhouette_loss,
             weights=self.loss_weights,
         )
         optimization_stages = build_optimization_stages(
@@ -221,8 +213,6 @@ class DualCamERPFitter(BaseSMPLXFitter):
         )
 
         def make_loss_fn(
-            compute_sil_c2: bool,
-            compute_sil_c4: bool,
             compute_densekp_c2: bool,
             compute_densekp_c4: bool,
             compute_sam3d_dense_c2: bool,
@@ -272,36 +262,6 @@ class DualCamERPFitter(BaseSMPLXFitter):
                 conf_thresh=self.conf_thresh,
             )
 
-            if compute_sil_c2:
-                sil_losses_c2 = []
-                for i in range(n_frame):
-                    bpts = boundary_pts_list_c2[i] if boundary_pts_list_c2 else None
-                    bbox = bbox_list_c2[i] if bbox_list_c2 else None
-                    if bpts is not None and bbox is not None:
-                        sil_losses_c2.append(
-                            compute_silhouette_loss(
-                                verts_c2[i], bpts, bbox, self._project_cam2, erp_w, erp_h
-                            )
-                        )
-                loss_sil_c2 = torch.stack(sil_losses_c2).mean() if sil_losses_c2 else verts_c2.new_zeros(())
-            else:
-                loss_sil_c2 = verts_c2.new_zeros(())
-
-            if compute_sil_c4:
-                sil_losses_c4 = []
-                for i in range(n_frame):
-                    bpts = boundary_pts_list_c4[i] if boundary_pts_list_c4 else None
-                    bbox = bbox_list_c4[i] if bbox_list_c4 else None
-                    if bpts is not None and bbox is not None:
-                        sil_losses_c4.append(
-                            compute_silhouette_loss(
-                                verts_c4[i], bpts, bbox, self._project_cam2, erp_w, erp_h
-                            )
-                        )
-                loss_sil_c4 = torch.stack(sil_losses_c4).mean() if sil_losses_c4 else verts_c4.new_zeros(())
-            else:
-                loss_sil_c4 = verts_c4.new_zeros(())
-
             proxy_c2 = SimpleNamespace(
                 transl=smpl_c2.transl,
                 body_pose=shared_body_pose,
@@ -350,8 +310,6 @@ class DualCamERPFitter(BaseSMPLXFitter):
             losses_all = {
                 "body_2d_det_c2": losses_c2.get("body_2d_det", joints_c2.new_zeros(())),
                 "body_2d_det_c4": losses_c4.get("body_2d_det", joints_c4.new_zeros(())),
-                "loss_sil_c2": loss_sil_c2,
-                "loss_sil_c4": loss_sil_c4,
                 "loss_densekp_c2": self.densekp_loss.compute(verts_c2, densekp_list_c2, self._project_cam2, erp_w, erp_h) if compute_densekp_c2 else verts_c2.new_zeros(()),
                 "loss_densekp_c4": self.densekp_loss.compute(verts_c4, densekp_list_c4, self._project_cam2, erp_w, erp_h) if compute_densekp_c4 else verts_c4.new_zeros(()),
                 "loss_sam3d_dense_c2": loss_sam3d_dense_c2,
@@ -376,8 +334,6 @@ class DualCamERPFitter(BaseSMPLXFitter):
 
         for stage_name, get_params, max_iter, stage_stop, weight_mult in optimization_stages:
             stage_weights = {k: base_weights[k] * weight_mult.get(k, 1.0) for k in base_weights}
-            compute_sil_c2 = stage_weights.get("loss_sil_c2", 0.0) > 0
-            compute_sil_c4 = stage_weights.get("loss_sil_c4", 0.0) > 0
             compute_densekp_c2 = stage_weights.get("loss_densekp_c2", 0.0) > 0
             compute_densekp_c4 = stage_weights.get("loss_densekp_c4", 0.0) > 0
             compute_sam3d_dense_c2 = (
@@ -402,8 +358,6 @@ class DualCamERPFitter(BaseSMPLXFitter):
                     p.grad = None
                 optimizer.zero_grad()
                 losses_all = make_loss_fn(
-                    compute_sil_c2=compute_sil_c2,
-                    compute_sil_c4=compute_sil_c4,
                     compute_densekp_c2=compute_densekp_c2,
                     compute_densekp_c4=compute_densekp_c4,
                     compute_sam3d_dense_c2=compute_sam3d_dense_c2,

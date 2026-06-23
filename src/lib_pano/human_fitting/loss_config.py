@@ -9,7 +9,6 @@ from dataclasses import dataclass
 class DualCamLossWeights:
     """双相机 SMPL-X 拟合各损失项的权重配置。"""
     body_2d: float = 0.1
-    silhouette: float = 0.3
     pose_prior: float = 0.05
     hand_prior: float = 0.02
     pose_anchor: float = 1.0
@@ -25,16 +24,12 @@ class DualCamLossWeights:
 
 def build_base_weights(
     n_frame: int,
-    use_silhouette_loss: bool,
     weights: DualCamLossWeights,
 ) -> dict:
-    """按帧数缩放各权重，生成 c2/c4 双相机各损失项的基础权重字典（轮廓损失可关闭）。"""
-    sil_weight = weights.silhouette if use_silhouette_loss else 0.0
+    """按帧数缩放各权重，生成 c2/c4 双相机各损失项的基础权重字典。"""
     return {
         "body_2d_det_c2": n_frame * weights.body_2d,
         "body_2d_det_c4": n_frame * weights.body_2d,
-        "loss_sil_c2": n_frame * sil_weight,
-        "loss_sil_c4": n_frame * sil_weight,
         "loss_pose_prior_c2": n_frame * weights.pose_prior,
         "loss_pose_prior_c4": n_frame * weights.pose_prior,
         "loss_hand_prior_c2": n_frame * weights.hand_prior,
@@ -65,7 +60,7 @@ def build_optimization_stages(
 ) -> list:
     """定义两阶段 LBFGS 优化：
     Stage 1 仅优化平移/朝向；
-    Stage 2 加入 body pose、shape、DenseKP、silhouette 与 SAM dense surface 辅助约束。
+    Stage 2 加入 body pose、shape、DenseKP 与 SAM dense surface 辅助约束。
     """
     return [
         (
@@ -76,8 +71,6 @@ def build_optimization_stages(
             {
                 "body_2d_det_c2": 1.0,
                 "body_2d_det_c4": 1.0,
-                "loss_sil_c2": 0.0,
-                "loss_sil_c4": 0.0,
                 "loss_pose_prior_c2": 0.0,
                 "loss_pose_prior_c4": 0.0,
                 "loss_hand_prior_c2": 0.0,
@@ -113,8 +106,6 @@ def build_optimization_stages(
             {
                 "body_2d_det_c2": 1.0,
                 "body_2d_det_c4": 1.0,
-                "loss_sil_c2": 1.0,
-                "loss_sil_c4": 1.0,
                 "loss_pose_prior_c2": 1.0,
                 "loss_pose_prior_c4": 1.0,
                 "loss_hand_prior_c2": 0.0,

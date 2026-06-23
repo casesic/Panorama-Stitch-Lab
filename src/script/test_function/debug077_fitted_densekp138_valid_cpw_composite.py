@@ -728,7 +728,9 @@ conda activate stitchenv
 # 双向（默认 fitting_dir / output）
 python src/script/test_function/debug077_fitted_densekp138_valid_cpw_composite.py \
   --segment 513_518 \
-  --directions both
+  --directions both \
+  --fitting_dir data_process/Output/20260311_riding/fitting/dual_cam_sam3d_dense \
+  --output data_process/Vis/debug077_fitted_densekp138_valid_cpw/sam_3d_body_test
 
 # 仅 cam4 -> cam2
 python src/script/test_function/debug077_fitted_densekp138_valid_cpw_composite.py \

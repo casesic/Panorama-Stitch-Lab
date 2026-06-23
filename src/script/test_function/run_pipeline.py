@@ -285,41 +285,12 @@ def build_args_029(dataset_name: str, dataset_config: dict[str, Any]) -> list[st
         _require_field(dataset_name, dataset_config, "equirect_crop_rotate_dir"),
     ]
     _append_optional_arg(cmd, dataset_config, "rtm_invalid_json")
-    _append_optional_arg(cmd, dataset_config, "seg_invalid_json")
     _append_optional_arg(cmd, dataset_config, "hmr_invalid_json")
     if "rtm_invalid_json" not in dataset_config:
         _append_optional_arg(cmd, dataset_config, "invalid_detections", "rtm_invalid_json")
 
-    cmd.extend(["--seg_dir", _select_fitting_seg_dir(dataset_name, dataset_config)])
-
-    if not bool(_get_field_with_default(dataset_config, "use_silhouette_loss", True)):
-        cmd.append("--no_silhouette_loss")
-
     cmd.extend(["--max_segment_len", str(_get_field_with_default(dataset_config, "max_segment_len", 10))])
     return cmd
-
-
-def _select_fitting_seg_dir(dataset_name: str, dataset_config: dict[str, Any]) -> str:
-    fitting_seg_dir = dataset_config.get("fitting_seg_dir")
-    if isinstance(fitting_seg_dir, str) and fitting_seg_dir.strip():
-        return fitting_seg_dir
-
-    seg_dir = _require_field(dataset_name, dataset_config, "seg_dir")
-    if bool(_get_field_with_default(dataset_config, "use_mask_fusion_for_fitting", False)):
-        mask_fusion_output_dir = dataset_config.get("mask_fusion_output_dir")
-        if isinstance(mask_fusion_output_dir, str) and mask_fusion_output_dir.strip():
-            return mask_fusion_output_dir
-        return str(Path(seg_dir) / "equirect_crop_rotate_sam3_fused_translation")
-
-    fitting_seg_subdir = dataset_config.get("fitting_seg_subdir")
-    if isinstance(fitting_seg_subdir, str) and fitting_seg_subdir.strip():
-        return str(Path(seg_dir) / fitting_seg_subdir)
-
-    legacy_fitting_seg_subdir = dataset_config.get("legacy_fitting_seg_subdir")
-    if isinstance(legacy_fitting_seg_subdir, str) and legacy_fitting_seg_subdir.strip():
-        return str(Path(seg_dir) / legacy_fitting_seg_subdir)
-
-    return str(Path(seg_dir) / "equirect_crop_rotate_sam3")
 
 
 def build_args_030(dataset_name: str, dataset_config: dict[str, Any]) -> list[str]:
