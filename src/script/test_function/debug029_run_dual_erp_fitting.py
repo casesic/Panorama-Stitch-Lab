@@ -159,17 +159,6 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Optional JSON path for DenseKP ID filter (keep_ids / drop_ids).",
     )
-    parser.add_argument(
-        "--mask_fill_stage3",
-        action="store_true",
-        help="Enable Stage 3 mask fill refine (requires --image_root).",
-    )
-    parser.add_argument(
-        "--image_root",
-        type=str,
-        default=None,
-        help="Equirect image root (required when --mask_fill_stage3 is set).",
-    )
     return parser.parse_args()
 
 
@@ -273,10 +262,6 @@ def main() -> None:
         R_cam4=R_CAM4,
         use_silhouette_loss=args.use_silhouette_loss,
         densekp_filter_path=args.densekp_filter,
-        enable_mask_fill_stage3=args.mask_fill_stage3,
-        image_root=args.image_root,
-        seg_dir=args.seg_dir,
-        bbox_dir=args.bbox_dir,
     )
     sil_device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -446,8 +431,6 @@ def main() -> None:
                 densekp_list_c4=densekp_list_c4,
                 sam3d_dense_list_c2=sam3d_dense_list_c2,
                 sam3d_dense_list_c4=sam3d_dense_list_c4,
-                output_dir=output_dir / subsegment_key if args.mask_fill_stage3 else None,
-                frame_indices=sub_frame_idxs,
             )
             save_segment_result(
                 result_c2=result_c2,
@@ -513,7 +496,6 @@ python src/script/test_function/debug029_run_dual_erp_fitting.py \
   --seg_invalid_json data_process/Output/20260320_riding_dataset2/seg/invalid.json \
   --hmr_invalid_json data_process/Output/20260320_riding_dataset2/hmr_cache/invalid.json \
   --bbox_dir data_process/Output/20260320_riding_dataset2/image/equirect_crop_rotate \
-  --image_root data_process/Output/20260320_riding_dataset2/image/equirect_rotate \
   --densekp_dir data_process/Output/20260320_riding_dataset2/camerahmr/densekp_npz \
   --max_segment_len 10 \
   --segments 216_226,519_531,695_704,1231_1240,1241_1250,1251_1263,1555_1561,1769_1771,2850_2853,3110_3118,3580_3592,3819_3831 \
@@ -530,7 +512,6 @@ python src/script/test_function/debug029_run_dual_erp_fitting.py \
   --seg_invalid_json data_process/Output/20260311_riding/seg/invalid.json \
   --hmr_invalid_json data_process/Output/20260311_riding/hmr_cache/invalid.json \
   --bbox_dir data_process/Output/20260311_riding/image/equirect_crop_rotate \
-  --image_root data_process/Output/20260311_riding/image/equirect_rotate \
   --densekp_dir data_process/Output/20260311_riding/camerahmr/densekp_npz \
   --sam3d_dense_dir data_process/Output/20260311_riding/sam3dbody/smplx_dense \
   --max_segment_len 10 \

@@ -1,4 +1,4 @@
-"""双相机 ERP SMPL-X 拟合器：用 cam2/cam4 检测共同约束一套体型/姿态，分阶段优化并可选 mask 填充精修。"""
+"""双相机 ERP SMPL-X 拟合器：用 cam2/cam4 检测共同约束一套体型/姿态，分两阶段优化。"""
 
 from __future__ import annotations
 
@@ -6,18 +6,15 @@ import math
 from pathlib import Path
 from types import SimpleNamespace
 
-import numpy as np
 import torch
 from torch import nn
 
 from .base import BaseSMPLXFitter
 from .constraints import (
     DenseKPLoss,
-    MaskFillLoss,
     compute_keypoint_2d_loss_with_proj,
     compute_shape_regularization_losses,
     compute_silhouette_loss,
-    prepare_mask_fill_samples_for_sequence,
     suffix_non_shape_losses,
 )
 from .loss_config import DualCamLossWeights, build_base_weights, build_optimization_stages
@@ -31,20 +28,16 @@ from .constraints.sam3d_dense import (
 
 
 class DualCamERPFitter(BaseSMPLXFitter):
-    """双相机 ERP 拟合器：cam2/cam4 共享 beta 与 body_pose，覆盖优化超参并支持第三阶段 mask 填充。"""
+    """两阶段双相机 ERP 优化器：cam2/cam4 共享 beta 与 body_pose，覆盖优化超参。"""
     def __init__(
         self,
         gender: str = "neutral",
         R_cam4: torch.Tensor | None = None,
         use_silhouette_loss: bool = True,
         densekp_filter_path: str | None = None,
-        enable_mask_fill_stage3: bool = False,
-        image_root: str | None = None,
-        seg_dir: str | None = None,
-        bbox_dir: str | None = None,
         sam3d_dense_num_points: int = 1024,
     ):
-        """配置双相机拟合超参、损失权重、稠密关键点过滤与 cam4 外参，校验 mask 填充阶段所需路径；可选配置 SAM dense surface 固定采样点数。"""
+        """配置双相机拟合超参、损失权重、稠密关键点过滤与 cam4 外参；可选配置 SAM dense surface 固定采样点数。"""
         super().__init__(gender=gender)
         self.conf_thresh = 0.57
         self.fps = 30.0
@@ -70,17 +63,6 @@ class DualCamERPFitter(BaseSMPLXFitter):
         if R_cam4 is None:
             raise ValueError("R_cam4 must be provided for DualCamERPFitter")
         self.R_cam4 = R_cam4.clone().detach().float()
-
-        self.enable_mask_fill_stage3 = enable_mask_fill_stage3
-        self.image_root = Path(image_root) if image_root else None
-        self.seg_dir = Path(seg_dir) if seg_dir else None
-        self.bbox_dir = Path(bbox_dir) if bbox_dir else None
-
-        if self.enable_mask_fill_stage3:
-            if self.image_root is None or self.seg_dir is None or self.bbox_dir is None:
-                raise ValueError(
-                    "mask_fill_stage3 requires --image_root, --seg_dir, --bbox_dir"
-                )
 
     def _init_transl_from_bbox(
         self,
@@ -182,10 +164,8 @@ class DualCamERPFitter(BaseSMPLXFitter):
         densekp_list_c4: list | None = None,
         sam3d_dense_list_c2: list | None = None,
         sam3d_dense_list_c4: list | None = None,
-        output_dir: str | None = None,
-        frame_indices: list[int] | None = None,
     ):
-        """双相机联合拟合主流程：初始化→分阶段 LBFGS 优化（共享 beta/body_pose）→可选 mask 填充精修，返回两相机参数与共享 beta。
+        """两阶段双相机联合拟合主流程：初始化→Stage 1（orient/transl）→Stage 2（加入共享 body_pose/beta 与各约束）的 LBFGS 优化，返回两相机参数与共享 beta。
 
         sam3d_dense_list_c2/c4：每帧一个 SAM3DDenseResult 或 None，其 points_2d 已在 equirect_rotate
         全图坐标，cam2/cam4 均用 project_cam2 投影，仅在现有 Stage 2 启用。
@@ -196,10 +176,6 @@ class DualCamERPFitter(BaseSMPLXFitter):
         assert len(cam2_dets) == len(cam4_dets)
 
         n_frame = len(cam2_dets)
-        if frame_indices is None:
-            frame_indices = list(range(n_frame))
-        else:
-            assert len(frame_indices) == n_frame
         erp_w, erp_h = image_size
         model = self._get_model()
         kp_tensor_c2 = self._stack_keypoints(cam2_dets)
@@ -454,301 +430,6 @@ class DualCamERPFitter(BaseSMPLXFitter):
                     if stage_weights.get(k, 0.0) > 0
                 )
                 print(f"[{stage_name}] iter={it+1:03d}/{max_iter} total={latest_loss:.4f}  |  {detail_str}")
-
-        # ==================================================================
-        # Stage 3 (optional): mask fill refine
-        # ==================================================================
-        if self.enable_mask_fill_stage3:
-            import json
-
-            from lib_pano.pipeline.bbox_io import load_bbox_dict
-
-            print("\n=== Stage 3: mask fill refine ===")
-            # Get current SMPL-X verts for all frames
-            with torch.no_grad():
-                verts_c2_s3, _, _ = forward_smplx_tensor_batch(
-                    smplx_model=model,
-                    global_orient=smpl_c2.orient,
-                    body_pose=shared_body_pose.unsqueeze(0).expand(n_frame, -1)
-                    if shared_body_pose.dim() == 1 else shared_body_pose,
-                    left_hand_pose=smpl_c2.left_hand_pose,
-                    right_hand_pose=smpl_c2.right_hand_pose,
-                    betas=shared_beta.unsqueeze(0).expand(n_frame, -1),
-                    transl=smpl_c2.transl,
-                    scale=smpl_c2.scale.expand(n_frame),
-                )
-                verts_c4_s3, _, _ = forward_smplx_tensor_batch(
-                    smplx_model=model,
-                    global_orient=smpl_c4.orient,
-                    body_pose=shared_body_pose.unsqueeze(0).expand(n_frame, -1)
-                    if shared_body_pose.dim() == 1 else shared_body_pose,
-                    left_hand_pose=smpl_c4.left_hand_pose,
-                    right_hand_pose=smpl_c4.right_hand_pose,
-                    betas=shared_beta.unsqueeze(0).expand(n_frame, -1),
-                    transl=smpl_c4.transl,
-                    scale=smpl_c4.scale.expand(n_frame),
-                )
-
-            verts_c2_np = [verts_c2_s3[i].cpu().numpy() for i in range(n_frame)]
-            verts_c4_np = [verts_c4_s3[i].cpu().numpy() for i in range(n_frame)]
-
-            bbox_c2 = load_bbox_dict(self.bbox_dir / "cam2_bboxes.json")
-            bbox_c4 = load_bbox_dict(self.bbox_dir / "cam4_bboxes.json")
-
-            rng_s3 = np.random.RandomState(0)
-
-            print("  generating underfill samples for cam2 ...")
-            samples_c2, stats_c2 = prepare_mask_fill_samples_for_sequence(
-                frame_indices=frame_indices,
-                verts_list=verts_c2_np,
-                image_root=self.image_root,
-                seg_dir=self.seg_dir,
-                bbox_dict=bbox_c2,
-                faces=model.faces.numpy() if hasattr(model.faces, "numpy") else model.faces,
-                erp_w=erp_w,
-                erp_h=erp_h,
-                cam="cam2",
-                rng=rng_s3,
-            )
-            print("  generating underfill samples for cam4 ...")
-            samples_c4, stats_c4 = prepare_mask_fill_samples_for_sequence(
-                frame_indices=frame_indices,
-                verts_list=verts_c4_np,
-                image_root=self.image_root,
-                seg_dir=self.seg_dir,
-                bbox_dict=bbox_c4,
-                faces=model.faces.numpy() if hasattr(model.faces, "numpy") else model.faces,
-                erp_w=erp_w,
-                erp_h=erp_h,
-                cam="cam4",
-                rng=rng_s3,
-            )
-
-            # Cam weights based on mask area
-            total_mask_c2 = sum(s.get("mask_area", 0) for s in stats_c2 if "mask_area" in s)
-            total_mask_c4 = sum(s.get("mask_area", 0) for s in stats_c4 if "mask_area" in s)
-            sum_mask = total_mask_c2 + total_mask_c4
-            w_cam_c2 = np.clip(total_mask_c2 / max(sum_mask, 1), 0.3, 0.7) if sum_mask > 0 else 0.5
-            w_cam_c4 = 1.0 - w_cam_c2
-            print(f"  mask area: c2={total_mask_c2}, c4={total_mask_c4} -> w_c2={w_cam_c2:.3f}, w_c4={w_cam_c4:.3f}")
-
-            # Save stage3 summary early (before optimization, so we have a record)
-            summary = {
-                "cam2": {str(frame_indices[i]): s for i, s in enumerate(stats_c2)},
-                "cam4": {str(frame_indices[i]): s for i, s in enumerate(stats_c4)},
-                "cam_weights": {"cam2": float(w_cam_c2), "cam4": float(w_cam_c4)},
-            }
-
-            mask_fill_loss_fn = MaskFillLoss(erp_w, erp_h, robust_scale=100.0)
-
-            # Stage 3: optimize shared_beta + shared_body_pose, strong anchors
-            stage3_params = [shared_beta, shared_body_pose]
-            stage3_optimizer = torch.optim.LBFGS(
-                stage3_params,
-                line_search_fn="strong_wolfe",
-                lr=self.lr_lbfgs * 0.5,
-                max_iter=self.max_iter_closure,
-            )
-
-            s3_mask_fill_weight = 80.0
-            s3_keypoint_weight = n_frame * self.loss_weights.body_2d * 0.15
-            s3_densekp_weight = n_frame * self.loss_weights.densekp * 0.15
-            s3_shape_anchor_weight = n_frame * self.loss_weights.shape_anchor * 2.0
-            s3_shape_norm_weight = n_frame * self.loss_weights.shape_norm * 0.5
-            s3_shape_prior_weight = n_frame * self.loss_weights.shape_prior * 0.5
-            s3_shape_bound_weight = n_frame * self.loss_weights.shape_bound * 1.0
-            s3_pose_anchor_weight = n_frame * self.loss_weights.pose_anchor * 20.0
-
-            s3_max_iter = 30
-
-            beta_before_s3 = shared_beta.detach().clone()
-            pose_before_s3 = shared_body_pose.detach().clone()
-            print(f"  beta before S3: {beta_before_s3.cpu().numpy().tolist()}")
-
-            def stage3_closure():
-                for p in stage3_params:
-                    p.grad = None
-                stage3_optimizer.zero_grad()
-
-                verts_c2_s3l, joints_c2_s3l, _ = forward_smplx_tensor_batch(
-                    smplx_model=model,
-                    global_orient=smpl_c2.orient.detach(),
-                    body_pose=shared_body_pose.unsqueeze(0).expand(n_frame, -1)
-                    if shared_body_pose.dim() == 1 else shared_body_pose,
-                    left_hand_pose=smpl_c2.left_hand_pose.detach(),
-                    right_hand_pose=smpl_c2.right_hand_pose.detach(),
-                    betas=shared_beta.unsqueeze(0).expand(n_frame, -1),
-                    transl=smpl_c2.transl.detach(),
-                    scale=smpl_c2.scale.expand(n_frame),
-                )
-                verts_c4_s3l, joints_c4_s3l, _ = forward_smplx_tensor_batch(
-                    smplx_model=model,
-                    global_orient=smpl_c4.orient.detach(),
-                    body_pose=shared_body_pose.unsqueeze(0).expand(n_frame, -1)
-                    if shared_body_pose.dim() == 1 else shared_body_pose,
-                    left_hand_pose=smpl_c4.left_hand_pose.detach(),
-                    right_hand_pose=smpl_c4.right_hand_pose.detach(),
-                    betas=shared_beta.unsqueeze(0).expand(n_frame, -1),
-                    transl=smpl_c4.transl.detach(),
-                    scale=smpl_c4.scale.expand(n_frame),
-                )
-
-                # Keypoint losses
-                kp_c2, _ = compute_keypoint_2d_loss_with_proj(
-                    joints_all=joints_c2_s3l, dets_tensor=kp_tensor_c2,
-                    keypoints_format=key_fmt_c2, project_fn=self._project_cam2,
-                    W=erp_w, H=erp_h, conf_thresh=self.conf_thresh,
-                )
-                kp_c4, _ = compute_keypoint_2d_loss_with_proj(
-                    joints_all=joints_c4_s3l, dets_tensor=kp_tensor_c4,
-                    keypoints_format=key_fmt_c4, project_fn=self._project_cam2,
-                    W=erp_w, H=erp_h, conf_thresh=self.conf_thresh,
-                )
-
-                # DenseKP losses
-                dkp_c2 = self.densekp_loss.compute(verts_c2_s3l, densekp_list_c2, self._project_cam2, erp_w, erp_h)
-                dkp_c4 = self.densekp_loss.compute(verts_c4_s3l, densekp_list_c4, self._project_cam2, erp_w, erp_h)
-
-                # Mask fill losses
-                mf_c2 = mask_fill_loss_fn.compute(verts_c2_s3l, samples_c2, self._project_cam2)
-                mf_c4 = mask_fill_loss_fn.compute(verts_c4_s3l, samples_c4, self._project_cam2)
-
-                # Shape regularization
-                shape_prior = torch.mean(shared_beta ** 2)
-                shape_bound = torch.mean(
-                    torch.relu(torch.abs(shared_beta) - self.current_shape_soft_bound) ** 2
-                )
-                shape_anchor_loss = torch.mean((shared_beta - shape_anchor) ** 2)
-                shape_norm = torch.relu(torch.norm(shared_beta) - self.shape_norm_bound) ** 2
-
-                # Pose anchor
-                pose_anch = torch.mean((shared_body_pose - pose_anchor) ** 2)
-
-                zero = shared_beta.new_zeros(())
-                loss = zero
-                raw_losses = {}
-                weighted_losses = {}
-
-                def _add(k, v, w):
-                    nonlocal loss
-                    raw_losses[k] = float(v.detach().cpu().item())
-                    loss = loss + v * w
-                    weighted_losses[k] = float(v.detach().cpu().item()) * w
-
-                _add("kp_c2", kp_c2.get("body_2d_det", zero), s3_keypoint_weight)
-                _add("kp_c4", kp_c4.get("body_2d_det", zero), s3_keypoint_weight)
-                _add("dkp_c2", dkp_c2, s3_densekp_weight)
-                _add("dkp_c4", dkp_c4, s3_densekp_weight)
-                _add("mf_c2", mf_c2, s3_mask_fill_weight * w_cam_c2)
-                _add("mf_c4", mf_c4, s3_mask_fill_weight * w_cam_c4)
-                _add("shape_prior", shape_prior, s3_shape_prior_weight)
-                _add("shape_bound", shape_bound, s3_shape_bound_weight)
-                _add("shape_anchor", shape_anchor_loss, s3_shape_anchor_weight)
-                _add("shape_norm", shape_norm, s3_shape_norm_weight)
-                _add("pose_anchor", pose_anch, s3_pose_anchor_weight)
-
-                nonlocal s3_latest_loss, s3_latest_detail
-                s3_latest_loss = float(loss.detach().cpu().item())
-                s3_latest_detail = {"raw": raw_losses, "weighted": weighted_losses}
-                loss.backward()
-                return loss
-
-            s3_latest_loss = 0.0
-            s3_latest_detail = {}
-            print("  opt (stage3_mask_fill)...")
-            loss_prev = 1e9
-            for it in range(s3_max_iter):
-                stage3_optimizer.step(stage3_closure)
-                shared_beta.data.clamp_(-self.shape_hard_clip, self.shape_hard_clip)
-                if it >= 10 and loss_prev - s3_latest_loss < loss_prev * self.stop_ratio:
-                    break
-                loss_prev = s3_latest_loss
-                raw = s3_latest_detail.get("raw", {})
-                wgt = s3_latest_detail.get("weighted", {})
-                detail_parts = []
-                for k in sorted(wgt.keys()):
-                    rv = raw.get(k, 0.0)
-                    wv = wgt.get(k, 0.0)
-                    detail_parts.append(f"{k}={rv:.4f}/{wv:.4f}")
-                detail_str = "  ".join(detail_parts)
-                print(f"[stage3_mask_fill] iter={it+1:03d}/{s3_max_iter} total={s3_latest_loss:.4f}  |  {detail_str}")
-
-            beta_after_s3 = shared_beta.detach().clone()
-            delta_beta = beta_after_s3 - beta_before_s3
-            print(f"  beta after S3: {beta_after_s3.cpu().numpy().tolist()}")
-            print(f"  delta beta:   {delta_beta.cpu().numpy().tolist()}")
-            print(f"  max|delta_beta|={delta_beta.abs().max().item():.6f}  |delta_beta|_2={delta_beta.norm().item():.6f}")
-
-            delta_pose = shared_body_pose.detach() - pose_before_s3
-            print(f"  max|delta_pose|={delta_pose.abs().max().item():.6f}  |delta_pose|_2={delta_pose.norm().item():.6f}")
-
-            # Save post-optimization summary
-            with torch.no_grad():
-                verts_c2_post, _, _ = forward_smplx_tensor_batch(
-                    smplx_model=model,
-                    global_orient=smpl_c2.orient,
-                    body_pose=shared_body_pose.unsqueeze(0).expand(n_frame, -1)
-                    if shared_body_pose.dim() == 1 else shared_body_pose,
-                    left_hand_pose=smpl_c2.left_hand_pose,
-                    right_hand_pose=smpl_c2.right_hand_pose,
-                    betas=shared_beta.unsqueeze(0).expand(n_frame, -1),
-                    transl=smpl_c2.transl,
-                    scale=smpl_c2.scale.expand(n_frame),
-                )
-                verts_c4_post, _, _ = forward_smplx_tensor_batch(
-                    smplx_model=model,
-                    global_orient=smpl_c4.orient,
-                    body_pose=shared_body_pose.unsqueeze(0).expand(n_frame, -1)
-                    if shared_body_pose.dim() == 1 else shared_body_pose,
-                    left_hand_pose=smpl_c4.left_hand_pose,
-                    right_hand_pose=smpl_c4.right_hand_pose,
-                    betas=shared_beta.unsqueeze(0).expand(n_frame, -1),
-                    transl=smpl_c4.transl,
-                    scale=smpl_c4.scale.expand(n_frame),
-                )
-            verts_c2_post_np = [verts_c2_post[i].cpu().numpy() for i in range(n_frame)]
-            verts_c4_post_np = [verts_c4_post[i].cpu().numpy() for i in range(n_frame)]
-
-            post_samples_c2, post_stats_c2 = prepare_mask_fill_samples_for_sequence(
-                frame_indices=frame_indices,
-                verts_list=verts_c2_post_np,
-                image_root=self.image_root,
-                seg_dir=self.seg_dir,
-                bbox_dict=bbox_c2,
-                faces=model.faces.numpy() if hasattr(model.faces, "numpy") else model.faces,
-                erp_w=erp_w,
-                erp_h=erp_h,
-                cam="cam2",
-                rng=rng_s3,
-            )
-            post_samples_c4, post_stats_c4 = prepare_mask_fill_samples_for_sequence(
-                frame_indices=frame_indices,
-                verts_list=verts_c4_post_np,
-                image_root=self.image_root,
-                seg_dir=self.seg_dir,
-                bbox_dict=bbox_c4,
-                faces=model.faces.numpy() if hasattr(model.faces, "numpy") else model.faces,
-                erp_w=erp_w,
-                erp_h=erp_h,
-                cam="cam4",
-                rng=rng_s3,
-            )
-
-            summary["cam2"] = {str(frame_indices[i]): s for i, s in enumerate(post_stats_c2)}
-            summary["cam4"] = {str(frame_indices[i]): s for i, s in enumerate(post_stats_c4)}
-
-            print("  Stage 3 mask fill refine completed.")
-
-            if output_dir is not None:
-                summary_path = Path(output_dir) / "mask_fill_stage3_summary.json"
-                summary_path.parent.mkdir(parents=True, exist_ok=True)
-                with open(summary_path, "w", encoding="utf-8") as f:
-                    json.dump(summary, f, indent=2, ensure_ascii=False)
-                print(f"  Stage 3 summary saved to {summary_path}")
-
-        # ==================================================================
-        # End Stage 3
-        # ==================================================================
 
         for smpl_param in (smpl_c2, smpl_c4):
             for attr in ["orient", "transl", "left_hand_pose", "right_hand_pose", "beta"]:
