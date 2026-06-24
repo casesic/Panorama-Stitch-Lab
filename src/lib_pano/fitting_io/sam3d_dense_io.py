@@ -39,6 +39,7 @@ def load_sam3d_dense_result(
     image_width: int,
     image_height: int,
     crop_bbox: list[int] | None = None,
+    rotate_rule: str | None = None,
 ) -> SAM3DDenseResult | None:
     """从 SAM 3D Body dense npz 加载 SMPL-X 表面点，还原到 equirect_rotate 全图坐标并标记 validity。"""
     if crop_bbox is None:
@@ -78,6 +79,7 @@ def load_sam3d_dense_result(
         points_upright,
         crop_bbox,
         frame_idx,
+        rotate_rule=rotate_rule,
     )
 
     # full ERP 坐标合法性：仅几何判定，不读取像素、不做黑色区域/mask 过滤

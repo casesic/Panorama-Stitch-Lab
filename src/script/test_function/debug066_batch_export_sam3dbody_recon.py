@@ -329,16 +329,6 @@ if __name__ == "__main__":
 
 
 r'''
-# Single segment:
-python src/script/test_function/debug066_batch_export_sam3dbody_recon.py \
-  --dataset_root data_process/Output/20260311_riding \
-  --segment 513_518 \
-  --output_dir data_process/Output/20260311_riding/sam3dbody/recon \
-  --checkpoint_path ~/.cache/modelscope/hub/models/facebook/sam-3d-body-dinov3/model.ckpt \
-  --mhr_path ~/.cache/modelscope/hub/models/facebook/sam-3d-body-dinov3/assets/mhr_model.pt \
-  --cams cam2 cam4 \
-  --bbox_thresh 0.8
-
 # Multiple segments:
 python src/script/test_function/debug066_batch_export_sam3dbody_recon.py \
   --dataset_root data_process/Output/20260311_riding \
@@ -351,9 +341,9 @@ python src/script/test_function/debug066_batch_export_sam3dbody_recon.py \
 
 # All frames:
 python src/script/test_function/debug066_batch_export_sam3dbody_recon.py \
-  --dataset_root data_process/Output/20260311_riding \
+  --dataset_root data_process/Output/20260320_riding_dataset2 \
   --segment all \
-  --output_dir data_process/Output/20260311_riding/sam3dbody/recon \
+  --output_dir data_process/Output/20260320_riding_dataset2/sam3dbody/recon \
   --checkpoint_path ~/.cache/modelscope/hub/models/facebook/sam-3d-body-dinov3/model.ckpt \
   --mhr_path ~/.cache/modelscope/hub/models/facebook/sam-3d-body-dinov3/assets/mhr_model.pt \
   --cams cam2 cam4 \

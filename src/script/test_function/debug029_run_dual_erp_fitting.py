@@ -30,10 +30,9 @@ from lib_pano.fitting_io.hmr_init import (
 )
 from lib_pano.fitting_io.densekp_io import load_densekp_result
 from lib_pano.fitting_io.sam3d_dense_io import load_sam3d_dense_result
-from lib_pano.fitting_io.rtm_io import (
-    infer_keypoints_format_and_dim,
-    is_rtm_det_valid,
-    load_det_result,
+from lib_pano.human3d.crop_upright_coord import (
+    resolve_dataset_rotate_rules,
+    resolve_rotate_rule,
 )
 from lib_pano.fitting_io.segments import split_long_segments, split_reconstructable_subsegments
 from lib_pano.human_fitting import DualCamERPFitter
@@ -46,24 +45,12 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Batch-run DualCamERPFitter on reviewed equirect frame segments.")
     parser.add_argument("--reviewed", type=str, required=True, help="Path to reviewed.json.")
     parser.add_argument(
-        "--rtm_dir",
-        type=str,
-        required=True,
-        help="frame_cache root directory containing cam2/ and cam4/ subdirectories",
-    )
-    parser.add_argument(
         "--hmr_dir",
         type=str,
         required=True,
         help="HMR pkl root directory containing cam2/ and cam4/ subdirectories",
     )
     parser.add_argument("--output_dir", type=str, required=True, help="Output root directory.")
-    parser.add_argument(
-        "--rtm_invalid_json",
-        type=str,
-        default=None,
-        help="Optional path to RTM invalid.json from debug026/review.",
-    )
     parser.add_argument(
         "--hmr_invalid_json",
         type=str,
@@ -112,28 +99,32 @@ def parse_args() -> argparse.Namespace:
         default=0,
         help="将超过此长度的段切成子段，0表示不限制（默认0）。",
     )
-    parser.add_argument(
+    source_group = parser.add_mutually_exclusive_group(required=True)
+    source_group.add_argument(
         "--densekp_dir",
         type=str,
         default=None,
-        help="Optional DenseKP npz root directory containing cam2/ and cam4/ subdirectories.",
+        help="DenseKP npz root (cam2/ & cam4/). Selects DenseKP as the single primary observation source.",
     )
-    parser.add_argument(
+    source_group.add_argument(
         "--sam3d_dense_dir",
         type=str,
         default=None,
         help=(
-            "Optional SAM 3D Body dense SMPL-X observation root "
-            "containing cam2/ and cam4/ subdirectories."
+            "SAM 3D Body dense SMPL-X observation root (cam2/ & cam4/). "
+            "Selects SAM3D dense as the single primary observation source."
         ),
     )
     parser.add_argument(
         "--densekp_filter",
         type=str,
         default=None,
-        help="Optional JSON path for DenseKP ID filter (keep_ids / drop_ids).",
+        help="Optional JSON path for DenseKP ID filter (keep_ids / drop_ids); only valid in DenseKP mode.",
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.sam3d_dense_dir is not None and args.densekp_filter is not None:
+        parser.error("--densekp_filter is only valid with --densekp_dir (DenseKP mode)")
+    return args
 
 
 def parse_segments_arg(segments_str: str) -> list[list[int]]:
@@ -163,11 +154,9 @@ def main() -> None:
     args = parse_args()
 
     reviewed_path = Path(args.reviewed)
-    rtm_dir = Path(args.rtm_dir)
     hmr_dir = Path(args.hmr_dir)
     output_dir = Path(args.output_dir)
     bbox_dir = Path(args.bbox_dir)
-    rtm_invalid_path = Path(args.rtm_invalid_json) if args.rtm_invalid_json is not None else None
     hmr_invalid_path = Path(args.hmr_invalid_json) if args.hmr_invalid_json is not None else None
     densekp_dir = Path(args.densekp_dir) if args.densekp_dir is not None else None
     sam3d_dense_dir = (
@@ -175,6 +164,7 @@ def main() -> None:
         if args.sam3d_dense_dir is not None
         else None
     )
+    primary_observation_source = "densekp" if densekp_dir is not None else "sam3d_dense"
 
     frame_indices = load_reviewed_frame_indices(reviewed_path)
     reviewed_frame_set = set(frame_indices)
@@ -216,18 +206,18 @@ def main() -> None:
         if args.end_frame is not None:
             segments = [frame_idxs for frame_idxs in segments if frame_idxs[0] <= args.end_frame]
 
-    rtm_invalid_frames = load_invalid_frames(rtm_invalid_path, label="rtm_invalid_json", recurse_all=False)
     hmr_invalid_frames = load_invalid_frames(hmr_invalid_path, label="hmr_invalid_json", recurse_all=False)
     problem_frames = {
-        "rtm": sorted(load_problem_frames(rtm_invalid_path, label="rtm_invalid_json", recurse_all=False)),
         "hmr": sorted(load_problem_frames(hmr_invalid_path, label="hmr_invalid_json", recurse_all=False)),
     }
     cam2_bboxes = load_bbox_json(bbox_dir / "cam2_bboxes.json")
     cam4_bboxes = load_bbox_json(bbox_dir / "cam4_bboxes.json")
-    default_keypoints_format_c2, num_keypoints_c2 = infer_keypoints_format_and_dim(frame_indices, rtm_dir, "cam2")
-    default_keypoints_format_c4, num_keypoints_c4 = infer_keypoints_format_and_dim(frame_indices, rtm_dir, "cam4")
+
+    rotate_rules_config = Path(config_script.PROJECT_ROOT) / "configs" / "rotate_upright_rules.json"
+    rotate_rules = resolve_dataset_rotate_rules(rotate_rules_config, bbox_dir)
 
     fitter = DualCamERPFitter(
+        primary_observation_source=primary_observation_source,
         gender="neutral",
         R_cam4=R_CAM4,
         densekp_filter_path=args.densekp_filter,
@@ -251,39 +241,27 @@ def main() -> None:
 
         reconstructable_by_frame: dict[int, bool] = {}
         for frame_idx in frame_idxs:
-            rtm_valid_c2 = is_rtm_det_valid(frame_idx, rtm_dir, rtm_invalid_frames, "cam2")
-            rtm_valid_c4 = is_rtm_det_valid(frame_idx, rtm_dir, rtm_invalid_frames, "cam4")
-            rtm_valid = rtm_valid_c2 or rtm_valid_c4
             hmr_valid = direct_hmr_c2.get(frame_idx) is not None or direct_hmr_c4.get(frame_idx) is not None
-            densekp_c2 = load_densekp_result(frame_idx, densekp_dir, "cam2", args.image_width, args.image_height, cam2_bboxes.get(str(frame_idx))) if densekp_dir is not None else None
-            densekp_c4 = load_densekp_result(frame_idx, densekp_dir, "cam4", args.image_width, args.image_height, cam4_bboxes.get(str(frame_idx))) if densekp_dir is not None else None
-            densekp_valid = bool(
-                (densekp_c2 is not None and densekp_c2.valid.any())
-                or (densekp_c4 is not None and densekp_c4.valid.any())
-            )
-            sam3d_dense_c2 = load_sam3d_dense_result(frame_idx, sam3d_dense_dir, "cam2", args.image_width, args.image_height, cam2_bboxes.get(str(frame_idx))) if sam3d_dense_dir is not None else None
-            sam3d_dense_c4 = load_sam3d_dense_result(frame_idx, sam3d_dense_dir, "cam4", args.image_width, args.image_height, cam4_bboxes.get(str(frame_idx))) if sam3d_dense_dir is not None else None
-            sam3d_dense_valid = bool(
-                (sam3d_dense_c2 is not None and sam3d_dense_c2.valid.any())
-                or (sam3d_dense_c4 is not None and sam3d_dense_c4.valid.any())
-            )
-            observation_sources: list[str] = []
-            if rtm_valid:
-                observation_sources.append("rtm")
-            if densekp_valid:
-                observation_sources.append("densekp")
-            if sam3d_dense_valid:
-                observation_sources.append("sam3d_dense")
-            reconstructable = rtm_valid or densekp_valid or sam3d_dense_valid
+            rotate_str = resolve_rotate_rule(frame_idx, rotate_rules)
+            if primary_observation_source == "densekp":
+                obs_c2 = load_densekp_result(frame_idx, densekp_dir, "cam2", args.image_width, args.image_height, cam2_bboxes.get(str(frame_idx)), rotate_rule=rotate_str)
+                obs_c4 = load_densekp_result(frame_idx, densekp_dir, "cam4", args.image_width, args.image_height, cam4_bboxes.get(str(frame_idx)), rotate_rule=rotate_str)
+            else:
+                obs_c2 = load_sam3d_dense_result(frame_idx, sam3d_dense_dir, "cam2", args.image_width, args.image_height, cam2_bboxes.get(str(frame_idx)), rotate_rule=rotate_str)
+                obs_c4 = load_sam3d_dense_result(frame_idx, sam3d_dense_dir, "cam4", args.image_width, args.image_height, cam4_bboxes.get(str(frame_idx)), rotate_rule=rotate_str)
+            primary_observation_valid_c2 = bool(obs_c2 is not None and obs_c2.valid.any())
+            primary_observation_valid_c4 = bool(obs_c4 is not None and obs_c4.valid.any())
+            primary_observation_valid = primary_observation_valid_c2 or primary_observation_valid_c4
+            reconstructable = primary_observation_valid
             reconstructable_by_frame[frame_idx] = reconstructable
             frame_status[str(frame_idx)] = {
-                "rtm_valid": rtm_valid,
-                "densekp_valid": densekp_valid,
-                "sam3d_dense_valid": sam3d_dense_valid,
+                "observation_source": primary_observation_source,
+                "primary_observation_valid_c2": primary_observation_valid_c2,
+                "primary_observation_valid_c4": primary_observation_valid_c4,
+                "primary_observation_valid": primary_observation_valid,
                 "hmr_valid": hmr_valid,
                 "reconstructable": reconstructable,
-                "observation_sources": observation_sources,
-                "status": "rebuilt" if reconstructable else "skipped_no_observation",
+                "status": "rebuilt" if reconstructable else "skipped_no_primary_observation",
                 "init": "none",
                 "segment": segment_key,
                 "subsegment": None,
@@ -297,38 +275,15 @@ def main() -> None:
                 "frame_count": len(frame_idxs),
                 "subsegments": [f"{subseg[0]}_{subseg[-1]}" for subseg in subsegments],
                 "rebuilt": sum(1 for idx in frame_idxs if reconstructable_by_frame[idx]),
-                "skipped_no_observation": sum(1 for idx in frame_idxs if not reconstructable_by_frame[idx]),
-                "rtm_valid": sum(1 for idx in frame_idxs if frame_status[str(idx)]["rtm_valid"]),
-                "densekp_valid": sum(1 for idx in frame_idxs if frame_status[str(idx)]["densekp_valid"]),
-                "sam3d_dense_valid": sum(1 for idx in frame_idxs if frame_status[str(idx)]["sam3d_dense_valid"]),
+                "skipped_no_primary_observation": sum(1 for idx in frame_idxs if not reconstructable_by_frame[idx]),
+                "observation_source": primary_observation_source,
+                "primary_observation_valid": sum(1 for idx in frame_idxs if frame_status[str(idx)]["primary_observation_valid"]),
                 "hmr_valid": sum(1 for idx in frame_idxs if frame_status[str(idx)]["hmr_valid"]),
             }
         )
 
         for sub_frame_idxs in subsegments:
             subsegment_key = f"{sub_frame_idxs[0]}_{sub_frame_idxs[-1]}"
-            det_list_c2 = [
-                load_det_result(
-                    frame_idx,
-                    rtm_dir,
-                    rtm_invalid_frames,
-                    default_keypoints_format=default_keypoints_format_c2,
-                    num_keypoints=num_keypoints_c2,
-                    cam_id="cam2",
-                )
-                for frame_idx in sub_frame_idxs
-            ]
-            det_list_c4 = [
-                load_det_result(
-                    frame_idx,
-                    rtm_dir,
-                    rtm_invalid_frames,
-                    default_keypoints_format=default_keypoints_format_c4,
-                    num_keypoints=num_keypoints_c4,
-                    cam_id="cam4",
-                )
-                for frame_idx in sub_frame_idxs
-            ]
 
             smplx_list_c2, smplx_list_c4 = [], []
             for frame_idx in sub_frame_idxs:
@@ -350,46 +305,34 @@ def main() -> None:
                 init_counter[init_source] += 1
 
             smplx_init_c2, smplx_init_c4 = build_segment_smplx_init(smplx_list_c2, smplx_list_c4)
-
-            if densekp_dir is not None:
-                densekp_list_c2 = [
-                    load_densekp_result(frame_idx, densekp_dir, "cam2", args.image_width, args.image_height, crop_bbox=cam2_bboxes.get(str(frame_idx)),)
+            if primary_observation_source == "densekp":
+                primary_observations_c2 = [
+                    load_densekp_result(frame_idx, densekp_dir, "cam2", args.image_width, args.image_height, crop_bbox=cam2_bboxes.get(str(frame_idx)), rotate_rule=resolve_rotate_rule(frame_idx, rotate_rules))
                     for frame_idx in sub_frame_idxs
                 ]
-                densekp_list_c4 = [
-                    load_densekp_result(frame_idx, densekp_dir, "cam4", args.image_width, args.image_height, crop_bbox=cam4_bboxes.get(str(frame_idx)),)
-                    for frame_idx in sub_frame_idxs
-                ]
-            else:
-                densekp_list_c2 = None
-                densekp_list_c4 = None
-
-            if sam3d_dense_dir is not None:
-                sam3d_dense_list_c2 = [
-                    load_sam3d_dense_result(frame_idx, sam3d_dense_dir, "cam2", args.image_width, args.image_height, crop_bbox=cam2_bboxes.get(str(frame_idx)),)
-                    for frame_idx in sub_frame_idxs
-                ]
-                sam3d_dense_list_c4 = [
-                    load_sam3d_dense_result(frame_idx, sam3d_dense_dir, "cam4", args.image_width, args.image_height, crop_bbox=cam4_bboxes.get(str(frame_idx)),)
+                primary_observations_c4 = [
+                    load_densekp_result(frame_idx, densekp_dir, "cam4", args.image_width, args.image_height, crop_bbox=cam4_bboxes.get(str(frame_idx)), rotate_rule=resolve_rotate_rule(frame_idx, rotate_rules))
                     for frame_idx in sub_frame_idxs
                 ]
             else:
-                sam3d_dense_list_c2 = None
-                sam3d_dense_list_c4 = None
+                primary_observations_c2 = [
+                    load_sam3d_dense_result(frame_idx, sam3d_dense_dir, "cam2", args.image_width, args.image_height, crop_bbox=cam2_bboxes.get(str(frame_idx)), rotate_rule=resolve_rotate_rule(frame_idx, rotate_rules))
+                    for frame_idx in sub_frame_idxs
+                ]
+                primary_observations_c4 = [
+                    load_sam3d_dense_result(frame_idx, sam3d_dense_dir, "cam4", args.image_width, args.image_height, crop_bbox=cam4_bboxes.get(str(frame_idx)), rotate_rule=resolve_rotate_rule(frame_idx, rotate_rules))
+                    for frame_idx in sub_frame_idxs
+                ]
 
-            valid_frame_count_c2 = sum(1 for det in det_list_c2 if bool(det.flag_valid))
-            valid_frame_count_c4 = sum(1 for det in det_list_c4 if bool(det.flag_valid))
+            valid_frame_count_c2 = sum(1 for obs in primary_observations_c2 if obs is not None and obs.valid.any())
+            valid_frame_count_c4 = sum(1 for obs in primary_observations_c4 if obs is not None and obs.valid.any())
 
             result_c2, result_c4, shared_beta = fitter.fit(
-                cam2_dets=det_list_c2,
-                cam4_dets=det_list_c4,
                 image_size=(args.image_width, args.image_height),
                 smplx_init_c2=smplx_init_c2,
                 smplx_init_c4=smplx_init_c4,
-                densekp_list_c2=densekp_list_c2,
-                densekp_list_c4=densekp_list_c4,
-                sam3d_dense_list_c2=sam3d_dense_list_c2,
-                sam3d_dense_list_c4=sam3d_dense_list_c4,
+                primary_observations_c2=primary_observations_c2,
+                primary_observations_c4=primary_observations_c4,
             )
             save_segment_result(
                 result_c2=result_c2,
@@ -403,16 +346,15 @@ def main() -> None:
 
     status_values = list(frame_status.values())
     global_summary = {
+        "primary_observation_source": primary_observation_source,
         "original_segments": len(segments),
         "fitting_subsegments": fitting_subsegment_count,
-        "skipped_no_observation_frames": sum(1 for item in status_values if item["status"] == "skipped_no_observation"),
+        "skipped_no_primary_observation_frames": sum(1 for item in status_values if item["status"] == "skipped_no_primary_observation"),
         "rebuilt_frames": sum(1 for item in status_values if item["status"] == "rebuilt"),
-        "rtm_valid": sum(1 for item in status_values if item["rtm_valid"]),
-        "rtm_invalid": sum(1 for item in status_values if not item["rtm_valid"]),
-        "densekp_valid": sum(1 for item in status_values if item["densekp_valid"]),
-        "densekp_invalid": sum(1 for item in status_values if not item["densekp_valid"]),
-        "sam3d_dense_valid": sum(1 for item in status_values if item["sam3d_dense_valid"]),
-        "sam3d_dense_invalid": sum(1 for item in status_values if not item["sam3d_dense_valid"]),
+        "primary_observation_valid": sum(1 for item in status_values if item["primary_observation_valid"]),
+        "primary_observation_invalid": sum(1 for item in status_values if not item["primary_observation_valid"]),
+        "primary_observation_valid_c2": sum(1 for item in status_values if item["primary_observation_valid_c2"]),
+        "primary_observation_valid_c4": sum(1 for item in status_values if item["primary_observation_valid_c4"]),
         "hmr_valid": sum(1 for item in status_values if item["hmr_valid"]),
         "hmr_invalid": sum(1 for item in status_values if not item["hmr_valid"]),
         "init_sources": {
@@ -448,28 +390,22 @@ r'''
 # DenseKP fitting, multiple segments
 python src/script/test_function/debug029_run_dual_erp_fitting.py \
   --reviewed data_process/Input/20260320_riding/dataset2/review.json \
-  --rtm_dir data_process/Output/20260320_riding_dataset2/rtm_cache/equirect_rotate_rtmw \
   --hmr_dir data_process/Output/20260320_riding_dataset2/hmr_cache \
   --output_dir data_process/Output/20260320_riding_dataset2/fitting/dual_cam_dense_filter_all \
-  --rtm_invalid_json data_process/Output/20260320_riding_dataset2/rtm_cache/equirect_rotate_rtmw/invalid.json \
   --hmr_invalid_json data_process/Output/20260320_riding_dataset2/hmr_cache/invalid.json \
   --bbox_dir data_process/Output/20260320_riding_dataset2/image/equirect_crop_rotate \
   --densekp_dir data_process/Output/20260320_riding_dataset2/camerahmr/densekp_npz \
   --max_segment_len 10 \
   --segments 216_226,519_531,695_704,1231_1240,1241_1250,1251_1263,1555_1561,1769_1771,2850_2853,3110_3118,3580_3592,3819_3831
 
-# DenseKP + SAM3D dense surface fitting, multiple segments
 python src/script/test_function/debug029_run_dual_erp_fitting.py \
-  --reviewed data_process/Input/20260311_riding/review.json \
-  --rtm_dir data_process/Output/20260311_riding/rtm_cache/equirect_rotate_rtmw \
-  --hmr_dir data_process/Output/20260311_riding/hmr_cache \
-  --output_dir data_process/Output/20260311_riding/fitting/dual_cam_sam3d_dense \
-  --rtm_invalid_json data_process/Output/20260311_riding/rtm_cache/equirect_rotate_rtmw/invalid.json \
-  --hmr_invalid_json data_process/Output/20260311_riding/hmr_cache/invalid.json \
-  --bbox_dir data_process/Output/20260311_riding/image/equirect_crop_rotate \
-  --sam3d_dense_dir data_process/Output/20260311_riding/sam3dbody/smplx_dense \
+  --reviewed data_process/Input/20260320_riding/dataset1/review.json \
+  --hmr_dir data_process/Output/20260320_riding_dataset1/hmr_cache \
+  --output_dir data_process/Output/20260320_riding_dataset1/fitting/dual_cam_sam3d_dense \
+  --hmr_invalid_json data_process/Output/20260320_riding_dataset1/hmr_cache/invalid.json \
+  --bbox_dir data_process/Output/20260320_riding_dataset1/image/equirect_crop_rotate \
+  --sam3d_dense_dir data_process/Output/20260320_riding_dataset1/sam3dbody/smplx_dense \
   --max_segment_len 10 \
-  --segments 513_518,704_711
 
 0320_riding_dataset2: segments 216_226,519_531,695_704,1231_1240,1241_1250,1251_1263,1555_1561,1769_1771,2850_2853,3110_3118,3580_3592,3819_3831
 0320_riding_dataset1: segments 886_895,1143_1151,3741_3745,5103_5121,5352_5363,5501_5506

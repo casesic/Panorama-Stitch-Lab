@@ -1,10 +1,11 @@
-"""双相机 ERP SMPL-X 拟合器：用 cam2/cam4 检测共同约束一套体型/姿态，分两阶段优化。"""
+"""HMR 初值 + 单主观测源（DenseKP 或 SAM3D dense）的两阶段双视角 ERP SMPL-X 优化器。"""
 
 from __future__ import annotations
 
 import math
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Literal
 
 import torch
 from torch import nn
@@ -12,7 +13,6 @@ from torch import nn
 from .base import BaseSMPLXFitter
 from .constraints import (
     DenseKPLoss,
-    compute_keypoint_2d_loss_with_proj,
     compute_shape_regularization_losses,
     suffix_non_shape_losses,
 )
@@ -24,19 +24,29 @@ from .constraints.sam3d_dense import (
 )
 
 
+PrimaryObservationSource = Literal["densekp", "sam3d_dense"]
+
+
 
 
 class DualCamERPFitter(BaseSMPLXFitter):
-    """两阶段双相机 ERP 优化器：cam2/cam4 共享 beta 与 body_pose，覆盖优化超参。"""
+    """两阶段双相机 ERP 优化器：HMR 初值 + 单主观测源（DenseKP 或 SAM3D dense），cam2/cam4 共享 beta 与 body_pose。"""
     def __init__(
         self,
+        primary_observation_source: PrimaryObservationSource,
         gender: str = "neutral",
         R_cam4: torch.Tensor | None = None,
         densekp_filter_path: str | None = None,
         sam3d_dense_num_points: int = 1024,
     ):
-        """配置双相机拟合超参、损失权重、稠密关键点过滤与 cam4 外参；可选配置 SAM dense surface 固定采样点数。"""
+        """配置双相机拟合超参与 cam4 外参；按单一主观测源构造对应损失：densekp→DenseKPLoss，sam3d_dense→表面重投影并加载固定采样点。"""
         super().__init__(gender=gender)
+        if primary_observation_source not in ("densekp", "sam3d_dense"):
+            raise ValueError(
+                "primary_observation_source must be 'densekp' or 'sam3d_dense', "
+                f"got {primary_observation_source!r}"
+            )
+        self.primary_observation_source: PrimaryObservationSource = primary_observation_source
         self.conf_thresh = 0.57
         self.fps = 30.0
         self.max_speed_mps = 3.0
@@ -49,44 +59,65 @@ class DualCamERPFitter(BaseSMPLXFitter):
         self.hand_overall_weight = 2.0
         self.sam3d_dense_num_points = int(sam3d_dense_num_points)
         self.loss_weights = DualCamLossWeights()
-        project_root = Path(__file__).resolve().parents[3]
-        data_dir = project_root / "tools" / "CameraHMR" / "data" / "train-eval-utils"
-        id_mask = None
-        if densekp_filter_path is not None:
-            from lib_pano.fitting_io.densekp_filter import load_densekp_filter
-
-            id_mask = load_densekp_filter(densekp_filter_path)
-        self.densekp_loss = DenseKPLoss(data_dir=data_dir, weight=self.loss_weights.densekp, id_mask=id_mask)
         if R_cam4 is None:
             raise ValueError("R_cam4 must be provided for DualCamERPFitter")
         self.R_cam4 = R_cam4.clone().detach().float()
 
-    def _init_transl_from_bbox(
-        self,
-        keypoints_tensor: torch.Tensor,
-        image_size,
-    ):
-        """由关键点外接框中心反算 ERP 经纬方向、按框高估计深度，初始化每帧平移向量。"""
-        erp_w, erp_h = image_size
-        n_frame = keypoints_tensor.shape[0]
-        bbox_xyxy = torch.zeros((n_frame, 4), dtype=keypoints_tensor.dtype, device=keypoints_tensor.device)
-        for i in range(n_frame):
-            kp = keypoints_tensor[i]
-            mask = kp[:, 2] > 0.05
-            xy = kp[mask][:, :2] if mask.any() else kp[:, :2]
-            bbox_xyxy[i] = torch.stack([xy[:, 0].min(), xy[:, 1].min(), xy[:, 0].max(), xy[:, 1].max()])
+        self.densekp_loss = None
+        self._sam3d_dense_sample_ids = None
+        if self.primary_observation_source == "densekp":
+            project_root = Path(__file__).resolve().parents[3]
+            data_dir = project_root / "tools" / "CameraHMR" / "data" / "train-eval-utils"
+            id_mask = None
+            if densekp_filter_path is not None:
+                from lib_pano.fitting_io.densekp_filter import load_densekp_filter
 
-        u_c = (bbox_xyxy[:, 0] + bbox_xyxy[:, 2]) / 2.0
-        v_c = (bbox_xyxy[:, 1] + bbox_xyxy[:, 3]) / 2.0
-        lon = (u_c / erp_w - 0.5) * (2.0 * math.pi)
-        lat = (v_c / erp_h - 0.5) * math.pi
-        dir_x = torch.sin(lon) * torch.cos(lat)
-        dir_y = -torch.sin(lat)
-        dir_z = torch.cos(lon) * torch.cos(lat)
-        bbox_h_px = (bbox_xyxy[:, 3] - bbox_xyxy[:, 1]).clamp_min(1.0)
-        fov_h = bbox_h_px / erp_h * math.pi
-        dist = (1.7 / (2.0 * torch.tan(fov_h / 2.0).clamp_min(1e-3))).clamp(0.5, 15.0)
-        return torch.stack([dir_x * dist, dir_y * dist, dir_z * dist], dim=1)
+                id_mask = load_densekp_filter(densekp_filter_path)
+            self.densekp_loss = DenseKPLoss(
+                data_dir=data_dir, weight=self.loss_weights.densekp, id_mask=id_mask
+            )
+        else:
+            if densekp_filter_path is not None:
+                raise ValueError(
+                    "densekp_filter_path is only valid for primary_observation_source='densekp'"
+                )
+            self._sam3d_dense_sample_ids = load_default_sam3d_sample_ids(
+                num_points=self.sam3d_dense_num_points
+            )
+
+    def _primary_obs_points_2d(self, obs):
+        """取主观测的全图 ERP 2D 点：densekp→keypoints_2d，sam3d_dense→points_2d。"""
+        if self.primary_observation_source == "densekp":
+            return obs.keypoints_2d
+        return obs.points_2d
+
+    def _transl_init_from_primary(self, primary_observations, image_size):
+        """由主观测有效 2D 点外接框中心反算 ERP 经纬方向、按框高估深度，逐帧初始化平移；无有效点的帧标记不可用。"""
+        erp_w, erp_h = image_size
+        n_frame = len(primary_observations)
+        transl = torch.zeros((n_frame, 3), dtype=torch.float32)
+        valid_mask = torch.zeros(n_frame, dtype=torch.bool)
+        for i, obs in enumerate(primary_observations):
+            if obs is None or not bool(obs.valid.any()):
+                continue
+            pts = self._primary_obs_points_2d(obs)[obs.valid]
+            x1, y1 = float(pts[:, 0].min()), float(pts[:, 1].min())
+            x2, y2 = float(pts[:, 0].max()), float(pts[:, 1].max())
+            u_c = (x1 + x2) / 2.0
+            v_c = (y1 + y2) / 2.0
+            lon = (u_c / erp_w - 0.5) * (2.0 * math.pi)
+            lat = (v_c / erp_h - 0.5) * math.pi
+            dir_x = math.sin(lon) * math.cos(lat)
+            dir_y = -math.sin(lat)
+            dir_z = math.cos(lon) * math.cos(lat)
+            bbox_h_px = max(1.0, y2 - y1)
+            fov_h = bbox_h_px / erp_h * math.pi
+            dist = min(15.0, max(0.5, 1.7 / (2.0 * max(1e-3, math.tan(fov_h / 2.0)))))
+            transl[i, 0] = dir_x * dist
+            transl[i, 1] = dir_y * dist
+            transl[i, 2] = dir_z * dist
+            valid_mask[i] = True
+        return transl, valid_mask
 
     @staticmethod
     def _project_erp(points_3d: torch.Tensor, W: int, H: int) -> torch.Tensor:
@@ -106,21 +137,22 @@ class DualCamERPFitter(BaseSMPLXFitter):
         self,
         smplx_init_c2,
         smplx_init_c4,
-        kp_tensor_c2: torch.Tensor,
-        kp_tensor_c4: torch.Tensor,
+        primary_observations_c2,
+        primary_observations_c4,
         image_size,
     ):
-        """初始化两相机 SMPL-X 参数：bbox 估平移、置为可优化、共享 beta（两相机均值）与 body_pose。"""
-        n_frame = kp_tensor_c2.shape[0]
+        """初始化两相机 SMPL-X 参数：用主观测 2D 点估平移、置为可优化、共享 beta（两相机均值）与 body_pose。"""
+        n_frame = len(primary_observations_c2)
         smpl_c2 = smplx_init_c2 if smplx_init_c2 is not None else self._build_default_smplx(n_frame)
         smpl_c4 = smplx_init_c4 if smplx_init_c4 is not None else self._build_default_smplx(n_frame)
 
-        transl_init_c2 = self._init_transl_from_bbox(kp_tensor_c2, image_size)
-        transl_init_c4 = self._init_transl_from_bbox(kp_tensor_c4, image_size)
-        if transl_init_c2 is not None:
-            smpl_c2.transl.data.copy_(transl_init_c2)
-        if transl_init_c4 is not None:
-            smpl_c4.transl.data.copy_(transl_init_c4)
+        transl_init_c2, transl_valid_c2 = self._transl_init_from_primary(primary_observations_c2, image_size)
+        transl_init_c4, transl_valid_c4 = self._transl_init_from_primary(primary_observations_c4, image_size)
+        for i in range(n_frame):
+            if bool(transl_valid_c2[i]):
+                smpl_c2.transl.data[i] = transl_init_c2[i].to(smpl_c2.transl.device, smpl_c2.transl.dtype)
+            if bool(transl_valid_c4[i]):
+                smpl_c4.transl.data[i] = transl_init_c4[i].to(smpl_c4.transl.device, smpl_c4.transl.dtype)
 
         smpl_c2 = self._prepare_smplx_param_for_optimization(smpl_c2)
         smpl_c4 = self._prepare_smplx_param_for_optimization(smpl_c4)
@@ -130,7 +162,7 @@ class DualCamERPFitter(BaseSMPLXFitter):
         beta_c2 = getattr(smpl_c2, "beta", None)
         beta_c4 = getattr(smpl_c4, "beta", None)
         if beta_c2 is None and beta_c4 is None:
-            beta_init = torch.zeros(10, dtype=kp_tensor_c2.dtype, device=kp_tensor_c2.device)
+            beta_init = torch.zeros(10, dtype=smpl_c2.transl.dtype, device=smpl_c2.transl.device)
         elif beta_c2 is None:
             beta_init = beta_c4.clone().detach()
         elif beta_c4 is None:
@@ -146,41 +178,71 @@ class DualCamERPFitter(BaseSMPLXFitter):
         shared_body_pose = nn.Parameter(shared_body_pose_init)
         return smpl_c2, smpl_c4, shared_beta, shared_body_pose
 
+    def _validate_primary_observations(self, observations):
+        """校验每帧主观测元素为本次 source 对应类型或 None，否则 raise TypeError。"""
+        from lib_pano.fitting_io.densekp_io import DenseKPResult
+        from lib_pano.fitting_io.sam3d_dense_io import SAM3DDenseResult
+
+        expected = DenseKPResult if self.primary_observation_source == "densekp" else SAM3DDenseResult
+        for i, obs in enumerate(observations):
+            if obs is None:
+                continue
+            if not isinstance(obs, expected):
+                raise TypeError(
+                    f"primary observation at index {i} must be {expected.__name__} or None "
+                    f"for source '{self.primary_observation_source}', got {type(obs).__name__}"
+                )
+
+    def _compute_primary_loss(self, verts_seq, observations, erp_w, erp_h):
+        """按 source 计算主观测重投影损失：densekp→DenseKPLoss，sam3d_dense→表面重投影。"""
+        if self.primary_observation_source == "densekp":
+            return self.densekp_loss.compute(verts_seq, observations, self._project_cam2, erp_w, erp_h)
+        projected = self._project_cam2(verts_seq, erp_w, erp_h)
+        loss, _ = compute_sam3d_dense_sequence_reprojection_loss(
+            projected_points_2d=projected,
+            obs_list=observations,
+            sample_ids=self._sam3d_dense_sample_ids,
+            num_points=self.sam3d_dense_num_points,
+            compute_stats=False,
+        )
+        return loss
+
     def fit(
         self,
-        cam2_dets,
-        cam4_dets,
         image_size,
-        smplx_init_c2=None,
-        smplx_init_c4=None,
-        densekp_list_c2: list | None = None,
-        densekp_list_c4: list | None = None,
-        sam3d_dense_list_c2: list | None = None,
-        sam3d_dense_list_c4: list | None = None,
+        smplx_init_c2,
+        smplx_init_c4,
+        primary_observations_c2,
+        primary_observations_c4,
     ):
-        """两阶段双相机联合拟合主流程：初始化→Stage 1（orient/transl）→Stage 2（加入共享 body_pose/beta 与各约束）的 LBFGS 优化，返回两相机参数与共享 beta。
+        """两阶段双相机联合拟合：HMR 初值 + 单主观测源（self.primary_observation_source）驱动。
 
-        sam3d_dense_list_c2/c4：每帧一个 SAM3DDenseResult 或 None，其 points_2d 已在 equirect_rotate
-        全图坐标，cam2/cam4 均用 project_cam2 投影，仅在现有 Stage 2 启用。
+        Stage 1 对齐 cam2/cam4 朝向与平移；Stage 2 加入共享 body_pose/beta 与 pose/shape/temporal 正则。
+        primary_observations_c2/c4 长度须等于拟合段帧数，元素为对应 source 结果或 None；类型/长度不符即报错。
         """
         from .smplx_sequence import forward_smplx_tensor_batch
 
-        assert len(cam2_dets) > 0
-        assert len(cam2_dets) == len(cam4_dets)
+        primary_observations_c2 = list(primary_observations_c2)
+        primary_observations_c4 = list(primary_observations_c4)
+        n_frame = len(primary_observations_c2)
+        if n_frame == 0:
+            raise ValueError("fit() requires at least one frame of primary observations")
+        if len(primary_observations_c4) != n_frame:
+            raise ValueError(
+                "primary_observations_c2/c4 length mismatch: "
+                f"{n_frame} vs {len(primary_observations_c4)}"
+            )
+        self._validate_primary_observations(primary_observations_c2)
+        self._validate_primary_observations(primary_observations_c4)
 
-        n_frame = len(cam2_dets)
         erp_w, erp_h = image_size
         model = self._get_model()
-        kp_tensor_c2 = self._stack_keypoints(cam2_dets)
-        kp_tensor_c4 = self._stack_keypoints(cam4_dets)
-        key_fmt_c2 = cam2_dets[0].keypoints_format
-        key_fmt_c4 = cam4_dets[0].keypoints_format
 
         smpl_c2, smpl_c4, shared_beta, shared_body_pose = self._init_params(
             smplx_init_c2=smplx_init_c2,
             smplx_init_c4=smplx_init_c4,
-            kp_tensor_c2=kp_tensor_c2,
-            kp_tensor_c4=kp_tensor_c4,
+            primary_observations_c2=primary_observations_c2,
+            primary_observations_c4=primary_observations_c4,
             image_size=image_size,
         )
         shape_anchor = shared_beta.clone().detach()
@@ -188,6 +250,7 @@ class DualCamERPFitter(BaseSMPLXFitter):
 
         base_weights = build_base_weights(
             n_frame=n_frame,
+            primary_observation_source=self.primary_observation_source,
             weights=self.loss_weights,
         )
         optimization_stages = build_optimization_stages(
@@ -198,27 +261,11 @@ class DualCamERPFitter(BaseSMPLXFitter):
             shared_beta=shared_beta,
         )
 
-        has_sam3d_dense_c2 = (
-            sam3d_dense_list_c2 is not None
-            and any(obs is not None for obs in sam3d_dense_list_c2)
-        )
-        has_sam3d_dense_c4 = (
-            sam3d_dense_list_c4 is not None
-            and any(obs is not None for obs in sam3d_dense_list_c4)
-        )
-        sam3d_dense_sample_ids = (
-            load_default_sam3d_sample_ids(num_points=self.sam3d_dense_num_points)
-            if has_sam3d_dense_c2 or has_sam3d_dense_c4
-            else None
-        )
+        has_primary_c2 = any(obs is not None for obs in primary_observations_c2)
+        has_primary_c4 = any(obs is not None for obs in primary_observations_c4)
 
-        def make_loss_fn(
-            compute_densekp_c2: bool,
-            compute_densekp_c4: bool,
-            compute_sam3d_dense_c2: bool,
-            compute_sam3d_dense_c4: bool,
-        ):
-            verts_c2, joints_c2, _ = forward_smplx_tensor_batch(
+        def make_loss_fn(compute_primary_c2: bool, compute_primary_c4: bool):
+            verts_c2, _, _ = forward_smplx_tensor_batch(
                 smplx_model=model,
                 global_orient=smpl_c2.orient,
                 body_pose=shared_body_pose.unsqueeze(0).expand(n_frame, -1)
@@ -230,7 +277,7 @@ class DualCamERPFitter(BaseSMPLXFitter):
                 transl=smpl_c2.transl,
                 scale=smpl_c2.scale.expand(n_frame),
             )
-            verts_c4, joints_c4, _ = forward_smplx_tensor_batch(
+            verts_c4, _, _ = forward_smplx_tensor_batch(
                 smplx_model=model,
                 global_orient=smpl_c4.orient,
                 body_pose=shared_body_pose.unsqueeze(0).expand(n_frame, -1)
@@ -241,25 +288,6 @@ class DualCamERPFitter(BaseSMPLXFitter):
                 betas=shared_beta.unsqueeze(0).expand(n_frame, -1),
                 transl=smpl_c4.transl,
                 scale=smpl_c4.scale.expand(n_frame),
-            )
-
-            losses_c2, _ = compute_keypoint_2d_loss_with_proj(
-                joints_all=joints_c2,
-                dets_tensor=kp_tensor_c2,
-                keypoints_format=key_fmt_c2,
-                project_fn=self._project_cam2,
-                W=erp_w,
-                H=erp_h,
-                conf_thresh=self.conf_thresh,
-            )
-            losses_c4, _ = compute_keypoint_2d_loss_with_proj(
-                joints_all=joints_c4,
-                dets_tensor=kp_tensor_c4,
-                keypoints_format=key_fmt_c4,
-                project_fn=self._project_cam2,
-                W=erp_w,
-                H=erp_h,
-                conf_thresh=self.conf_thresh,
             )
 
             proxy_c2 = SimpleNamespace(
@@ -283,37 +311,20 @@ class DualCamERPFitter(BaseSMPLXFitter):
                 proxy_c4, shape_anchor, n_frame, pose_anchor=pose_anchor
             )
 
-            if compute_sam3d_dense_c2:
-                projected_sam_c2 = self._project_cam2(verts_c2, erp_w, erp_h)
-                loss_sam3d_dense_c2, _ = compute_sam3d_dense_sequence_reprojection_loss(
-                    projected_points_2d=projected_sam_c2,
-                    obs_list=sam3d_dense_list_c2,
-                    sample_ids=sam3d_dense_sample_ids,
-                    num_points=self.sam3d_dense_num_points,
-                    compute_stats=False,
-                )
-            else:
-                loss_sam3d_dense_c2 = verts_c2.new_zeros(())
-
-            if compute_sam3d_dense_c4:
-                projected_sam_c4 = self._project_cam2(verts_c4, erp_w, erp_h)
-                loss_sam3d_dense_c4, _ = compute_sam3d_dense_sequence_reprojection_loss(
-                    projected_points_2d=projected_sam_c4,
-                    obs_list=sam3d_dense_list_c4,
-                    sample_ids=sam3d_dense_sample_ids,
-                    num_points=self.sam3d_dense_num_points,
-                    compute_stats=False,
-                )
-            else:
-                loss_sam3d_dense_c4 = verts_c4.new_zeros(())
+            loss_primary_c2 = (
+                self._compute_primary_loss(verts_c2, primary_observations_c2, erp_w, erp_h)
+                if compute_primary_c2
+                else verts_c2.new_zeros(())
+            )
+            loss_primary_c4 = (
+                self._compute_primary_loss(verts_c4, primary_observations_c4, erp_w, erp_h)
+                if compute_primary_c4
+                else verts_c4.new_zeros(())
+            )
 
             losses_all = {
-                "body_2d_det_c2": losses_c2.get("body_2d_det", joints_c2.new_zeros(())),
-                "body_2d_det_c4": losses_c4.get("body_2d_det", joints_c4.new_zeros(())),
-                "loss_densekp_c2": self.densekp_loss.compute(verts_c2, densekp_list_c2, self._project_cam2, erp_w, erp_h) if compute_densekp_c2 else verts_c2.new_zeros(()),
-                "loss_densekp_c4": self.densekp_loss.compute(verts_c4, densekp_list_c4, self._project_cam2, erp_w, erp_h) if compute_densekp_c4 else verts_c4.new_zeros(()),
-                "loss_sam3d_dense_c2": loss_sam3d_dense_c2,
-                "loss_sam3d_dense_c4": loss_sam3d_dense_c4,
+                "loss_primary_obs_c2": loss_primary_c2,
+                "loss_primary_obs_c4": loss_primary_c4,
             }
             losses_all.update(suffix_non_shape_losses(reg_c2, "c2"))
             losses_all.update(suffix_non_shape_losses(reg_c4, "c4"))
@@ -334,16 +345,8 @@ class DualCamERPFitter(BaseSMPLXFitter):
 
         for stage_name, get_params, max_iter, stage_stop, weight_mult in optimization_stages:
             stage_weights = {k: base_weights[k] * weight_mult.get(k, 1.0) for k in base_weights}
-            compute_densekp_c2 = stage_weights.get("loss_densekp_c2", 0.0) > 0
-            compute_densekp_c4 = stage_weights.get("loss_densekp_c4", 0.0) > 0
-            compute_sam3d_dense_c2 = (
-                stage_weights.get("loss_sam3d_dense_c2", 0.0) > 0
-                and has_sam3d_dense_c2
-            )
-            compute_sam3d_dense_c4 = (
-                stage_weights.get("loss_sam3d_dense_c4", 0.0) > 0
-                and has_sam3d_dense_c4
-            )
+            compute_primary_c2 = stage_weights.get("loss_primary_obs_c2", 0.0) > 0 and has_primary_c2
+            compute_primary_c4 = stage_weights.get("loss_primary_obs_c4", 0.0) > 0 and has_primary_c4
             params = get_params()
             optimizer = torch.optim.LBFGS(
                 params,
@@ -358,10 +361,8 @@ class DualCamERPFitter(BaseSMPLXFitter):
                     p.grad = None
                 optimizer.zero_grad()
                 losses_all = make_loss_fn(
-                    compute_densekp_c2=compute_densekp_c2,
-                    compute_densekp_c4=compute_densekp_c4,
-                    compute_sam3d_dense_c2=compute_sam3d_dense_c2,
-                    compute_sam3d_dense_c4=compute_sam3d_dense_c4,
+                    compute_primary_c2=compute_primary_c2,
+                    compute_primary_c4=compute_primary_c4,
                 )
                 zero = next(iter(losses_all.values())).new_zeros(1)
                 loss = sum(losses_all.get(k, zero) * stage_weights[k] for k in stage_weights)

@@ -38,16 +38,7 @@ from lib_pano.composite.cpw_warp import (
 )
 
 
-DATASET = "20260311_riding"
 PROJECT_ROOT = Path(config_script.PROJECT_ROOT)
-DATA_ROOT = PROJECT_ROOT / "data_process" / "Output" / DATASET
-
-RESULT_DIR = DATA_ROOT / "fitting" / "dual_cam_sam3d_dense"
-IMAGE_DIR = DATA_ROOT / "image" / "equirect_rotate"
-OUTPUT_ROOT = (
-    PROJECT_ROOT / "data_process" / "Vis" / "debug077_fitted_densekp138_valid_cpw"
-)
-
 ERP_W = 5760
 ERP_H = 2880
 NUM_DENSEKP = 138
@@ -70,6 +61,12 @@ def parse_args() -> argparse.Namespace:
         description="Fitted DenseKP138 双方 ERP valid-region 筛点对（CPW 链路验证第一版）。"
     )
     parser.add_argument(
+        "--dataset",
+        type=str,
+        required=True,
+        help="数据集名称，例如 20260311_riding 或 20260320_riding_dataset1。",
+    )
+    parser.add_argument(
         "--segment",
         type=str,
         default="513_518",
@@ -85,14 +82,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--fitting_dir",
         type=str,
-        default=str(RESULT_DIR),
-        help="Fitting 结果根目录（含 cam2/ cam4/ 的 seg_*_seq.pkl）。默认 dual_cam_sam3d_dense。",
+        default=None,
+        help="Fitting 结果根目录（含 cam2/ cam4/ 的 seg_*_seq.pkl）。默认 data_process/Output/<dataset>/fitting/dual_cam_sam3d_dense。",
     )
     parser.add_argument(
         "--output",
         type=str,
-        default=str(OUTPUT_ROOT),
-        help="输出根目录，下设 data/ 与各方向子目录。默认 Vis/debug077_fitted_densekp138_valid_cpw。",
+        default=None,
+        help="输出根目录，下设 data/ 与各方向子目录。默认 data_process/Vis/debug077_fitted_densekp138_valid_cpw/<dataset>。",
     )
     return parser.parse_args()
 
@@ -373,6 +370,7 @@ def run_cpw_direction(
     frame_idxs: list[int],
     data_dir: Path,
     out_base: Path,
+    image_dir: Path,
     src_cam: str,
     tgt_cam: str,
     direction_name: str,
@@ -434,8 +432,8 @@ def run_cpw_direction(
             row["disp_median"] = f"{float(np.median(disp_norm)):.3f}"
             row["disp_std"] = f"{float(disp_norm.std()):.3f}"
 
-            src_img_path = find_image(IMAGE_DIR, src_cam, frame_idx)
-            tgt_img_path = find_image(IMAGE_DIR, tgt_cam, frame_idx)
+            src_img_path = find_image(image_dir, src_cam, frame_idx)
+            tgt_img_path = find_image(image_dir, tgt_cam, frame_idx)
             src_img = cv2.imread(str(src_img_path)) if src_img_path is not None else None
             tgt_img = cv2.imread(str(tgt_img_path)) if tgt_img_path is not None else None
             if src_img is None or tgt_img is None:
@@ -547,6 +545,7 @@ def run_cpw_direction(
 def generate_points_for_segment(
     segment: str,
     R: np.ndarray,
+    image_dir: Path,
     forwarder: SMPLXForwarder,
     result_dir: Path,
     data_dir: Path,
@@ -587,8 +586,8 @@ def generate_points_for_segment(
         points_cam2 = project_points_erp(densekp_3d_cam2, ERP_W, ERP_H, project_cam2)
         points_cam4 = project_points_erp(densekp_3d_cam4, ERP_W, ERP_H, project_cam2)
 
-        img_cam2_path = find_image(IMAGE_DIR, "cam2", frame_idx)
-        img_cam4_path = find_image(IMAGE_DIR, "cam4", frame_idx)
+        img_cam2_path = find_image(image_dir, "cam2", frame_idx)
+        img_cam4_path = find_image(image_dir, "cam4", frame_idx)
         mask_cam2 = compute_valid_mask(img_cam2_path)
         mask_cam4 = compute_valid_mask(img_cam4_path)
 
@@ -662,6 +661,18 @@ def discover_segments(result_dir: Path, cam: str = "cam2") -> list[str]:
 def main() -> None:
     args = parse_args()
 
+    dataset = args.dataset
+    data_root = PROJECT_ROOT / "data_process" / "Output" / dataset
+    image_dir = data_root / "image" / "equirect_rotate"
+    result_dir = (
+        Path(args.fitting_dir) if args.fitting_dir is not None
+        else data_root / "fitting" / "dual_cam_sam3d_dense"
+    )
+    output_root = (
+        Path(args.output) if args.output is not None
+        else PROJECT_ROOT / "data_process" / "Vis" / "debug077_fitted_densekp138_valid_cpw" / dataset
+    )
+
     regressor_path = (
         PROJECT_ROOT / "tools/CameraHMR/data/train-eval-utils/densekp_regressor_R.npy"
     )
@@ -669,9 +680,6 @@ def main() -> None:
     assert R.shape == (138, 10475), f"unexpected R shape: {R.shape}"
 
     forwarder = SMPLXForwarder(gender="neutral")
-
-    result_dir = Path(args.fitting_dir)
-    output_root = Path(args.output)
 
     if args.segment.lower() == "all":
         segments = discover_segments(result_dir, cam="cam2")
@@ -698,7 +706,7 @@ def main() -> None:
         print(f"[{i + 1}/{len(segments)}] segment {segment}")
         print("=" * 60)
         all_frames.extend(
-            generate_points_for_segment(segment, R, forwarder, result_dir, data_dir, summary_rows)
+            generate_points_for_segment(segment, R, image_dir, forwarder, result_dir, data_dir, summary_rows)
         )
 
     summary_path = data_dir / "summary.csv"
@@ -714,7 +722,7 @@ def main() -> None:
     print(f"summary: {summary_path}")
 
     for src_cam, tgt_cam, direction_name in get_direction_pairs(args.directions):
-        run_cpw_direction(all_frames, data_dir, output_root, src_cam, tgt_cam, direction_name)
+        run_cpw_direction(all_frames, data_dir, output_root, image_dir, src_cam, tgt_cam, direction_name)
 
 
 if __name__ == "__main__":
@@ -722,25 +730,24 @@ if __name__ == "__main__":
 
 
 r"""
-cd /home/yuyue/Projects/pano-stitch
-conda activate stitchenv
 
-# 双向（默认 fitting_dir / output）
+# 默认路径（fitting/output 从 --dataset 自动推导）：双向 CPW
 python src/script/test_function/debug077_fitted_densekp138_valid_cpw_composite.py \
+  --dataset 20260311_riding \
   --segment 513_518 \
-  --directions both \
-  --fitting_dir data_process/Output/20260311_riding/fitting/dual_cam_sam3d_dense \
-  --output data_process/Vis/debug077_fitted_densekp138_valid_cpw/sam_3d_body_test
+  --directions both
 
-# 仅 cam4 -> cam2
+# 所有 segment
 python src/script/test_function/debug077_fitted_densekp138_valid_cpw_composite.py \
-  --segment 513_518 \
-  --directions cam4_to_cam2
+  --dataset 20260311_riding \
+  --segment all \
+  --directions both
 
-# 所有 segment + 自定义 fitting 结果目录与输出目录
+# 自定义 fitting_dir 与 output（覆盖 dataset 默认值）
 python src/script/test_function/debug077_fitted_densekp138_valid_cpw_composite.py \
+  --dataset 20260320_riding_dataset2 \
   --segment all \
   --directions both \
-  --fitting_dir data_process/Output/20260311_riding/fitting/dual_cam_sam3d_dense \
-  --output data_process/Vis/debug077_fitted_densekp138_valid_cpw/sam_3d_body
+  --fitting_dir data_process/Output/20260320_riding_dataset2/fitting/dual_cam_sam3d_dense \
+  --output data_process/Output/20260320_riding_dataset2/tps_result/sam3dbody_cpw
 """

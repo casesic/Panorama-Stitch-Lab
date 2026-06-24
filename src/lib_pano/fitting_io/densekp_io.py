@@ -24,6 +24,7 @@ def load_densekp_result(
     image_width: int,
     image_height: int,
     crop_bbox: list[int] | None = None,
+    rotate_rule: str | None = None,
 ) -> DenseKPResult | None:
     """从 CameraHMR npz 加载 DenseKP 关键点，还原到 equirect_rotate 全图坐标并标记 validity。"""
     if crop_bbox is None:
@@ -43,7 +44,7 @@ def load_densekp_result(
         densekp_bbox = densekp_bbox.astype(np.float32)
 
     keypoints_full = upright_points_to_equirect_rotate(
-        keypoints_upright, crop_bbox, frame_idx
+        keypoints_upright, crop_bbox, frame_idx, rotate_rule=rotate_rule
     )
 
     finite = np.isfinite(keypoints_full).all(axis=1)

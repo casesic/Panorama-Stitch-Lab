@@ -1,23 +1,6 @@
 #!/usr/bin/env python3
 """
 Export SMPL-X (10475) dense 2D observations from SAM 3D Body recon npz.
-
-For each recon npz (per frame / per camera):
-  1. Load pred_vertices / pred_cam_t / faces / focal_length / image_shape
-  2. Map MHR surface -> SMPL-X surface via mhr2smplx_mapping.npz
-     (triangle_ids + barycentric coords, 3D interpolation)
-  3. Project the 10475 SMPL-X surface points to 2D (pinhole, principal = center)
-  4. Save a lightweight observation npz (2D points + valid masks only)
-  5. Render an overlay vis for sanity check
-
-Stays in the `equirect_crop_rotate_upright` crop space. No fitter, no loss,
-no CPW, no ERP back-projection. Pure observation export.
-
-Output:
-  output_dir/
-    cam2/   cam4/                 # observation npz
-    vis/cam2/   vis/cam4/         # overlay jpg
-    summary.csv
 """
 
 from __future__ import annotations
@@ -292,9 +275,9 @@ python src/script/test_function/debug074_export_sam3d_smplx_dense_observation.py
 
 # All frames discovered from recon_dir:
 python src/script/test_function/debug074_export_sam3d_smplx_dense_observation.py \
-  --recon_dir data_process/Output/20260311_riding/sam3dbody/recon \
+  --recon_dir data_process/Output/20260320_riding_dataset2/sam3dbody/recon \
   --mapping_path tools/MHR/tools/mhr_smpl_conversion/assets/mhr2smplx_mapping.npz \
-  --output_dir data_process/Output/20260311_riding/sam3dbody/smplx_dense \
+  --output_dir data_process/Output/20260320_riding_dataset2/sam3dbody/smplx_dense \
   --segment all \
   --cams cam2 cam4 \
   --draw_step 20

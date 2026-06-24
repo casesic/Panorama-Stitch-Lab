@@ -8,7 +8,6 @@ from dataclasses import dataclass
 @dataclass
 class DualCamLossWeights:
     """双相机 SMPL-X 拟合各损失项的权重配置。"""
-    body_2d: float = 0.1
     pose_prior: float = 0.05
     hand_prior: float = 0.02
     pose_anchor: float = 1.0
@@ -19,17 +18,27 @@ class DualCamLossWeights:
     shape_anchor: float = 30.0
     shape_norm: float = 10.0
     densekp: float = 1.0
-    sam3d_dense: float = 0.5
+    sam3d_dense: float = 1.0
 
 
 def build_base_weights(
     n_frame: int,
+    primary_observation_source: str,
     weights: DualCamLossWeights,
 ) -> dict:
-    """按帧数缩放各权重，生成 c2/c4 双相机各损失项的基础权重字典。"""
+    """按帧数缩放各权重，生成 c2/c4 双相机各损失项的基础权重字典；主观测损失按 source 取 densekp 或 sam3d_dense 权重。"""
+    if primary_observation_source == "densekp":
+        primary_weight = weights.densekp
+    elif primary_observation_source == "sam3d_dense":
+        primary_weight = weights.sam3d_dense
+    else:
+        raise ValueError(
+            "primary_observation_source must be 'densekp' or 'sam3d_dense', "
+            f"got {primary_observation_source!r}"
+        )
     return {
-        "body_2d_det_c2": n_frame * weights.body_2d,
-        "body_2d_det_c4": n_frame * weights.body_2d,
+        "loss_primary_obs_c2": n_frame * primary_weight,
+        "loss_primary_obs_c4": n_frame * primary_weight,
         "loss_pose_prior_c2": n_frame * weights.pose_prior,
         "loss_pose_prior_c4": n_frame * weights.pose_prior,
         "loss_hand_prior_c2": n_frame * weights.hand_prior,
@@ -44,10 +53,6 @@ def build_base_weights(
         "loss_shape_bound": n_frame * weights.shape_bound,
         "loss_shape_anchor": n_frame * weights.shape_anchor,
         "loss_shape_norm": n_frame * weights.shape_norm,
-        "loss_densekp_c2": n_frame * weights.densekp,
-        "loss_densekp_c4": n_frame * weights.densekp,
-        "loss_sam3d_dense_c2": n_frame * weights.sam3d_dense,
-        "loss_sam3d_dense_c4": n_frame * weights.sam3d_dense,
     }
 
 
@@ -59,8 +64,8 @@ def build_optimization_stages(
     shared_beta,
 ) -> list:
     """定义两阶段 LBFGS 优化：
-    Stage 1 仅优化平移/朝向；
-    Stage 2 加入 body pose、shape、DenseKP 与 SAM dense surface 辅助约束。
+    Stage 1：单主观测源驱动的双视角朝向与平移对齐（仅优化 orient/transl）；
+    Stage 2：单主观测源 + pose/shape/temporal regularization 的联合人体拟合（加入 shared body_pose/beta）。
     """
     return [
         (
@@ -69,8 +74,8 @@ def build_optimization_stages(
             40,
             stop_ratio,
             {
-                "body_2d_det_c2": 1.0,
-                "body_2d_det_c4": 1.0,
+                "loss_primary_obs_c2": 1.0,
+                "loss_primary_obs_c4": 1.0,
                 "loss_pose_prior_c2": 0.0,
                 "loss_pose_prior_c4": 0.0,
                 "loss_hand_prior_c2": 0.0,
@@ -85,10 +90,6 @@ def build_optimization_stages(
                 "loss_shape_bound": 0.0,
                 "loss_shape_anchor": 0.1,
                 "loss_shape_norm": 0.0,
-                "loss_densekp_c2": 0.0,
-                "loss_densekp_c4": 0.0,
-                "loss_sam3d_dense_c2": 0.0,
-                "loss_sam3d_dense_c4": 0.0,
             },
         ),
         (
@@ -104,8 +105,8 @@ def build_optimization_stages(
             60,
             stop_ratio,
             {
-                "body_2d_det_c2": 1.0,
-                "body_2d_det_c4": 1.0,
+                "loss_primary_obs_c2": 1.0,
+                "loss_primary_obs_c4": 1.0,
                 "loss_pose_prior_c2": 1.0,
                 "loss_pose_prior_c4": 1.0,
                 "loss_hand_prior_c2": 0.0,
@@ -120,10 +121,6 @@ def build_optimization_stages(
                 "loss_shape_bound": 1.0,
                 "loss_shape_anchor": 0.1,
                 "loss_shape_norm": 1.0,
-                "loss_densekp_c2": 1.0,
-                "loss_densekp_c4": 1.0,
-                "loss_sam3d_dense_c2": 1.0,
-                "loss_sam3d_dense_c4": 1.0,
             },
         ),
     ]

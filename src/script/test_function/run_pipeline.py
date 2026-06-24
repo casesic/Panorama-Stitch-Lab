@@ -275,8 +275,6 @@ def build_args_029(dataset_name: str, dataset_config: dict[str, Any]) -> list[st
     cmd = [
         "--reviewed",
         _require_field(dataset_name, dataset_config, "reviewed"),
-        "--rtm_dir",
-        _require_field(dataset_name, dataset_config, "rtm_erp_dir"),
         "--hmr_dir",
         _require_field(dataset_name, dataset_config, "hmr_cache_dir"),
         "--output_dir",
@@ -284,10 +282,32 @@ def build_args_029(dataset_name: str, dataset_config: dict[str, Any]) -> list[st
         "--bbox_dir",
         _require_field(dataset_name, dataset_config, "equirect_crop_rotate_dir"),
     ]
-    _append_optional_arg(cmd, dataset_config, "rtm_invalid_json")
     _append_optional_arg(cmd, dataset_config, "hmr_invalid_json")
-    if "rtm_invalid_json" not in dataset_config:
-        _append_optional_arg(cmd, dataset_config, "invalid_detections", "rtm_invalid_json")
+
+    densekp_dir = dataset_config.get("densekp_dir")
+    sam3d_dense_dir = dataset_config.get("sam3d_dense_dir")
+    has_densekp = isinstance(densekp_dir, str) and bool(densekp_dir.strip())
+    has_sam3d = isinstance(sam3d_dense_dir, str) and bool(sam3d_dense_dir.strip())
+    if has_densekp and has_sam3d:
+        raise ValueError(
+            f"Dataset '{dataset_name}' step 029: choose exactly one primary observation source; "
+            "both 'densekp_dir' and 'sam3d_dense_dir' are set."
+        )
+    if not has_densekp and not has_sam3d:
+        raise ValueError(
+            f"Dataset '{dataset_name}' step 029: must configure one primary observation source "
+            "('densekp_dir' or 'sam3d_dense_dir')."
+        )
+    if has_densekp:
+        cmd.extend(["--densekp_dir", densekp_dir])
+        _append_optional_arg(cmd, dataset_config, "densekp_filter")
+    else:
+        cmd.extend(["--sam3d_dense_dir", sam3d_dense_dir])
+        if dataset_config.get("densekp_filter") is not None:
+            raise ValueError(
+                f"Dataset '{dataset_name}' step 029: 'densekp_filter' is only valid with 'densekp_dir' "
+                "(DenseKP mode)."
+            )
 
     cmd.extend(["--max_segment_len", str(_get_field_with_default(dataset_config, "max_segment_len", 10))])
     return cmd

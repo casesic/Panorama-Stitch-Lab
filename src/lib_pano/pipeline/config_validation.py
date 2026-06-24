@@ -16,7 +16,7 @@ REQUIRED_FIELDS_BY_STEP: dict[str, tuple[FieldSpec, ...]] = {
     "026": ("reviewed", "equirect_crop_rotate_dir", "rtm_erp_dir", "device"),
     "027": ("reviewed", "equirect_crop_rotate_dir", ("rtmw_erp_dir", "rtm_erp_dir"), "pose_config", "pose_checkpoint"),
     "024": ("reviewed", "4d_humans_dir", "hmr_cache_dir"),
-    "029": ("reviewed", "rtm_erp_dir", "hmr_cache_dir", "fitting_dir", "equirect_crop_rotate_dir"),
+    "029": ("reviewed", "hmr_cache_dir", "fitting_dir", "equirect_crop_rotate_dir"),
     "030": ("fitting_dir", "rtm_erp_dir", "equirect_rotate_dir", "vis_dir"),
     "031": (("fitting_dual_dir", "fitting_dir"), "equirect_rotate_dir", "flow_dir"),
     "038": (("sam3_model_dir", "sam_model"), "equirect_crop_rotate_dir", "seg_dir", "reviewed"),
@@ -50,10 +50,16 @@ OPTIONAL_FIELDS_BY_STEP: dict[str, tuple[str, ...]] = {
     ),
     "024": (),
     "029": (
-        "rtm_invalid_json",
+        "densekp_dir",
+        "sam3d_dense_dir",
+        "densekp_filter",
         "hmr_invalid_json",
-        "invalid_detections",
         "max_segment_len",
+        "image_width",
+        "image_height",
+        "start_frame",
+        "end_frame",
+        "segments",
     ),
     "030": ("mesh", "scale"),
     "031": ("vis_dir",),
@@ -119,6 +125,28 @@ def maybe_get_with_fallback(
     return default
 
 
+def _validate_cross_fields(dataset_name: str, dataset_config: dict[str, Any], step_id: str) -> list[str]:
+    errors: list[str] = []
+    if step_id == "029":
+        has_densekp = _has_value(dataset_config, "densekp_dir")
+        has_sam3d = _has_value(dataset_config, "sam3d_dense_dir")
+        if has_densekp and has_sam3d:
+            errors.append(
+                f"dataset={dataset_name} step=029 must choose exactly one primary observation source; "
+                "both 'densekp_dir' and 'sam3d_dense_dir' are set"
+            )
+        elif not has_densekp and not has_sam3d:
+            errors.append(
+                f"dataset={dataset_name} step=029 must configure one primary observation source "
+                "('densekp_dir' or 'sam3d_dense_dir')"
+            )
+        if has_sam3d and not has_densekp and _has_value(dataset_config, "densekp_filter"):
+            errors.append(
+                f"dataset={dataset_name} step=029 'densekp_filter' is only valid with 'densekp_dir' (DenseKP mode)"
+            )
+    return errors
+
+
 def validate_dataset_config(dataset_name: str, dataset_config: dict[str, Any], step_ids: list[str]) -> list[str]:
     errors: list[str] = []
     for step_id in step_ids:
@@ -131,4 +159,5 @@ def validate_dataset_config(dataset_name: str, dataset_config: dict[str, Any], s
                 errors.append(format_missing_field_error(dataset_name, step_id, primary, fallback))
             elif not _has_value(dataset_config, field_spec):
                 errors.append(format_missing_field_error(dataset_name, step_id, field_spec))
+        errors.extend(_validate_cross_fields(dataset_name, dataset_config, step_id))
     return errors
