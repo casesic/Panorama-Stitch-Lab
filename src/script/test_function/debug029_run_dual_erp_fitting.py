@@ -121,6 +121,25 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Optional JSON path for DenseKP ID filter (keep_ids / drop_ids); only valid in DenseKP mode.",
     )
+    parser.add_argument(
+        "--optimization_profile",
+        type=str,
+        choices=["legacy", "staged_charbonnier_parity"],
+        default="legacy",
+        help="Optimization profile: legacy (default) or staged_charbonnier_parity.",
+    )
+    parser.add_argument(
+        "--beta_abs_limit",
+        type=float,
+        default=2.5,
+        help="Beta absolute limit for staged profile (only used when --optimization_profile=staged_charbonnier_parity).",
+    )
+    parser.add_argument(
+        "--write_fit_diagnostics",
+        action="store_true",
+        default=False,
+        help="Save last_fit_diagnostics JSON per subsegment alongside fitting outputs.",
+    )
     args = parser.parse_args()
     if args.sam3d_dense_dir is not None and args.densekp_filter is not None:
         parser.error("--densekp_filter is only valid with --densekp_dir (DenseKP mode)")
@@ -221,6 +240,8 @@ def main() -> None:
         gender="neutral",
         R_cam4=R_CAM4,
         densekp_filter_path=args.densekp_filter,
+        optimization_profile=args.optimization_profile,
+        beta_abs_limit=args.beta_abs_limit,
     )
 
     frame_status: dict[str, dict[str, Any]] = {}
@@ -327,6 +348,10 @@ def main() -> None:
             valid_frame_count_c2 = sum(1 for obs in primary_observations_c2 if obs is not None and obs.valid.any())
             valid_frame_count_c4 = sum(1 for obs in primary_observations_c4 if obs is not None and obs.valid.any())
 
+            import time as _time
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+            _t0 = _time.perf_counter()
             result_c2, result_c4, shared_beta = fitter.fit(
                 image_size=(args.image_width, args.image_height),
                 smplx_init_c2=smplx_init_c2,
@@ -334,6 +359,26 @@ def main() -> None:
                 primary_observations_c2=primary_observations_c2,
                 primary_observations_c4=primary_observations_c4,
             )
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+            fit_elapsed_ms = (_time.perf_counter() - _t0) * 1000.0
+
+            if args.write_fit_diagnostics:
+                diag_dir = output_dir / "fit_diagnostics"
+                diag_dir.mkdir(parents=True, exist_ok=True)
+                diag_path = diag_dir / f"{subsegment_key}.json"
+                diag_data = {
+                    "segment_key": subsegment_key,
+                    "frame_idxs": sub_frame_idxs,
+                    "optimization_profile": args.optimization_profile,
+                    "primary_observation_source": primary_observation_source,
+                    "fit_elapsed_ms": fit_elapsed_ms,
+                    "valid_frame_count_c2": valid_frame_count_c2,
+                    "valid_frame_count_c4": valid_frame_count_c4,
+                    "last_fit_diagnostics": fitter.last_fit_diagnostics,
+                }
+                with diag_path.open("w", encoding="utf-8") as _f:
+                    json.dump(diag_data, _f, ensure_ascii=False, indent=2, default=str)
             save_segment_result(
                 result_c2=result_c2,
                 result_c4=result_c4,
@@ -401,7 +446,7 @@ python src/script/test_function/debug029_run_dual_erp_fitting.py \
 python src/script/test_function/debug029_run_dual_erp_fitting.py \
   --reviewed data_process/Input/20260320_riding/dataset1/review.json \
   --hmr_dir data_process/Output/20260320_riding_dataset1/hmr_cache \
-  --output_dir data_process/Output/20260320_riding_dataset1/fitting/dual_cam_sam3d_dense \
+  --output_dir data_process/Output/20260320_riding_dataset1/fitting/dual_cam_sam3d_dense_test \
   --hmr_invalid_json data_process/Output/20260320_riding_dataset1/hmr_cache/invalid.json \
   --bbox_dir data_process/Output/20260320_riding_dataset1/image/equirect_crop_rotate \
   --sam3d_dense_dir data_process/Output/20260320_riding_dataset1/sam3dbody/smplx_dense \

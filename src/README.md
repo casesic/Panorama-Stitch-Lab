@@ -384,3 +384,5 @@ cam4 error: 3906
 3. 然后把多个序列塞到一张图上，每个序列放刚开始两张，结束两张  (finished)
 
 rtmlib有些图片就是找不到, 再说吧
+
+data_process/Output/20260311_riding/image/equirect_crop_rotate_upright/cam2/00513.jpg

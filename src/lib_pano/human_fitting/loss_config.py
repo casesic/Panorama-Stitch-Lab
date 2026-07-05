@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
+
+OptimizationProfile = Literal["legacy", "staged_charbonnier_parity"]
 
 
 @dataclass
@@ -25,17 +28,25 @@ def build_base_weights(
     n_frame: int,
     primary_observation_source: str,
     weights: DualCamLossWeights,
+    optimization_profile: OptimizationProfile = "legacy",
 ) -> dict:
-    """按帧数缩放各权重，生成 c2/c4 双相机各损失项的基础权重字典；主观测损失按 source 取 densekp 或 sam3d_dense 权重。"""
+    """按帧数缩放各权重，生成 c2/c4 双相机各损失项的基础权重字典。"""
     if primary_observation_source == "densekp":
         primary_weight = weights.densekp
     elif primary_observation_source == "sam3d_dense":
         primary_weight = weights.sam3d_dense
     else:
-        raise ValueError(
-            "primary_observation_source must be 'densekp' or 'sam3d_dense', "
-            f"got {primary_observation_source!r}"
-        )
+        raise ValueError(f"primary_observation_source must be 'densekp' or 'sam3d_dense', got {primary_observation_source!r}")
+
+    if optimization_profile == "staged_charbonnier_parity":
+        return {
+            "loss_primary_obs_c2": primary_weight,
+            "loss_primary_obs_c4": primary_weight,
+            "loss_pose_anchor_shared": 1.0,
+            "loss_shape_anchor": 10.0,
+        }
+
+    # legacy
     return {
         "loss_primary_obs_c2": n_frame * primary_weight,
         "loss_primary_obs_c4": n_frame * primary_weight,
@@ -60,13 +71,64 @@ def build_optimization_stages(
     stop_ratio: float,
     smpl_c2,
     smpl_c4,
-    shared_body_pose,
-    shared_beta,
+    body_pose_param,
+    legacy_shared_beta=None,
+    beta_latent_param=None,
+    optimization_profile: OptimizationProfile = "legacy",
 ) -> list:
-    """定义两阶段 LBFGS 优化：
-    Stage 1：单主观测源驱动的双视角朝向与平移对齐（仅优化 orient/transl）；
-    Stage 2：单主观测源 + pose/shape/temporal regularization 的联合人体拟合（加入 shared body_pose/beta）。
+    """定义 LBFGS 优化阶段。
+
+    legacy: 两阶段 (stage1_transl_orient, stage2_body)
+
+    staged_charbonnier_parity: 三阶段
+      stage1_camera_alignment (orient/transl only, primary only)
+      stage2_pose_warmup (orient/transl + shared_body_pose, primary + pose_anchor)
+      stage2_joint_refinement (all + beta_latent, primary + pose_anchor + shape_anchor)
     """
+    if optimization_profile == "staged_charbonnier_parity":
+        return [
+            (
+                "stage1_camera_alignment",
+                lambda: [smpl_c2.orient, smpl_c2.transl, smpl_c4.orient, smpl_c4.transl],
+                30,
+                stop_ratio,
+                {
+                    "loss_primary_obs_c2": 1.0,
+                    "loss_primary_obs_c4": 1.0,
+                    "loss_pose_anchor_shared": 0.0,
+                    "loss_shape_anchor": 0.0,
+                },
+            ),
+            (
+                "stage2_pose_warmup",
+                lambda: [smpl_c2.orient, smpl_c2.transl, smpl_c4.orient, smpl_c4.transl, body_pose_param],
+                40,
+                stop_ratio,
+                {
+                    "loss_primary_obs_c2": 1.0,
+                    "loss_primary_obs_c4": 1.0,
+                    "loss_pose_anchor_shared": 1.0,
+                    "loss_shape_anchor": 0.0,
+                },
+            ),
+            (
+                "stage2_joint_refinement",
+                lambda: [
+                    smpl_c2.orient, smpl_c2.transl, smpl_c4.orient, smpl_c4.transl,
+                    body_pose_param, beta_latent_param,
+                ],
+                50,
+                stop_ratio,
+                {
+                    "loss_primary_obs_c2": 1.0,
+                    "loss_primary_obs_c4": 1.0,
+                    "loss_pose_anchor_shared": 1.0,
+                    "loss_shape_anchor": 1.0,
+                },
+            ),
+        ]
+
+    # legacy
     return [
         (
             "stage1_transl_orient",
@@ -95,12 +157,8 @@ def build_optimization_stages(
         (
             "stage2_body",
             lambda: [
-                smpl_c2.orient,
-                smpl_c2.transl,
-                smpl_c4.orient,
-                smpl_c4.transl,
-                shared_body_pose,
-                shared_beta,
+                smpl_c2.orient, smpl_c2.transl, smpl_c4.orient, smpl_c4.transl,
+                body_pose_param, legacy_shared_beta,
             ],
             60,
             stop_ratio,

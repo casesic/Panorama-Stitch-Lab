@@ -4,6 +4,7 @@ PanoTools/
 models/
 ._*
 ._*/ 
+artifacts/
 data_process/
 src/script/tools/test_colab.ipynb
 __pycache__/

@@ -1,12 +1,3 @@
-"""从 fitting 结果前向 SMPL-X、回归并投影 fitted DenseKP138，按 ERP 双方 valid-region 筛点对。
-
-第一版只做：fitting pkl → fitted DenseKP138 projection → 双方 valid-region 筛选 →
-点对可视化 → 逐帧 npz + summary.csv。本版不做 CPW warp / composite / flow。
-
-约定：cam2 与 cam4 两边都用 project_cam2 投影（绝不使用 project_cam4）；valid-region
-规则与 debug052 一致——只剔除与图像边界连通的黑区，内部深色（衣物/头发/阴影）保留，再向内 erosion。
-"""
-
 from __future__ import annotations
 
 import argparse
