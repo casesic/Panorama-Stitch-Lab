@@ -212,10 +212,10 @@ python src/script/test_function/debug030_vis_dual_erp.py \
 
 r'''
 python src/script/test_function/debug030_vis_dual_erp.py \
-  --result_dir data_process/Vis/legacy_vs_staged_charbonnier_benchmark_v2/staged_charbonnier_parity/fitting/886_895 \
-  --rtm_dir data_process/Output/20260320_riding_dataset1/rtm_cache/equirect_rotate \
-  --image_dir data_process/Output/20260320_riding_dataset1/image/equirect_rotate \
-  --output_dir data_process/Output/20260320_riding_dataset1/vis/staged \
+  --result_dir data_process/Vis/debug109_output/513_513 \
+  --rtm_dir data_process/Output/20260311_riding/rtm_cache/equirect_rotate \
+  --image_dir data_process/Output/20260311_riding/image/equirect_rotate \
+  --output_dir data_process/Output/20260311_riding/vis/staged \
   --mesh  \
   --scale 0.5
 '''

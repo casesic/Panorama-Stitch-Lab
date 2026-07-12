@@ -129,12 +129,6 @@ def parse_args() -> argparse.Namespace:
         help="Optimization profile: legacy (default) or staged_charbonnier_parity.",
     )
     parser.add_argument(
-        "--beta_abs_limit",
-        type=float,
-        default=2.5,
-        help="Beta absolute limit for staged profile (only used when --optimization_profile=staged_charbonnier_parity).",
-    )
-    parser.add_argument(
         "--write_fit_diagnostics",
         action="store_true",
         default=False,
@@ -241,7 +235,6 @@ def main() -> None:
         R_cam4=R_CAM4,
         densekp_filter_path=args.densekp_filter,
         optimization_profile=args.optimization_profile,
-        beta_abs_limit=args.beta_abs_limit,
     )
 
     frame_status: dict[str, dict[str, Any]] = {}
