@@ -1,388 +1,407 @@
-### 畸变
-#### 标定畸变的原理
-棋盘标定法：有M张图片(每张图片有单独的外参)，每张图片上N个角点，所以独立未知参数9+6M个，提供2MN个方程   
-1.已知输入：   
-(1) 角点世界坐标$P_w(X_i, Y_i, 0)^T$ 棋盘格上N个角点
-(2)每张图片角点的实际像素坐标$ p_{ij} = (u_{ij},v_{ij})^T$    
-2.待求参数：   
-(1)内参矩阵$K$($f_x,f_y,c_x,c_y$ )     
-(2)畸变系数(径向$k_1,k_2,k_3$,切向$p_1,p_2$)    
-(3)外参：$R=[r_1,r_2,r_3]$可以表示世界坐标系x,y,z轴在相机坐标系中的向量,   $T= t_1,t_2,t_3$  
-3.标定逻辑：
-(1)第一阶段：忽略畸变，线性求解内参和外参    
-$$
-P_C = X \cdot r_1 + Y \cdot r_2 + t = X \cdot \begin{bmatrix} r_{11} \\ r_{21} \\ r_{31} \end{bmatrix} + Y \cdot \begin{bmatrix} r_{12} \\ r_{22} \\ r_{32} \end{bmatrix} + \begin{bmatrix} t_x \\ t_y \\ t_z \end{bmatrix}  \quad Z=0,省略r_3行
-$$
- $H=K*[R:t]$为3*3矩阵，有效参数8个通过至少4个方程求解
+# Pano-Stitch：Staged LM 人体拟合使用说明
+
+本文档介绍当前 staged Levenberg–Marquardt（LM）SMPL-X 拟合流程的运行方法、
+输入输出和代码结构。命令均假定在仓库根目录执行。
 
-(2)第二阶段：引入畸变，非线性优化所有参数
-$$
-\min_{K, \{R_i, t_i\}, k_1, k_2, k_3, p_1, p_2} \sum_{i=1}^{M} \sum_{j=1}^{N} \left[ (u_{ij} - \hat{u}_{ij})^2 + (v_{ij} - \hat{v}_{ij})^2 \right]
-$$
-$u_{ij}$是实际的像素值，$\hat{u}_{ij}$是用已知参数的估计值
+## 1. 功能概览
 
-用 $Levenberg-Marquardt$算法迭代优化参数，直到收敛
+当前 production 流程面向双相机 ERP 观测，分为三个阶段：
 
-[相机校准](https://docs.opencv.org/4.x/dc/dbb/tutorial_py_calibration.html)  
-世界坐标->相机坐标->归一化坐标(/Zc)->畸变归一化坐标(应用畸变公式)->像素坐标(乘内参)
+1. **Stage 1 rigid alignment**：逐帧优化 cam2/cam4 的 global orientation 和
+   translation。
+2. **Stage 2 pose warmup**：逐帧继续优化相机姿态与 body pose，beta 固定。
+3. **Stage 2 joint refinement**：联合优化逐帧 pose 和跨帧共享的 bounded beta
+   latent。
+
+正式路径固定使用：
+
+- Stage 1 analytic Jacobian 和快速解析 evaluation；
+- Stage 2 pose analytic Jacobian 和 selected-vertex fast evaluation；
+- Stage 2 joint dynamic pose+beta analytic Jacobian；
+- combined pose/beta FK derivative；
+- direct arrowhead normal equations；
+- shared-beta Schur complement；
+- CPU/CUDA 显式 device contract。
+
+Autograd、full-forward、dense joint Hessian、separate FK 和 L-BFGS 等 reference
+实现只位于 validation 层，不会进入正式运行路径。
+
+## 2. 运行准备
+
+建议使用项目已有的 CameraHMR 环境：
+
+```bash
+conda activate camerahmr
+cd /path/to/pano-stitch
+```
+
+运行需要以下输入：
+
+- HMR 初始化目录；
+- SAM3D/SMPL-X dense observation 目录；
+- bbox/ERP crop metadata 目录；
+- 本机可用的 SMPL-X 模型文件和项目配置。
+
+脚本会自行把仓库的 `src/` 加入 `sys.path`，无需 editable install，也不要求使用
+`python -m`。
+
+## 3. 正式拟合
+
+正式入口为：
+
+```text
+src/script/human_fitting/staged_lm/run.py
+```
+
+### 3.1 CPU 单帧示例
 
-#### 畸变公式
-畸变参数：$center(x,y), a, b, c, d, e, f$
-$$
-x_{\text{distorted}} = (x_{\text{undist}} - c_x) \cdot R(r^2) + T_x(r^2, x_{\text{undist}}, y_{\text{undist}}) + c_x
-$$
-$$
-y_{\text{distorted}} = (y_{\text{undist}} - c_y) \cdot R(r^2) + T_y(r^2, x_{\text{undist}}, y_{\text{undist}}) + c_y
-$$
-$c_x,c_y$畸变中心的`归一化`坐标，   
-$r^2$无畸变坐标相对于畸变中心的径向距离平方, $r^2 = (x_{undist}-c_x)^2+(y_{undist}-c_y)^2$ ,    
-$R(r)^2$径向畸变因子，
-$R(r)^2 = 1 + ar^2 + br^4 +cr^6$
-$T_x, T_y$切向畸变因子，f=0无额外项
-$$
-\begin{align*}
-T_x &= 2d \cdot (x_{\text{undist}} - c_x) (y_{\text{undist}} - c_y) + e \cdot \left( r^2 + 2(x_{\text{undist}} - c_x)^2 \right) \\
-T_y &= d \cdot \left( r^2 + 2(y_{\text{undist}} - c_y)^2 \right) + 2e \cdot (x_{\text{undist}} - c_x) (y_{\text{undist}} - c_y)
-\end{align*}
-$$
+```bash
+python src/script/human_fitting/staged_lm/run.py \
+  --frames 513 \
+  --hmr_dir data_process/Output/20260311_riding/hmr_cache \
+  --sam3d_dense_dir data_process/Output/20260311_riding/sam3dbody/smplx_dense \
+  --bbox_dir data_process/Output/20260311_riding/image/equirect_crop_rotate \
+  --output_dir data_process/Vis/staged_lm \
+  --device cpu \
+  --reproj_objective charbonnier_irls \
+  --profile_timing
+```
+
+### 3.2 CUDA 单帧示例
+
+```bash
+python src/script/human_fitting/staged_lm/run.py \
+  --frames 513 \
+  --hmr_dir data_process/Output/20260311_riding/hmr_cache \
+  --sam3d_dense_dir data_process/Output/20260311_riding/sam3dbody/smplx_dense \
+  --bbox_dir data_process/Output/20260311_riding/image/equirect_crop_rotate \
+  --output_dir data_process/Vis/staged_lm_cuda \
+  --device cuda:0 \
+  --reproj_objective charbonnier_irls \
+  --profile_timing
+```
+
+显式请求 CUDA 但 CUDA 不可用时会抛出：
 
+```text
+CUDA_REQUESTED_BUT_UNAVAILABLE
+```
 
-[项目提供的畸变公式](https://panotools.org/dersch/barrel/barrel.html)
-$$
-r_{src} = ( a * r_{dest}^3 + b * r_{dest}^2 + c * r_{dest} + d ) * r_{dest}
-$$
-#### 畸变的种类
-主要都是径向畸变，分为桶形畸变和枕形畸变，是由于焦距的问题，而切向畸变是由于相机安装的问题一般可以规避   
-[畸变和为什么有畸变](https://zhuanlan.zhihu.com/p/1920436280124211549)
-
-### 外参
-#### lon,lat,theta
-
-定义世界坐标系，Z轴：指向上方, X轴：指向前方, Y轴：指向左方
-lon:绕着Z轴向左旋转为正
-lat:绕着Y轴向上旋转为证
-theta:绕着X轴旋转
-
-<img src="D:\Backup_Files\picture-storage\photos\三维旋转矩阵.png" alt="三维旋转矩阵" style="zoom:50%;" />
-
-### 鱼眼相机
-
-fov超过140度的为鱼眼镜头，针孔相机是相似性投影，使用达到180度的视角，图像会变为无穷大
-
-<img src="D:\Backup_Files\picture-storage\photos\相似性投影.png" alt="相似性投影" style="zoom:50%;" />
-
-#### 鱼眼相机的成像原理
-
-鱼眼镜头设计为了更大的视场角，选择非相似性成像，引入畸变，出射角一定小于入射角
-
-<img src="D:\Backup_Files\picture-storage\photos\非相似性投影.png" alt="非相似性投影" style="zoom:50%;" />
-
-
-
-等距投影模型
-
-$r_d$指图像上点到畸变中心的距离，$f$为鱼眼相机的焦距，$θ$是入射光线与鱼眼相机光轴之间
-
-$r_d = f\theta$
-
-<img src="D:\Backup_Files\picture-storage\photos\等距投影.png" alt="等距投影" style="zoom:50%;" />
-
-等立体角投影
-
-$r_d = 2fsin(\frac{\theta}{2})$
-
-<img src="D:\Backup_Files\picture-storage\photos\等立体角投影.png" alt="等立体角投影" style="zoom:50%;" />
-
-还有正交投影模型和体视投影模型，具体请参考[一文详解分析鱼眼相机投影成像模型和畸变模型](https://mp.weixin.qq.com/s?__biz=MzI4MDQ4NzQ5MQ==&mid=2247483973&idx=1&sn=2ca009ae8ba81c0b66bf3db9c603790b&chksm=ebb6f169dcc1787f11de8f61c538d55dc4023b85a204784a611a309fde31a286e8d491db3c5b&token=829651387&lang=zh_CN#rd)
-
-#### 通用鱼眼相机模型-Kannala-Brandt 模型
-
-鱼眼相机在生产过程中不可能完全精确按照投影模型，为了方便鱼眼相机的标定，根据以上的四种鱼眼相机投影模型，Kannala-Brandt提出了一种鱼眼相机的一般多项式近似模型
-
-$\theta_d = k_0\theta+k_1\theta^3+k_2\theta^5+...$
-
-#### 鱼眼相机成像过程
-
-<img src="D:\Backup_Files\picture-storage\photos\坐标系.png" alt="坐标系" style="zoom:50%;" />
-
-<img src="D:\Backup_Files\picture-storage\photos\鱼眼成像模型.png" alt="鱼眼成像模型" style="zoom:50%;" />
-
-世界坐标系中一点$P_w=(X_w,Y_w,Z_w)$
-
-1.世界坐标系—>相机坐标系$(X_c,Y_c,Z_c)$
-
-$P_c=RP_w+T$
-
-$P_c=(X_c,Y_c,Z_c)$
-
-2.相机坐标系转归一化球面上 $(x_s,y_s,z_s)$
-
-$x_s = X_c/Z_c \quad y_s=Y_c/Z_c \quad z_s=1$
-
-3.计算$\theta$
-
-$r_s=\sqrt{x_s^2+y_s^2}$
-
-$tan\theta=r_s/z_s=r_s$
-
-$\theta =arctan(r_s)$
-
-4.利用KB模型修正$\theta$
-
-因为镜头设计有误差
-
-$\theta_d = \theta(1+k_1\theta^2+k_2\theta^4+k_3\theta^6+k_4\theta^8)$
-
-5.计算该点在图像物理坐标系的中的坐标$(x_i,y_i)$
-
-$r_i = f\theta_d$
-
-$r_i/r_s = x_i/x_s$
-
-$x_i=r_i*x_s/r_s=f\theta_d*x_s/r_s = \theta_d*x_s/r_s \quad f=1 \quad由于f在内参中已经被包含了$
-
-$y_i=\theta_d*y_s/r_s$
-
-6.->图像像素坐标系$(u,v)$
-
-$K$中的$f_x=f/dx \quad f_y=f/dy$
-
-$u=f_xx_i+c_x$
-
-$v=f_yy_i+c_y$
-
-
-
-#### 鱼眼图像投射到经纬度图像 
-
-两个都是像素坐标系
-
-经纬度图像的投影模型：水平方向x轴：对应球面的经度，范围 $[0,2\pi]$， 垂直方向y轴：对应球面的纬度，范围$[-\pi/2,\pi/2]$
-
-1.经纬度图像像素坐标系$\to$球面三维向量
-
-(1)像素$(i,j)$转为经纬度$(λ, φ)$
-
-$\lambda = 2\pi - \frac{2\pi \times i}{W_{\text{out}}}$
-
-$φ=\frac{\pi×j}{H_{out}}$ (0为北极，$\pi$为南极)
-
-$(W_{out}, H_{out})$通常为2:1，匹配360*180度球面
-
-(2)经纬度转为三维向量
-
-<img src="D:\Backup_Files\picture-storage\photos\鱼眼成像模型.png" alt="鱼眼成像模型" style="zoom:50%;" />
-
-$x_1 = \sinφ  \cos\lambda$
-
-$y_1 = \sinφ  \sin\lambda$
-
-$z_1 = \cosφ  $
-
-- 当 φ=π/2（赤道），z1=0，x1 和 y1 构成水平平面
-- 当 φ=0（北极），x1=y1=0，z1=1
-
-2.球面三维向量旋转以对准鱼眼$(x_2,y_2,z_2)$
-
-鱼眼是以光轴为中心的半球视场，经纬度图像 “以水平赤道为中心的 360° 视场”
-
-<img src="D:\Backup_Files\picture-storage\photos\球面旋转.jpg" alt="球面旋转" style="zoom:50%;" />
-
-绕 y 轴旋转 90°,然后仍需归一化确保$x_2^2+y_2^2+z_2^2=1$
-
-$rot=\begin{bmatrix} cos\theta &0 &sin\theta \\ 0&1&0 \\ -sin\theta &0&con\theta \end{bmatrix}$
-
-3.球面三维向量$\to$鱼眼图像坐标(u,v)
-
-天顶角 $\theta = arccos(z_2) $
-
-水平角 $\phi=arctan(y_2,x_2)$
-
-当 $θ ≤ FOV/2$ 时，该向量对应的场景点才被鱼眼镜头捕获
-
-$r = \text{radius} \times \frac{\theta_2}{\text{FOV}/2}$
-
-$u = c_x + r \cdot \cos\phi_2$
-
-$v = c_y + r \cdot \sin\phi_2$
-
-
-
-
-### src/tools中脚本的解释
-video_crop.sh: 根据给定宽高和左上角位移裁剪视频. 
-`./src/tools/video_crop.sh input.mp4 640 480 0 0`
-video_scale.sh: 按给定宽高缩放视频
-`./src/tools/video_scale.sh input.mp4 1280 720`
-video_select.sh: 按帧号区间抽取片段
-`./src/tools/video_select.sh input.mp4 100 200`
-video_snap.sh: 抽一帧成 PNG（单帧截图）
-`./src/script/tools/video_snap.sh Circular_Video/00_send/20251016/scene_1/origin_1.mp4 1`
-video_split.sh: 把输入的不同视频流与音频流拆成单独文件
-`./src/tools/video_split.sh input.mp4`
-video2png.sh: 按 start/step/end 的序列批量调用 snap（批量抽帧）。
-`./src/tools/video2png.sh input.mp4 0 10 100`
-
-### 代码函数的问题
-1. `intrinsic_path = r"src\calibration\intrinsic.json"`r表示raw的意思，eg:r'\n'就表示\和n
-2. remap(src, dst, map1, map2, interpolation) 
-dst(x,y)=src(map_x(x,y),map_y(x,y)),
-map1(x,y)=(x,y), map2(x,y)=empty OR map1(x,y)=x , map2(x,y)=y
-3. numpy.ndarry.shape = (h, w)
-
-### 注意
-1. 做一些公式上的东西最好还是要查查资料，不要光靠AI
-[OPENCV](https://docs.opencv.org/4.x/d6/d00/tutorial_py_root.html)    
-[NUMPY](https://numpy.org/doc/stable/reference/index.html)    
-2. http://172.23.66.245:10730/CodeOfPython
-3. 用大模型对不确定的代码要先考虑架构
-
-### 计划
-1. 了解畸变的原理 √
-2. 去opencv网站上了解从cv.remap和cv.undistort函数 √
-3. 写map1,map2,remap代替undistor函数  √
-4. 查看提供的warp_image里的像素误差 ×
-5. 畸变参数理解有问题，换新的数据  ×
-6. 新的数据fov计算有问题 ×
-7. 查看kalibr ×
-8. 外参可视化 z 轴朝前，x 轴朝右，y 轴朝下
-9. 鱼眼投射到三维可视化
-10. 明白问题在哪了,初始的视频给定的h和w和标定的是相反的
-11. 事实上我可以从任意地方开出来 让lon=0对准[-pi, pi]之间的值
-12. 给定的外参的理解不可能呈现preview的顺序，所以交换R[1]和R[2] 还是需要确认一下数据
-12. 重叠处要选择哪块的像素
-13. 相机光心投射到preview图要对的上
-14. 归一化可能错误不应该用fx，要和xi有关
-15. 去畸变投射经纬图要倒转图像(3840*2880) 
-16. 左右移动图片PS得到合理
-17. 无穷远处对齐了，近处的对齐(找简单的优化方法为了对比我们的)
-18. 可以找两张图像对应的点看它们的变换
-19. 主要就是R,T外参的问题, 如果要用到T得拿到真正的X,Y,Z世界坐标，而不是投射到球面上的
-20. 投射到经纬图上cam4(229)和cam6(161)在Y轴上和cam2(225,157)相差了4个像素 有问题要推导公式 已知Xws,Yws,Zws,求 Xcs,Ycs,Zcs 但Xw = R Xc +T
-21. 分别看正着和倒着经纬图上差几个像素，然后可以手动修一下,或者直接用特征点匹配来解决
-22. 重写pano_stitch支持倒着和正着拼接
-23. 需要知道d,相机距离地面的高度
-
-24. 人像的问题，mask不掉人手上的手机，人像对不齐
-25. 有缝隙的问题在于source向target对齐的时候，边界会出现灰色就不是全黑
-26. 三张图片不可能完全对齐彼此，需要做衡量
-27. 建筑物raft模型的选择应当用raft-kitti.pth如果用其他的效果不是很好
-28. 可能要做一些羽化，让视觉效果呈现的更加舒服
-29. 介绍一下思路，我打算自己写，一个个函数来，我写完了你可以检查
-30. 用背景插值，不要用纯黑或者纯白
-
-31. 找公司要对齐背景的代码，让我直接测试，或者还是来优化外参
-32. 思考怎么enhance合图
-
-33. 可以通过像素的密集程度来获得准确的mask
-### toDO
-1. 做双向的光流  √
-2. 人在接缝的试一下  (1,3,5raft的对齐效果不是很好，猜测是色调的原因)
-3. pixelStitch试一下把非overlap拼回去 √
-4. 去除黑色缝隙  √
-5. 重建人体  可以尝试从原图人体追踪mask
-
-### 记录思考
-cam2:
-transl值: [1.863065242767334, 1.1914435625076294, 0.3242669999599457]
-orient值: [-3.0329577922821045, -0.26066988706588745, 0.24891458451747894]
-cam4和cam2相距0.48m, cam4在前
-cam4: 
-transl值: [-1.8994135856628418, 1.1601755619049072, -0.16987767815589905]
-orient值: [-0.7074817419052124, -0.1383276730775833, -2.9048051834106445]
-通过smpl这个模型我可以拿到人体在3d世界的真实3d坐标
-可以通过3d关节点匹配获得准确的R,T在3d世界进行坐标系转换, 把cam2投射到cam4, 然后再通过内参一起投射到经纬图上
-然后有用sam2出来的人体mask, 这样可以单独做人体的合图
-背景对齐的代码可以向公司要
-depth anything v2的相对深度测得挺准的对于鱼眼相机，depth anything v3测物理深度不行
-
-
-### 临时数据
-这里的都是经纬图被映射到右边的
-cam24和cam26对齐
-x1_rotate, y1_rotate, z1_rotate = -0.0253406929675796854, 2.1000942047035394, 0
-x2_rotate, y2_rotate, z2_rotate = -0.017997000207730319, -2.0832903962207115,6.285002668279742
-
-cam24和cam46对齐
-x1_rotate, y1_rotate, z1_rotate = -0.0253406929675796854, 2.1000942047035394, 0
-x2_rotate, y2_rotate, z2_rotate = -0.055997000207730319, -2.0632903962207115,6.285002668279742
-
-cam26和46
-x1_rotate, y1_rotate, z1_rotate = 0.0127, 2.0850942047035394, 0
-x2_rotate, y2_rotate, z2_rotate = -0.017997000207730319, -2.0832903962207115,6.285002668279742
-
-正常R
-x1_rotate, y1_rotate, z1_rotate = 0.0033406929675796854, 2.0912942047035394, 6.287048634358602
-x1_rotate, y1_rotate, z1_rotate = -0.012997000207730319, -2.0972903962207115, 6.285002668279742
-
-x<0
-
-### 问题
-1. 
-problem: 
-我们之前从SMPL范围扩展到黄色mask范围的对不对
-answer: 
-(1)我觉得是对的，SMPL mesh 提供精确的核心锚点，向外通过距离衰减平滑扩展——离 mesh 近的区域（贴身衣服）继承较准确的 flow，离得远的（自行车）自然衰减到零，交给 RAFT 自己估计。
-2. 
-problem:
-我们现在SMPL Fitting还是不对齐很严重，分别是什么原因，该如何处理
-answer:
-(1)cam4左腿没对上。原因：RTM 对左脚踝的检测置信度仅为 0.44, 低于可信阈值（0.5, 可以认为左脚踝关键点实际上未被有效检测到, 由于优化时该关键点仍参与约束, 低置信度的错误位置反而会将左腿拉偏。处理：没有想法
-(2)cam2和cam4左右手都没对齐。原因：做手部优化用的是指尖的5个点, 骑车时手部姿态特殊, 指尖被车把遮挡, 检测置信度低, 导致指尖约束失效，手部姿态退化为默认张开状态。处理：可以尝试用手部的中间关节来约束
-
-
-### 2026/4/12
-视频数据情况  
-20260311_riding  2*191张
-20260320_riding/dataset1  2*135张
-20260320_riding/dataset2  2*115张
-20260320_riding/dataset3  2*549张
-1. 多个人堆叠的情况 例子：01329.jpg 03697.jpg
-2. 人被电线杆遮挡的情况,不同相机被电线杆遮挡的不一样, 例子：03950.jpg
-
-4dhumans情况(只在20260311_riding上跑了)
-可能在原图上检测一个box，然后投到经纬图赤道上
-1. 投影到赤道上的经纬图中
-cam2 missing (6 frames): [4629, 4740, 4741, 4742, 4743, 4744]                                 
-cam4 missing (7 frames): [4622, 4707, 4708, 4709, 4710, 5052, 5123]  
-2. 鱼眼图中
-没有 missing
-
-rtmlib检测情况(只在20260311_riding上跑了)
-1. 投影到赤道上的经纬图中
-cam2 missing:(21 frames)  3768, 3769, 3770, 3772, 3900, 3901, 3902, 3903, 3905, 4624, 4625, 4629, 4632, 4633, 4634, 4668, 4742, 4743, 4744, 4745, 5383
-cam2 error: (6 frames) 1900, 4623, 4630, 4631, 4669, 4670, 
-cam4 missing: (2 frames) 3807, 4041   
-cam4 error: (20-30frames) 2618, 2619, 2620, 2958, 3495, 3528, 3529, 3530, 3660, 3661, 3773, 3900, 3901, 3902, 4038, 4039, 4040, 4622等
-
-2. 鱼眼图中
-cam2 missing: 4625
-cam4 error: 3906 
-
-### 2026/4/13-2026/4/14 todo
-1. 用fisheye原图中检测的人体box映射到经纬图上，进行裁剪，送入4dhumans, rtmlib, sam获得smpl初值, 关键点检测值, 人体mask
-2. 分别在经纬图和鱼眼原图上进行人体重建，比对效果(不确定能做完)
-
-### 2026/4/13-2026/4/15
-1. 对鱼眼图进行4个方向的透视变换后做人体检测，排除小框并排除骑手自身区域后，选置信度最高的框。但在多人场景或复杂背景下，会选错目标人体或误选景物。目前已跑通完整流程（box检测→关键点检测→4D-Humans→ERP拟合），检测框准确率是当前瓶颈。
-2. 用效果较好的帧（cam2 513-519）跑了经纬图下的人体重建，拟合效果不错。
-3. SAM2 人体分割效果不稳定，主要是 prompt 关键点选择问题：部分帧由于人体并不完整，导致关键点落在经纬图黑色无效区域附近，SAM2 将无效区域误判为目标；
-4. 我目前的思路是：新建一个标注工具，对每个序列的第一帧手动点击标注目标人体位置，bbox 检测时选择离点击点最近的框，解决bbox检测选错目标的问题。bbox 准确率提升后再回头验证 SAM2 分割效果。
-
-### 2026/4/15-2026/4/17 to do
-1. 解决检测人体框不准的问题 整理一下(先不管)
-2. 尝试跨视角的人体重建优化 共享shape(pose 可能), 
-3. 由于人体是有衣物和头发的, 思考图像人体超出的smpl的部分怎么做处理
-
-### 2026/4/15-2026/4/17
-1. 进行了跨视角的人体重建, 共享shape, 同时把置信度在0.57以下的关节点取消参与loss计算，部分区域比如00515cam4的左腿相较于之前(所有检测的关节点都参与计算的情况)有所改善
-2. 现在在经纬图上分割人体不是很精准
-
-### 2026/4/17-2026/4/19 to do
-1. 先把人体分割精准了
-2. 轮廓损失，共享pose也可以试一下
-3. 然后把多个序列塞到一张图上，每个序列放刚开始两张，结束两张  (finished)
-
-rtmlib有些图片就是找不到, 再说吧
-
-data_process/Output/20260311_riding/image/equirect_crop_rotate_upright/cam2/00513.jpg
+### 3.3 多帧 shared-beta 示例
+
+```bash
+python src/script/human_fitting/staged_lm/run.py \
+  --frames 513,514,515,516 \
+  --hmr_dir data_process/Output/20260311_riding/hmr_cache \
+  --sam3d_dense_dir data_process/Output/20260311_riding/sam3dbody/smplx_dense \
+  --bbox_dir data_process/Output/20260311_riding/image/equirect_crop_rotate \
+  --output_dir data_process/Vis/staged_lm_t4 \
+  --device auto \
+  --reproj_objective charbonnier_irls
+```
+
+`--device auto` 会优先选择 `cuda:0`，没有 CUDA 时使用 CPU。
+
+### 3.4 正式 CLI 参数
+
+| 参数 | 含义 | 默认值 |
+| --- | --- | --- |
+| `--frames` | 帧号，多个帧以逗号分隔 | 必填 |
+| `--hmr_dir` | HMR 初始化目录 | 必填 |
+| `--sam3d_dense_dir` | dense SMPL-X observation 目录 | 必填 |
+| `--bbox_dir` | bbox/ERP metadata 目录 | 必填 |
+| `--image_width` | ERP 图像宽度 | `5760` |
+| `--image_height` | ERP 图像高度 | `2880` |
+| `--output_dir` | 输出根目录 | 必填 |
+| `--device` | `auto`、`cpu`、`cuda` 或 `cuda:N` | `auto` |
+| `--validate_device_contract` | 构建 context 后执行额外 device 检查 | 关闭 |
+| `--reproj_objective` | `charbonnier_irls` 或 `raw_l2` | `charbonnier_irls` |
+| `--stop_after_stage` | `stage1`、`stage2_pose` 或 `stage2` | `stage2` |
+| `--profile_timing` | 输出细粒度 timing | 关闭 |
+| `--progress_every_accepted` | 每隔多少 accepted step 打印进度 | `0` |
+
+查看最新参数：
+
+```bash
+python src/script/human_fitting/staged_lm/run.py --help
+```
+
+## 4. 输出文件
+
+输出目录会根据帧范围增加 segment 子目录。例如：
+
+```text
+data_process/Vis/staged_lm/
+└── 513_513/
+    ├── staged_stage2b_beta.json
+    └── staged_stage2b_beta.npz
+```
+
+其中：
+
+- JSON 保存 execution environment、config、各 Stage LM 结果、metrics、solver
+  counters 和 pipeline timing；
+- NPZ 保存 Stage 参数向量、anchors、physical beta 及用于可视化/复现的数组；
+- `--stop_after_stage` 提前停止时仍会写出当前已经完成的 Stage 结果。
+
+## 5. 可视化
+
+入口：
+
+```text
+src/script/human_fitting/staged_lm/visualize.py
+```
+
+示例：
+
+```bash
+python src/script/human_fitting/staged_lm/visualize.py \
+  --result_dir data_process/Vis/staged_lm/513_513 \
+  --image_dir data_process/Output/20260311_riding/image/equirect_crop_rotate \
+  --stage joint_refinement \
+  --solver lm \
+  --output_dir data_process/Vis/staged_lm_render \
+  --mesh \
+  --save_video
+```
+
+可选 Stage 为 `stage1`、`pose_warmup` 和 `joint_refinement`。脚本只读取已有结果，
+不会重新执行 LM。
+
+## 6. Correctness 与 solver validation
+
+统一入口：
+
+```text
+src/script/validation/staged_lm/run.py
+```
+
+### 6.1 查看子命令
+
+```bash
+python src/script/validation/staged_lm/run.py --help
+```
+
+支持：
+
+```text
+stage1
+pose-forward
+pose-jacobian
+pose-solver
+joint-beta
+joint-jacobian
+joint-solver
+joint-schur
+joint-fk
+all
+```
+
+### 6.2 Joint Schur 回归示例
+
+```bash
+python src/script/validation/staged_lm/run.py joint-schur \
+  --frames 513 \
+  --hmr_dir data_process/Output/20260311_riding/hmr_cache \
+  --sam3d_dense_dir data_process/Output/20260311_riding/sam3dbody/smplx_dense \
+  --bbox_dir data_process/Output/20260311_riding/image/equirect_crop_rotate
+```
+
+### 6.3 Combined/separate FK 与 L-BFGS Gate C
+
+```bash
+python src/script/validation/staged_lm/run.py joint-fk \
+  --frames 513 \
+  --hmr_dir data_process/Output/20260311_riding/hmr_cache \
+  --sam3d_dense_dir data_process/Output/20260311_riding/sam3dbody/smplx_dense \
+  --bbox_dir data_process/Output/20260311_riding/image/equirect_crop_rotate \
+  --run_lbfgs_oracle
+```
+
+## 7. 性能测试
+
+### 7.1 Joint analytic H/g kernel profile
+
+```bash
+python src/script/benchmark/staged_lm/profile_joint_kernels.py \
+  --frames 513 \
+  --hmr_dir data_process/Output/20260311_riding/hmr_cache \
+  --sam3d_dense_dir data_process/Output/20260311_riding/sam3dbody/smplx_dense \
+  --bbox_dir data_process/Output/20260311_riding/image/equirect_crop_rotate \
+  --device cpu \
+  --warmup 10 \
+  --repeats 30 \
+  --run_candidates
+```
+
+### 7.2 端到端 cold-start/steady-state profile
+
+```bash
+python src/script/benchmark/staged_lm/profile_end_to_end.py \
+  --frames 513 \
+  --hmr_dir data_process/Output/20260311_riding/hmr_cache \
+  --sam3d_dense_dir data_process/Output/20260311_riding/sam3dbody/smplx_dense \
+  --bbox_dir data_process/Output/20260311_riding/image/equirect_crop_rotate \
+  --output_dir data_process/Vis/staged_lm_benchmark \
+  --device cuda:0 \
+  --benchmark_warmup_runs 2 \
+  --benchmark_repeats 10 \
+  --benchmark_profile_breakdown \
+  --benchmark_output_json data_process/Vis/staged_lm_benchmark/summary.json
+```
+
+主 steady-state 统计不会把文件读取、模型加载和输出保存计入 fitting FPS。
+
+## 8. Tests
+
+安装 pytest 时可以运行：
+
+```bash
+pytest -q tests/human_fitting/staged_lm
+```
+
+各测试也支持直接执行，例如：
+
+```bash
+python tests/human_fitting/staged_lm/test_architecture.py
+python tests/human_fitting/staged_lm/test_stage1.py
+python tests/human_fitting/staged_lm/test_joint_jacobian.py
+python tests/human_fitting/staged_lm/test_device.py
+```
+
+## 9. Python API 示例
+
+需要在 Python 中调用而不通过 subprocess 时，可以复用正式 parser 和 application：
+
+```python
+from script.human_fitting.staged_lm.app import run_production_pipeline
+from script.human_fitting.staged_lm.cli import build_argument_parser
+
+parser = build_argument_parser()
+args = parser.parse_args([
+    "--frames", "513",
+    "--hmr_dir", "data_process/Output/20260311_riding/hmr_cache",
+    "--sam3d_dense_dir",
+    "data_process/Output/20260311_riding/sam3dbody/smplx_dense",
+    "--bbox_dir",
+    "data_process/Output/20260311_riding/image/equirect_crop_rotate",
+    "--output_dir", "data_process/Vis/staged_lm_api",
+    "--device", "cpu",
+])
+
+result = run_production_pipeline(args, save_outputs=True)
+print(result.joint_outcome.lm_result.objective)
+print(result.output_directory)
+```
+
+如果当前 Python 进程没有配置仓库路径，应先把 `<repository>/src` 加入
+`PYTHONPATH`。直接运行上述正式脚本时不需要这一步。
+
+## 10. 代码目录与文件职责
+
+### 10.1 Production library
+
+目录：`src/lib_pano/human_fitting/staged_lm/`
+
+| 文件 | 职责 |
+| --- | --- |
+| `README.md` | staged LM 的数学流程、production 默认值和架构说明 |
+| `config.py` | objective/solver dataclass、数值常量和 production provenance |
+| `types.py` | `StageContext`、Stage definition/outcome、LM result、normal equations 类型 |
+| `device.py` | CPU/CUDA 解析、tensor 迁移和 device contract 验证 |
+| `data_loading.py` | observation/HMR 读取、初始化及 context 数据准备 |
+| `parameter_layout.py` | Stage 1、pose、joint 参数布局、打包、解包和切片 |
+| `residuals.py` | reprojection group、残差展开及原始像素 metrics |
+| `irls.py` | Charbonnier IRLS、聚合规格和 frozen row scales |
+| `analytic_stage1.py` | Stage 1 selected forward、解析 Jacobian 和 direct H/g |
+| `stage2_pose_fast.py` | beta 固定的 selected-vertex pose forward/objective/metrics |
+| `stage2_pose_jacobian.py` | Stage 2 pose 解析 Jacobian 和 direct normal equations |
+| `stage2_joint_fast.py` | dynamic-beta selected forward、fast objective 和 metrics |
+| `stage2_joint_beta_jacobian.py` | physical beta 与 beta latent 的解析导数 |
+| `stage2_joint_jacobian.py` | joint pose+beta 解析 Jacobian、combined FK、arrowhead H/g |
+| `arrowhead_schur.py` | shared-beta arrowhead 系统、Schur solve 和 dense fallback |
+| `lm_solver.py` | 通用 LM iteration、damping、rho、accept/reject 和求解分派 |
+| `stages.py` | 三阶段 definition、handoff 和 production orchestration |
+| `output.py` | JSON/NPZ 数组构建、序列化和 timing metadata |
+
+Production library 不依赖 `src/script/`、validation、benchmark 或 tests。
+
+### 10.2 Application
+
+目录：`src/script/human_fitting/staged_lm/`
+
+| 文件 | 职责 |
+| --- | --- |
+| `app.py` | `build_context()`、三阶段 pipeline、结果组装与保存 orchestration |
+| `cli.py` | 正式 CLI 参数及默认值 |
+| `run.py` | 不超过一层转发逻辑的正式命令入口 |
+| `visualize.py` | 读取 JSON/NPZ 并生成 Stage/solver 可视化 |
+
+### 10.3 Validation
+
+目录：`src/script/validation/staged_lm/`
+
+| 文件 | 职责 |
+| --- | --- |
+| `common.py` | validation 公共参数、误差和 profiling helper |
+| `stage1.py` | Stage 1 residual/J/H-g/solver validation |
+| `pose.py` | pose selected forward、Jacobian、JVP、finite difference 和 solver 回归 |
+| `joint.py` | beta mapping、dynamic joint Jacobian、block/JVP/gradient 检查 |
+| `solver.py` | A/B/C、dense/Schur、separate/combined FK 和 Gate C 回归 |
+| `run.py` | validation subcommand 统一入口 |
+| `references/` | autograd/full-forward/dense/separate-FK/L-BFGS reference 实现 |
+
+依赖方向固定为：
+
+```text
+validation checks -> validation references -> production library
+```
+
+### 10.4 Benchmark
+
+目录：`src/script/benchmark/staged_lm/`
+
+| 文件 | 职责 |
+| --- | --- |
+| `joint_kernel_candidates.py` | 隔离的 kernel candidate 和 tensor/memory 审计 helper |
+| `profile_joint_kernels.py` | joint group analytic H/g 细粒度 profile |
+| `profile_end_to_end.py` | context、cold-start、steady-state、Stage timing 和 CPU/CUDA profile |
+
+候选 kernel 不会被 production 导入。
+
+### 10.5 Tests
+
+目录：`tests/human_fitting/staged_lm/`
+
+- `test_architecture.py`：包结构和依赖方向；
+- `test_pipeline.py`：pipeline 纯逻辑与配置；
+- `test_visualization.py`：输出读取和可视化纯逻辑；
+- `test_stage1.py`：Stage 1 analytic math；
+- `test_pose_fast.py`、`test_pose_jacobian.py`：pose forward/Jacobian；
+- `test_joint_beta_jacobian.py`、`test_joint_jacobian.py`：joint beta/combined J；
+- `test_arrowhead_schur.py`：structured system 和 Schur；
+- `test_joint_kernels.py`：benchmark candidate correctness；
+- `test_device.py`：CPU/CUDA device contract；
+- `helpers.py`：共享 synthetic fixtures，测试文件之间不相互导入。
+
+## 11. 推荐阅读顺序
+
+首次阅读建议按以下顺序：
+
+1. `src/lib_pano/human_fitting/staged_lm/README.md`
+2. `src/script/human_fitting/staged_lm/run.py`
+3. `src/script/human_fitting/staged_lm/app.py`
+4. `src/lib_pano/human_fitting/staged_lm/types.py`
+5. `src/lib_pano/human_fitting/staged_lm/config.py`
+6. `src/lib_pano/human_fitting/staged_lm/stages.py`
+7. `analytic_stage1.py`
+8. `stage2_pose_jacobian.py`
+9. `stage2_joint_jacobian.py`
+10. `arrowhead_schur.py`
+11. `lm_solver.py`
+
+更详细的数学、验证状态和当前性能结论见：
+
+```text
+src/lib_pano/human_fitting/staged_lm/README.md
+```
