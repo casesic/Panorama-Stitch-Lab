@@ -37,9 +37,15 @@ from .stage2_joint_fast import (
     build_stage2_joint_fast_cache,
     stage2_joint_fast_objective_terms,
 )
-from .stage2_joint_jacobian import build_stage2_joint_analytic_linearization
+from .stage2_joint_batched import (
+    build_stage2_joint_batch_cache,
+    build_stage2_joint_batched_linearization,
+)
 from .stage2_pose_fast import build_stage2_pose_fast_cache
-from .stage2_pose_jacobian import build_stage2_pose_analytic_linearization
+from .stage2_pose_batched import (
+    build_stage2_pose_batch_cache,
+    build_stage2_pose_batched_linearization,
+)
 from .stage2_shared_cache import (
     Stage2SharedGeometryCache,
     build_stage2_shared_geometry_cache,
@@ -273,6 +279,15 @@ def build_pose_stage_definition(
     _pipeline_sync(context)
     cache_start = time.perf_counter()
     cache = build_stage2_pose_fast_cache(context, shared_cache)
+    batch_cache = build_stage2_pose_batch_cache(
+        cache, pose_anchor_scale=pose_anchor_scale,
+    )
+    cache.batch_cache = batch_cache
+    cache.batch_cache_setup_ms = batch_cache.setup_ms
+    cache.batch_padding_ratio = batch_cache.layout.padding_ratio
+    cache.batch_persistent_bytes = batch_cache.persistent_bytes
+    cache.batch_group_count = batch_cache.layout.group_count
+    cache.batch_nmax = batch_cache.layout.nmax
     _pipeline_sync(context)
     cache_setup_ms = (time.perf_counter() - cache_start) * 1000.0
 
@@ -312,8 +327,9 @@ def build_pose_stage_definition(
     def linearization_builder(
         parameters: torch.Tensor, spec: dict[str, Any] | None,
     ) -> dict[str, Any]:
-        return build_stage2_pose_analytic_linearization(
-            cache, parameters, context.body_pose_anchors, pose_anchor_scale,
+        return build_stage2_pose_batched_linearization(
+            cache, batch_cache, parameters,
+            context.body_pose_anchors, pose_anchor_scale,
             is_irls=context.is_irls, charbonnier_eps=context.charbonnier_eps,
             aggregation_spec=spec, rep_scale=context.scaling.rep_scale,
         )
@@ -391,6 +407,15 @@ def build_joint_stage_definition(
     _pipeline_sync(context)
     cache_start = time.perf_counter()
     cache = build_stage2_joint_fast_cache(context, shared_cache)
+    batch_cache = build_stage2_joint_batch_cache(
+        cache, pose_anchor_scale=pose_anchor_scale,
+    )
+    cache.batch_cache = batch_cache
+    cache.batch_cache_setup_ms = batch_cache.setup_ms
+    cache.batch_padding_ratio = batch_cache.layout.padding_ratio
+    cache.batch_persistent_bytes = batch_cache.persistent_bytes
+    cache.batch_group_count = batch_cache.layout.group_count
+    cache.batch_nmax = batch_cache.layout.nmax
     _pipeline_sync(context)
     cache_setup_ms = (time.perf_counter() - cache_start) * 1000.0
 
@@ -441,8 +466,8 @@ def build_joint_stage_definition(
     def linearization_builder(
         parameters: torch.Tensor, spec: dict[str, Any] | None,
     ) -> dict[str, Any]:
-        return build_stage2_joint_analytic_linearization(
-            cache, parameters, beta_abs_limit, context.beta_anchor,
+        return build_stage2_joint_batched_linearization(
+            cache, batch_cache, parameters, beta_abs_limit, context.beta_anchor,
             context.body_pose_anchors, pose_anchor_scale, shape_anchor_scale,
             is_irls=context.is_irls, charbonnier_eps=context.charbonnier_eps,
             aggregation_spec=spec, rep_scale=context.scaling.rep_scale,
@@ -550,9 +575,23 @@ def _record_preparation_timing(
     pipeline_timing[f"{prefix}_cache_setup_ms"] = preparation.cache_setup_ms
     pipeline_timing[f"{prefix}_definition_bind_ms"] = preparation.definition_bind_ms
     if prefix in ("stage2_pose", "stage2_joint"):
-        pipeline_timing[f"{prefix}_derived_cache_setup_ms"] = (
-            preparation.cache_setup_ms
-        )
+        pipeline_timing[f"{prefix}_derived_cache_setup_ms"] = stage.analytic_cache.setup_ms
+    if prefix == "stage2_pose":
+        cache = stage.analytic_cache
+        pipeline_timing["stage2_pose_fast_cache_setup_ms"] = cache.setup_ms
+        pipeline_timing["stage2_pose_batch_cache_setup_ms"] = cache.batch_cache_setup_ms
+        pipeline_timing["stage2_pose_batch_padding_ratio"] = cache.batch_padding_ratio
+        pipeline_timing["stage2_pose_batch_persistent_bytes"] = cache.batch_persistent_bytes
+        pipeline_timing["stage2_pose_batch_group_count"] = cache.batch_group_count
+        pipeline_timing["stage2_pose_batch_nmax"] = cache.batch_nmax
+    if prefix == "stage2_joint":
+        cache = stage.analytic_cache
+        pipeline_timing["stage2_joint_fast_cache_setup_ms"] = cache.setup_ms
+        pipeline_timing["stage2_joint_batch_cache_setup_ms"] = cache.batch_cache_setup_ms
+        pipeline_timing["stage2_joint_batch_padding_ratio"] = cache.batch_padding_ratio
+        pipeline_timing["stage2_joint_batch_persistent_bytes"] = cache.batch_persistent_bytes
+        pipeline_timing["stage2_joint_batch_group_count"] = cache.batch_group_count
+        pipeline_timing["stage2_joint_batch_nmax"] = cache.batch_nmax
 
 
 def _record_stage2_cache_totals(

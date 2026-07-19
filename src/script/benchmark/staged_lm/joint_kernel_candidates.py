@@ -17,6 +17,7 @@ import torch
 from lib_pano.human_fitting.staged_lm.analytic_stage1 import project_cam2_erp_with_jacobian
 from lib_pano.human_fitting.staged_lm.analytic_stage1 import _skew, axis_angle_to_matrix, so3_right_jacobian
 from lib_pano.human_fitting.staged_lm.config import STAGE1_PER_FRAME_DIM
+from lib_pano.human_fitting.staged_lm.irls import compute_primary_charbonnier_tensor
 from lib_pano.human_fitting.staged_lm.parameter_layout import unpack_frame_parameters
 from lib_pano.human_fitting.staged_lm.stage2_joint_fast import (
     Stage2JointFastCache, Stage2JointFrameCameraCache, Stage2JointShapeState,
@@ -32,6 +33,7 @@ from script.validation.staged_lm.references.joint_backends import (
 )
 from lib_pano.human_fitting.staged_lm.arrowhead_schur import ArrowheadNormalEquationSystem
 from lib_pano.human_fitting.staged_lm.types import NormalEquations
+from lib_pano.human_fitting.staged_lm.types import ReprojectionGroup
 from lib_pano.human_fitting.staged_lm.stage2_pose_jacobian import (
     assemble_full_pose_rotation_jacobians,
     compute_selected_lbs_with_jacobian,
@@ -142,8 +144,8 @@ def profile_joint_group_baseline(
         return selected_v_shaped, d_v_beta, selected_v_shaped + pose_offsets
     (selected_v_shaped, d_v_beta, selected_v_posed), sections["D_dynamic_shape"] = _timed(parameters, dynamic_shape)
     tensors.update(selected_v_shaped=selected_v_shaped, d_v_beta=d_v_beta, selected_v_posed=selected_v_posed)
-    fk, sections["E_separate_reference_fk"] = _timed(
-        parameters, lambda: compute_joint_fk_with_pose_and_beta_jacobians_separate_reference(
+    fk, sections["E_combined_production_fk"] = _timed(
+        parameters, lambda: compute_joint_fk_with_combined_jacobian(
             rotations, d_rotations, shape_state.joints,
             shape_state.d_joints_d_latent, cache.model.parents.to(parameters.device),
         ),
@@ -231,6 +233,22 @@ def profile_joint_group_baseline(
     _, sections["P_arrowhead_update"] = _timed(parameters, block_update)
     result = JointGroupJacobianResult(residual, local_j, beta_j)
     return GroupProfile(result, sections, tensors)
+
+
+def profile_joint_group_production_combined(*args, **kwargs) -> GroupProfile:
+    """Explicitly named production baseline used by current benchmark reports."""
+    return profile_joint_group_baseline(*args, **kwargs)
+
+
+def profile_joint_separate_fk_reference(
+    rotations: torch.Tensor, d_rotations: torch.Tensor,
+    shape_state: Stage2JointShapeState, parents: torch.Tensor,
+) -> tuple[CombinedFKResult, float]:
+    """REFERENCE_ONLY: time the historical separate pose/beta recursion."""
+    return _timed(rotations, lambda: compute_joint_fk_with_pose_and_beta_jacobians_separate_reference(
+        rotations, d_rotations, shape_state.joints,
+        shape_state.d_joints_d_latent, parents,
+    ))
 
 
 def compute_joint_fk_with_combined_jacobian_bench(
@@ -521,10 +539,11 @@ def _batched_rotation_values_and_jacobians(
     basis = _skew(right.transpose(-1, -2))
     block_derivatives = torch.einsum("...ij,...kjl->...ilk", variable_rotations, basis)
     derivatives = torch.zeros(g, 55, 3, 3, 66, dtype=orientations.dtype, device=orientations.device)
-    derivatives[:, 0, :, :, :3] = block_derivatives[:, 0]
-    for joint in range(21):
-        column = 3 + 3*joint
-        derivatives[:, joint+1, :, :, column:column+3] = block_derivatives[:, joint+1]
+    mapping = torch.zeros(22, 66, 3, dtype=orientations.dtype, device=orientations.device)
+    joints = torch.arange(22, device=orientations.device)
+    components = torch.arange(3, device=orientations.device)
+    mapping[joints[:, None], joints[:, None] * 3 + components[None], components[None]] = 1
+    derivatives[:, :22] = torch.einsum("gjabk,jqk->gjabq", block_derivatives, mapping)
     return rotations, derivatives
 
 
@@ -620,8 +639,14 @@ def batched_joint_group_analytic_bench(
 
 def batched_group_hg_bench(
     kernel_args: tuple[Any, ...], row_scales: torch.Tensor,
+    analytic_result: tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor] | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    residual, active, beta_j, mask = batched_joint_group_analytic_bench(*kernel_args)
+    # Attribution callers may time this function independently.  Complete-NE
+    # callers pass the already computed analytic result so geometry/J runs once.
+    residual, active, beta_j, mask = (
+        batched_joint_group_analytic_bench(*kernel_args)
+        if analytic_result is None else analytic_result
+    )
     g, n = mask.shape
     row_scale = row_scales.reshape(g,n,2)
     r = (residual*row_scale).reshape(g,2*n).to(torch.float64)
@@ -632,6 +657,105 @@ def batched_group_hg_bench(
         torch.bmm(jb.transpose(1,2),jb), torch.bmm(ja.transpose(1,2),r.unsqueeze(-1)).squeeze(-1),
         torch.bmm(jb.transpose(1,2),r.unsqueeze(-1)).squeeze(-1),
     )
+
+
+def batched_joint_arrowhead_hg(
+    cache: Stage2JointFastCache, batch: JointGroupBatch,
+    parameters: torch.Tensor, beta_abs_limit: float, row_scales: torch.Tensor,
+    body_pose_anchors: list[torch.Tensor], beta_anchor: torch.Tensor,
+    pose_anchor_scale: float, shape_anchor_scale: float,
+) -> tuple[ArrowheadNormalEquationSystem, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Production-equivalent active-column padded arrowhead accumulation."""
+    p, b = 75, cache.model.beta_dim
+    framed = parameters[:-b].reshape(cache.frame_count, p).index_select(0, batch.frame_positions)
+    offsets = batch.camera_ids * 6
+    orient = framed.gather(1, offsets[:,None]+torch.arange(3,device=parameters.device)[None])
+    translation = framed.gather(1, offsets[:,None]+3+torch.arange(3,device=parameters.device)[None])
+    body = framed[:,12:]
+    shape = evaluate_joint_shape_state(cache, parameters[-b:], beta_abs_limit)
+    kernel_args = (
+        batch.valid_mask,batch.selected_base_v,batch.selected_beta_dirs,batch.selected_posedirs,
+        batch.selected_weights,batch.targets,batch.left_hand_pose,batch.right_hand_pose,batch.scale,
+        orient,translation,body,shape.beta,shape.d_beta_d_latent,shape.joints,
+        shape.d_joints_d_latent,cache.model.parents,cache.image_width,cache.image_height,
+    )
+    analytic_result = batched_joint_group_analytic_bench(*kernel_args)
+    residual, active, beta_j, _ = analytic_result
+    h_active,cross_active,h_beta,g_active,g_beta = batched_group_hg_bench(
+        kernel_args, row_scales, analytic_result,
+    )
+    frame_h=torch.zeros(cache.frame_count,p,p,dtype=torch.float64,device=parameters.device)
+    frame_cross=torch.zeros(cache.frame_count,p,b,dtype=torch.float64,device=parameters.device)
+    beta_h=h_beta.sum(0);frame_g=torch.zeros(cache.frame_count,p,dtype=torch.float64,device=parameters.device)
+    beta_g=g_beta.sum(0)
+    for group in range(batch.valid_mask.shape[0]):
+        frame=int(batch.frame_positions[group]);camera=int(batch.camera_ids[group]);start=0 if camera==0 else 6
+        indices=torch.cat((torch.arange(start,start+6,device=parameters.device),torch.arange(12,75,device=parameters.device)))
+        frame_h[frame][indices[:,None],indices[None,:]]+=h_active[group]
+        frame_cross[frame][indices]+=cross_active[group]
+        frame_g[frame][indices]+=g_active[group]
+    pose_scale2=float(pose_anchor_scale)**2
+    for frame in range(cache.frame_count):
+        delta=parameters[frame*p+12:(frame+1)*p]-body_pose_anchors[frame].to(parameters)
+        frame_h[frame,12:,12:]+=torch.eye(63,dtype=torch.float64,device=parameters.device)*pose_scale2
+        frame_g[frame,12:]+=delta.to(torch.float64)*pose_scale2
+    beta,dbdz=physical_beta_from_latent(parameters[-b:],beta_abs_limit)
+    shape_residual=(beta-beta_anchor.to(parameters))*shape_anchor_scale
+    diagonal=(dbdz*shape_anchor_scale).to(torch.float64)
+    beta_h+=torch.diag(diagonal.square());beta_g+=diagonal*shape_residual.to(torch.float64)
+    system=ArrowheadNormalEquationSystem(frame_h,frame_cross,beta_h,frame_g,beta_g)
+    return system,residual,active,beta_j
+
+
+def batched_joint_residual_only(
+    batch: JointGroupBatch, orientations: torch.Tensor, translations: torch.Tensor,
+    body_poses: torch.Tensor, physical_beta: torch.Tensor, joints: torch.Tensor,
+    parents: torch.Tensor, image_width: int, image_height: int,
+) -> torch.Tensor:
+    """Value-only padded joint kernel. No derivative tensor is constructed."""
+    g=orientations.shape[0];zeros=torch.zeros(g,3,3,dtype=orientations.dtype,device=orientations.device)
+    axis_angles=torch.cat((orientations[:,None],body_poses.reshape(g,21,3),zeros,
+                           batch.left_hand_pose.reshape(g,15,3),batch.right_hand_pose.reshape(g,15,3)),1)
+    rotations=axis_angle_to_matrix(axis_angles)
+    identity=torch.eye(3,dtype=rotations.dtype,device=rotations.device)
+    feature=(rotations[:,1:]-identity).reshape(g,-1)
+    offsets=torch.einsum("gp,gpnc->gnc",feature,batch.selected_posedirs)
+    shaped=batch.selected_base_v+torch.einsum("gncb,b->gnc",batch.selected_beta_dirs,physical_beta)
+    relative=batched_fk_value_by_depth_bench(rotations,joints,parents)
+    rest=torch.eye(4,dtype=rotations.dtype,device=rotations.device)[None,None].repeat(g,rotations.shape[1],1,1)
+    rest[:,:,:3,3]=-joints[None]
+    relative=relative@rest
+    transforms=torch.einsum("gnj,gjab->gnab",batch.selected_weights,relative[:,:,:3])
+    homogeneous=torch.cat((shaped+offsets,torch.ones_like(shaped[...,:1])),-1)
+    vertices=torch.einsum("gnab,gnb->gna",transforms,homogeneous)
+    vertices=vertices*batch.scale.reshape(-1,1,1)+translations[:,None]
+    uv,_=project_cam2_erp_with_jacobian(vertices.reshape(-1,3),image_width,image_height)
+    return (uv.reshape(g,-1,2)-batch.targets)*batch.valid_mask[...,None]
+
+
+def batched_joint_objective(
+    cache: Stage2JointFastCache, batch: JointGroupBatch, parameters: torch.Tensor,
+    beta_abs_limit: float, body_pose_anchors: list[torch.Tensor], beta_anchor: torch.Tensor,
+    pose_anchor_scale: float, shape_anchor_scale: float, *, objective_mode: str,
+    charbonnier_eps: float, rep_scale: float, aggregation_spec: dict[str,Any]|None,
+) -> dict[str,torch.Tensor]:
+    b=cache.model.beta_dim;framed=parameters[:-b].reshape(cache.frame_count,75).index_select(0,batch.frame_positions)
+    offsets=batch.camera_ids*6
+    orient=framed.gather(1,offsets[:,None]+torch.arange(3,device=parameters.device)[None])
+    translation=framed.gather(1,offsets[:,None]+3+torch.arange(3,device=parameters.device)[None]);body=framed[:,12:]
+    shape=evaluate_joint_shape_state(cache,parameters[-b:],beta_abs_limit)
+    residual=batched_joint_residual_only(batch,orient,translation,body,shape.beta,shape.joints,cache.model.parents,cache.image_width,cache.image_height)
+    if objective_mode=="raw_l2":primary=.5*torch.sum((residual*rep_scale)**2)
+    else:
+        if aggregation_spec is None:raise ValueError("aggregation_spec is required")
+        groups=[];keys=list(aggregation_spec["terms"])
+        for index in range(batch.valid_mask.shape[0]):
+            count=int(batch.point_counts[index]);frame_text,camera=keys[index].split("|",1);groups.append(ReprojectionGroup(
+                int(frame_text),camera,residual[index,:count]))
+        primary=compute_primary_charbonnier_tensor(groups,charbonnier_eps,aggregation_spec)
+    pose=.5*sum(torch.sum(((parameters[f*75+12:(f+1)*75]-body_pose_anchors[f].to(parameters))*pose_anchor_scale)**2) for f in range(cache.frame_count))
+    shape_anchor=.5*torch.sum(((shape.beta-beta_anchor.to(parameters))*shape_anchor_scale)**2)
+    return {"primary":primary,"pose_anchor":pose,"shape_anchor":shape_anchor,"total":primary+pose+shape_anchor}
 
 
 def benchmark_callable(

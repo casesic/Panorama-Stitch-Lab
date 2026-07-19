@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import sys
 from pathlib import Path
 
@@ -39,6 +40,11 @@ from tools.build_fov_estimator import FOVEstimator
 from tools.vis_utils import visualize_sample_together
 
 from lib_pano.human3d.sam3dbody_project import project_vertices_opencv_style
+from lib_pano.human3d.sam3dbody_io import Sam3DBodyRecon, save_sam3dbody_recon
+from lib_pano.human3d.sam3dbody_parameter_schema import (
+    capture_raw_schema,
+    extract_optional_numeric,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -215,6 +221,7 @@ def main() -> None:
 
     n_ok = 0
     n_skip = 0
+    schema_records: list[dict] = []
 
     for frame_idx in frame_indices:
         frame_key = f"{frame_idx:05d}"
@@ -256,6 +263,12 @@ def main() -> None:
             num_persons = result["num_persons"]
             pid = result["pid"]
 
+            raw_schema = capture_raw_schema(sel)
+            raw_schema.update({"frame_idx": frame_idx, "cam": cam})
+            schema_path = npz_dir / f"{frame_key}_raw_schema.json"
+            schema_path.write_text(json.dumps(raw_schema, indent=2), encoding="utf-8")
+            schema_records.append(raw_schema)
+
             img = cv2.imread(str(img_path))
             if img is None:
                 print(f"{tag} SKIP: failed to read image")
@@ -286,14 +299,13 @@ def main() -> None:
             print(f"{tag} inside={n_inside} valid_z={n_valid_z}")
 
             # save npz
-            np.savez_compressed(
-                npz_path,
+            save_sam3dbody_recon(npz_path, Sam3DBodyRecon(
                 image_path=str(img_path),
                 cam=cam,
                 frame_idx=frame_idx,
-                image_shape=np.array(img.shape),
+                image_shape=tuple(int(v) for v in img.shape),
                 bbox=bbox,
-                focal_length=np.array(focal, dtype=np.float32),
+                focal_length=focal,
                 pred_vertices=vertices,
                 pred_cam_t=cam_t,
                 vertices_cam=verts_cam,
@@ -302,7 +314,12 @@ def main() -> None:
                 inside=inside,
                 faces=faces,
                 pred_keypoints_2d=sel["pred_keypoints_2d"],
-            )
+                global_rot=extract_optional_numeric(sel, "global_rot"),
+                body_pose_params=extract_optional_numeric(sel, "body_pose_params"),
+                shape_params=extract_optional_numeric(sel, "shape_params"),
+                raw_parameter_schema_version=1,
+                raw_parameter_source="SAM3DBodyEstimator.process_one_image:selected",
+            ))
 
             # visualization
             overlay = draw_points(img, pts2d, valid_z, bbox=bbox)
@@ -320,6 +337,14 @@ def main() -> None:
             n_ok += 1
 
     csv_file.close()
+    summary_schema = {
+        "raw_parameter_schema_version": 1,
+        "records": schema_records,
+        "union_keys": sorted({key for record in schema_records for key in record["all_keys"]}),
+    }
+    (out / "sam3dbody_raw_schema_summary.json").write_text(
+        json.dumps(summary_schema, indent=2), encoding="utf-8"
+    )
     print(f"\n[DONE] {n_ok} ok, {n_skip} skipped (total {len(frame_indices) * len(args.cams)} frames)")
     print(f"summary: {csv_path}")
 

@@ -51,6 +51,13 @@ from lib_pano.human_fitting import DualCamERPFitter
 
 from lib_pano.human_fitting.staged_lm.config import (
     BETA_ATANH_EPS,
+    PRODUCTION_JOINT_EVALUATION,
+    PRODUCTION_JOINT_FK,
+    PRODUCTION_JOINT_LINEARIZATION,
+    PRODUCTION_POSE_EVALUATION,
+    PRODUCTION_POSE_LINEARIZATION,
+    PRODUCTION_STAGE1_EVALUATION,
+    PRODUCTION_STAGE1_LINEARIZATION,
     R_CAM4,
     ScalingConstants,
     SolverConfig,
@@ -295,7 +302,7 @@ def run_production_pipeline(
     command_start = time.perf_counter()
     context = build_context(args)
     pipeline_timing = dict(context.context_timing)
-    pipeline_timing["timing_schema_version"] = 3
+    pipeline_timing["timing_schema_version"] = 5
     if context.device.type == "cuda":
         torch.cuda.synchronize(context.device)
     fitting_start = time.perf_counter()
@@ -315,14 +322,14 @@ def run_production_pipeline(
     )
     saved_config = {
         **vars(args),
-        "jacobian_backend": "analytic_stage1",
-        "stage1_eval_backend": "analytic",
-        "stage2_pose_linearization_backend": "analytic",
-        "stage2_pose_eval_backend": "fast",
-        "stage2_joint_linearization_backend": "analytic",
-        "stage2_joint_eval_backend": "fast",
+        "jacobian_backend": PRODUCTION_STAGE1_LINEARIZATION,
+        "stage1_eval_backend": PRODUCTION_STAGE1_EVALUATION,
+        "stage2_pose_linearization_backend": PRODUCTION_POSE_LINEARIZATION,
+        "stage2_pose_eval_backend": PRODUCTION_POSE_EVALUATION,
+        "stage2_joint_linearization_backend": PRODUCTION_JOINT_LINEARIZATION,
+        "stage2_joint_eval_backend": PRODUCTION_JOINT_EVALUATION,
         "stage2_joint_linear_solver": "schur",
-        "stage2_joint_fk_jacobian_backend": "combined",
+        "stage2_joint_fk_jacobian_backend": PRODUCTION_JOINT_FK,
         "run_lbfgs_oracle": False,
         "validate_stage1_fast_eval": False,
         "validate_stage2_pose_fast_eval": False,

@@ -18,7 +18,8 @@ from lib_pano.human_fitting.staged_lm.config import STAGE1_PER_FRAME_DIM
 from lib_pano.human_fitting.staged_lm.parameter_layout import unpack_frame_parameters
 from lib_pano.human_fitting.staged_lm.stage2_pose_fast import build_stage2_pose_fast_cache, assemble_full_pose_rotations, fast_selected_vertices, project_cam2_erp
 from lib_pano.human_fitting.staged_lm.stage2_shared_cache import build_stage2_shared_geometry_cache
-from lib_pano.human_fitting.staged_lm.stages import build_stage1_definition, handoff_s1_to_pose, run_stage
+from lib_pano.human_fitting.staged_lm.stages import build_joint_stage_definition, build_pose_stage_definition, build_stage1_definition, handoff_s1_to_pose, run_stage
+from lib_pano.human_fitting.staged_lm.stage2_pose_jacobian import build_stage2_pose_analytic_linearization
 from lib_pano.human_fitting.smplx_sequence import forward_smplx_tensor_batch
 import dataclasses
 from torch.func import jacfwd, jvp
@@ -655,6 +656,7 @@ def pose_solver_context_args(cli: argparse.Namespace) -> argparse.Namespace:
         stage2_pose_eval_backend="full_forward", validate_stage2_pose_fast_eval=False,
         validate_irls_first_order=False, validate_irls_each_accepted=False,
         profile_timing=cli.profile, progress_every_accepted=0,
+        device=getattr(cli, "device", "auto"),
     )
 
 
@@ -747,6 +749,75 @@ def run_pose_solver_regression(cli=None) -> int:
                 f"linear_solve_ms={median_timing('linear_solve_ms'):.3f}"
             )
     print("[PASS] Stage 2 pose A/B/C solver regression")
+    return 0
+
+
+def run_pose_production_regression(cli) -> int:
+    """Compare the serial analytic reference with production FULL_BATCH Pose."""
+    context = build_context(pose_solver_context_args(cli))
+    stage1 = run_stage(build_stage1_definition(context), context)
+    shared = build_stage2_shared_geometry_cache(context)
+    production_definition, _ = build_pose_stage_definition(context, stage1, shared)
+    fast_cache = production_definition.analytic_cache
+    pose_anchor_scale = context.scaling.pose_anchor_scale
+
+    def serial_builder(parameters, spec):
+        return build_stage2_pose_analytic_linearization(
+            fast_cache, parameters, context.body_pose_anchors, pose_anchor_scale,
+            is_irls=context.is_irls, charbonnier_eps=context.charbonnier_eps,
+            aggregation_spec=spec, rep_scale=context.scaling.rep_scale,
+        )
+
+    serial_definition = dataclasses.replace(
+        production_definition,
+        linearization_builder=serial_builder,
+        linearization_backend="analytic_serial_reference",
+    )
+    serial = run_stage(serial_definition, context)
+    production = run_stage(production_definition, context)
+    ref, got = serial.lm_result, production.lm_result
+    serial_acceptance = [trial["accepted"] for trial in ref.trial_history]
+    production_acceptance = [trial["accepted"] for trial in got.trial_history]
+    if serial_acceptance != production_acceptance:
+        raise RuntimeError("POSE_PRODUCTION_ACCEPTANCE_MISMATCH")
+    if ref.status != got.status or len(ref.trial_history) != len(got.trial_history):
+        raise RuntimeError("POSE_PRODUCTION_TRAJECTORY_MISMATCH")
+    parameter_max = float((got.parameters - ref.parameters).abs().max())
+    objective_relative = abs(got.objective - ref.objective) / max(abs(ref.objective), 1e-16)
+    metric_max = max(abs(got.rms_metrics[key] - ref.rms_metrics[key]) for key in ("rms", "median", "p95"))
+    parameter_limit = 5e-5 if context.device.type == "cuda" else 1e-5
+    metric_limit = 1e-3
+    if parameter_max > parameter_limit or objective_relative > 1e-6 or metric_max > metric_limit:
+        raise RuntimeError("POSE_PRODUCTION_FINAL_RESULT_MISMATCH")
+    print(
+        f"[POSE_PRODUCTION] acceptance_mismatch=0 param_max={parameter_max:.3e} "
+        f"obj_rel={objective_relative:.3e} metrics_max={metric_max:.3e} "
+        f"serial_ms={ref.wall_time_ms:.3f} batch_ms={got.wall_time_ms:.3f} "
+        f"speedup={ref.wall_time_ms/max(got.wall_time_ms,1e-16):.3f}x"
+    )
+    serial_joint_definition, _ = build_joint_stage_definition(context, serial, shared)
+    production_joint_definition, _ = build_joint_stage_definition(context, production, shared)
+    serial_joint = run_stage(serial_joint_definition, context).lm_result
+    production_joint = run_stage(production_joint_definition, context).lm_result
+    joint_acceptance_ref = [trial["accepted"] for trial in serial_joint.trial_history]
+    joint_acceptance_got = [trial["accepted"] for trial in production_joint.trial_history]
+    if joint_acceptance_ref != joint_acceptance_got or serial_joint.status != production_joint.status:
+        raise RuntimeError("POSE_PRODUCTION_DOWNSTREAM_JOINT_TRAJECTORY_MISMATCH")
+    joint_parameter_max = float((production_joint.parameters - serial_joint.parameters).abs().max())
+    joint_objective_relative = abs(
+        production_joint.objective - serial_joint.objective
+    ) / max(abs(serial_joint.objective), 1e-16)
+    joint_metric_max = max(abs(
+        production_joint.rms_metrics[key] - serial_joint.rms_metrics[key]
+    ) for key in ("rms", "median", "p95"))
+    if joint_parameter_max > 1e-4 or joint_objective_relative > 1e-6 or joint_metric_max > 1e-3:
+        raise RuntimeError("POSE_PRODUCTION_DOWNSTREAM_JOINT_RESULT_MISMATCH")
+    print(
+        f"[POSE_PRODUCTION_DOWNSTREAM_JOINT] acceptance_mismatch=0 "
+        f"param_max={joint_parameter_max:.3e} obj_rel={joint_objective_relative:.3e} "
+        f"metrics_max={joint_metric_max:.3e}"
+    )
+    print("[PASS] Pose serial-reference vs production FULL_BATCH")
     return 0
 
 def run_all_pose_validations(args) -> None:

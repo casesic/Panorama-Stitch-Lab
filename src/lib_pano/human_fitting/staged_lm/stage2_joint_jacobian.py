@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import time
-from typing import Any
+from typing import Any, Callable
 
 import torch
 
@@ -65,6 +65,15 @@ class JointGroupJacobianResult:
 class JointSurrogateResult:
     residual: torch.Tensor
     jacobian: torch.Tensor
+
+
+@dataclass(frozen=True)
+class Stage2JointLinearizationCommon:
+    row_scales_by_group: list[torch.Tensor]
+    weight_stats: dict[str, Any]
+    surrogate_fn: Callable[[torch.Tensor], torch.Tensor]
+    jacobian_fn: Callable[[torch.Tensor], torch.Tensor]
+    spec: dict[str, Any]
 
 
 def compute_joint_fk_with_combined_jacobian(
@@ -349,12 +358,12 @@ def stage2_joint_arrowhead_normal_equations(
     return result
 
 
-def build_stage2_joint_analytic_linearization(
+def build_stage2_joint_linearization_common(
     cache: Stage2JointFastCache, linearisation_point: torch.Tensor, beta_abs_limit: float,
     beta_anchor: torch.Tensor, body_pose_anchors: list[torch.Tensor],
     pose_anchor_scale: float, shape_anchor_scale: float, *, is_irls: bool,
     charbonnier_eps: float, aggregation_spec: dict[str,Any]|None, rep_scale: float,
-) -> dict[str,Any]:
+) -> Stage2JointLinearizationCommon:
     groups=joint_fast_raw_groups(cache,linearisation_point,beta_abs_limit)
     if is_irls:
         if aggregation_spec is None: raise ValueError("aggregation spec required")
@@ -389,7 +398,35 @@ def build_stage2_joint_analytic_linearization(
         if cache.profile_timing and parameters.is_cuda:torch.cuda.synchronize(parameters.device)
         cache.explicit_jacobian_ms+=(time.perf_counter()-start)*1000;cache.explicit_jacobian_calls+=1
         return value
-    def normal_equations_fn(parameters):return stage2_joint_arrowhead_normal_equations(cache,parameters,beta_abs_limit,scales,body_pose_anchors,beta_anchor,pose_anchor_scale,shape_anchor_scale)
-    return {"surrogate_fn":surrogate_fn,"jacobian_fn":jacobian_fn,"normal_equations_fn":normal_equations_fn,
-            "weight_stats":stats,"spec":aggregation_spec or {},"jacobian_backend":"analytic_stage2_joint","linearization_backend":"direct_normal_equations",
-            "linear_solver_backend":"arrowhead_schur"}
+    return Stage2JointLinearizationCommon(
+        scales, stats, surrogate_fn, jacobian_fn, aggregation_spec or {},
+    )
+
+
+def build_stage2_joint_analytic_linearization(
+    cache: Stage2JointFastCache, linearisation_point: torch.Tensor, beta_abs_limit: float,
+    beta_anchor: torch.Tensor, body_pose_anchors: list[torch.Tensor],
+    pose_anchor_scale: float, shape_anchor_scale: float, *, is_irls: bool,
+    charbonnier_eps: float, aggregation_spec: dict[str,Any]|None, rep_scale: float,
+) -> dict[str,Any]:
+    common = build_stage2_joint_linearization_common(
+        cache, linearisation_point, beta_abs_limit, beta_anchor,
+        body_pose_anchors, pose_anchor_scale, shape_anchor_scale,
+        is_irls=is_irls, charbonnier_eps=charbonnier_eps,
+        aggregation_spec=aggregation_spec, rep_scale=rep_scale,
+    )
+    def normal_equations_fn(parameters):
+        return stage2_joint_arrowhead_normal_equations(
+            cache, parameters, beta_abs_limit, common.row_scales_by_group,
+            body_pose_anchors, beta_anchor, pose_anchor_scale, shape_anchor_scale,
+        )
+    return {
+        "surrogate_fn": common.surrogate_fn,
+        "jacobian_fn": common.jacobian_fn,
+        "normal_equations_fn": normal_equations_fn,
+        "weight_stats": common.weight_stats,
+        "spec": common.spec,
+        "jacobian_backend": "analytic_stage2_joint",
+        "linearization_backend": "direct_normal_equations",
+        "linear_solver_backend": "arrowhead_schur",
+    }

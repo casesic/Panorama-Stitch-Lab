@@ -72,6 +72,12 @@ class Stage2JointFastCache:
     image_width: int
     image_height: int
     setup_ms: float
+    batch_cache: Any | None = None
+    batch_cache_setup_ms: float = 0.0
+    batch_padding_ratio: float = 0.0
+    batch_persistent_bytes: int = 0
+    batch_group_count: int = 0
+    batch_nmax: int = 0
     profile_timing: bool = False
     shape_state_ms: float = 0.0
     shape_state_calls: int = 0
@@ -101,6 +107,10 @@ class Stage2JointFastCache:
     structured_to_dense_calls: int = 0
     fk_combined_calls: int = 0
     fk_separate_calls: int = 0
+    batched_normal_equations_ms: float = 0.0
+    batched_normal_equations_calls: int = 0
+    batched_full_analytic_calls: int = 0
+    batched_shape_state_calls: int = 0
 
     def reset_timing(self) -> None:
         self.shape_state_ms = self.residual_ms = self.beta_jacobian_ms = 0.0
@@ -114,11 +124,21 @@ class Stage2JointFastCache:
         self.schur_dense_fallback_calls = self.structured_to_dense_calls = 0
         self.group_analytic_calls = self.selected_lbs_forward_calls = 0
         self.fk_combined_calls = self.fk_separate_calls = 0
+        self.batched_normal_equations_ms = 0.0
+        self.batched_normal_equations_calls = 0
+        self.batched_full_analytic_calls = 0
+        self.batched_shape_state_calls = 0
 
     def timing_dict(self) -> dict[str, float | int]:
         result: dict[str, float | int] = {
-            "stage2_joint_cache_setup_ms": self.setup_ms,
+            "stage2_joint_cache_setup_ms": self.setup_ms + self.batch_cache_setup_ms,
             "stage2_joint_derived_cache_setup_ms": self.setup_ms,
+            "stage2_joint_fast_cache_setup_ms": self.setup_ms,
+            "stage2_joint_batch_cache_setup_ms": self.batch_cache_setup_ms,
+            "stage2_joint_batch_padding_ratio": self.batch_padding_ratio,
+            "stage2_joint_batch_persistent_bytes": self.batch_persistent_bytes,
+            "stage2_joint_batch_group_count": self.batch_group_count,
+            "stage2_joint_batch_nmax": self.batch_nmax,
         }
         for name in ("shape_state", "residual", "beta_jacobian", "normal_equations",
                      "objective", "metrics", "explicit_jacobian", "arrowhead_accumulation",
@@ -136,6 +156,14 @@ class Stage2JointFastCache:
             result[f"stage2_joint_{name}_ms"] = getattr(self, f"{name}_ms")
         result["stage2_joint_schur_dense_fallback_calls"] = self.schur_dense_fallback_calls
         result["stage2_joint_structured_to_dense_calls"] = self.structured_to_dense_calls
+        result["stage2_joint_batched_normal_equations_ms"] = self.batched_normal_equations_ms
+        result["stage2_joint_batched_normal_equations_calls"] = self.batched_normal_equations_calls
+        result["stage2_joint_batched_normal_equations_ms_per_call"] = (
+            self.batched_normal_equations_ms / self.batched_normal_equations_calls
+            if self.batched_normal_equations_calls else 0.0
+        )
+        result["stage2_joint_batched_full_analytic_calls"] = self.batched_full_analytic_calls
+        result["stage2_joint_batched_shape_state_calls"] = self.batched_shape_state_calls
         return result
 
     def true_objective(self, parameters: torch.Tensor, beta_abs_limit: float,

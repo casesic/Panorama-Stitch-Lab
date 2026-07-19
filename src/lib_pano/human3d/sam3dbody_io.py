@@ -31,10 +31,15 @@ class Sam3DBodyRecon:
     inside: np.ndarray
     faces: np.ndarray | None = None
     pred_keypoints_2d: np.ndarray | None = None
+    global_rot: np.ndarray | None = None
+    body_pose_params: np.ndarray | None = None
+    shape_params: np.ndarray | None = None
+    raw_parameter_schema_version: int = 0
+    raw_parameter_source: str | None = None
 
 
 def load_sam3dbody_recon(npz_path: str | Path) -> Sam3DBodyRecon:
-    with np.load(npz_path, allow_pickle=True) as data:
+    with np.load(npz_path, allow_pickle=False) as data:
         image_path = str(data["image_path"])
         cam = str(data["cam"])
         frame_idx = int(data["frame_idx"])
@@ -57,6 +62,26 @@ def load_sam3dbody_recon(npz_path: str | Path) -> Sam3DBodyRecon:
         if "pred_keypoints_2d" in data.files:
             pred_keypoints_2d = data["pred_keypoints_2d"].astype(np.float32)
 
+        def optional_numeric(name: str) -> np.ndarray | None:
+            if name not in data.files:
+                return None
+            value = np.asarray(data[name])
+            if value.dtype.kind not in "biufc":
+                raise ValueError(f"{name} must be a numeric array, got {value.dtype}")
+            return value.copy()
+
+        global_rot = optional_numeric("global_rot")
+        body_pose_params = optional_numeric("body_pose_params")
+        shape_params = optional_numeric("shape_params")
+        schema_version = (
+            int(np.asarray(data["raw_parameter_schema_version"]).item())
+            if "raw_parameter_schema_version" in data.files else 0
+        )
+        parameter_source = (
+            str(np.asarray(data["raw_parameter_source"]).item())
+            if "raw_parameter_source" in data.files else None
+        )
+
     return Sam3DBodyRecon(
         image_path=image_path,
         cam=cam,
@@ -72,6 +97,11 @@ def load_sam3dbody_recon(npz_path: str | Path) -> Sam3DBodyRecon:
         inside=inside,
         faces=faces,
         pred_keypoints_2d=pred_keypoints_2d,
+        global_rot=global_rot,
+        body_pose_params=body_pose_params,
+        shape_params=shape_params,
+        raw_parameter_schema_version=schema_version,
+        raw_parameter_source=parameter_source,
     )
 
 
@@ -81,7 +111,9 @@ def save_sam3dbody_recon(npz_path: str | Path, recon: Sam3DBodyRecon) -> None:
         image_path=str(recon.image_path),
         cam=recon.cam,
         frame_idx=recon.frame_idx,
-        image_shape=np.array(recon.image_shape, dtype=np.int32),
+        # debug066 historically wrote ``np.array(img.shape)`` (int64).
+        # Preserve that dtype so adding optional parameters does not alter old fields.
+        image_shape=np.array(recon.image_shape, dtype=np.int64),
         bbox=recon.bbox.astype(np.float32),
         focal_length=np.array(recon.focal_length, dtype=np.float32),
         pred_vertices=recon.pred_vertices.astype(np.float32),
@@ -95,4 +127,16 @@ def save_sam3dbody_recon(npz_path: str | Path, recon: Sam3DBodyRecon) -> None:
         kwargs["faces"] = recon.faces.astype(np.int64)
     if recon.pred_keypoints_2d is not None:
         kwargs["pred_keypoints_2d"] = recon.pred_keypoints_2d.astype(np.float32)
+    for name in ("global_rot", "body_pose_params", "shape_params"):
+        value = getattr(recon, name)
+        if value is not None:
+            array = np.asarray(value)
+            if array.dtype.kind not in "biufc":
+                raise ValueError(f"{name} must be numeric, got {array.dtype}")
+            kwargs[name] = array
+    kwargs["raw_parameter_schema_version"] = np.array(
+        recon.raw_parameter_schema_version, dtype=np.int32
+    )
+    if recon.raw_parameter_source is not None:
+        kwargs["raw_parameter_source"] = str(recon.raw_parameter_source)
     np.savez_compressed(npz_path, **kwargs)

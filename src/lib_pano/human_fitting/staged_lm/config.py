@@ -30,12 +30,12 @@ BETA_ATANH_EPS = 1e-6
 # production control flow does not select implementations from strings.
 PRODUCTION_STAGE1_LINEARIZATION = "analytic_stage1"
 PRODUCTION_STAGE1_EVALUATION = "analytic"
-PRODUCTION_POSE_LINEARIZATION = "analytic"
+PRODUCTION_POSE_LINEARIZATION = "analytic_batched_full_group"
 PRODUCTION_POSE_EVALUATION = "fast"
-PRODUCTION_JOINT_LINEARIZATION = "analytic"
+PRODUCTION_JOINT_LINEARIZATION = "analytic_batched_full_group"
 PRODUCTION_JOINT_EVALUATION = "fast"
 PRODUCTION_JOINT_LINEAR_SOLVER = "arrowhead_schur"
-PRODUCTION_JOINT_FK = "combined"
+PRODUCTION_JOINT_FK = "combined_batched_depth"
 
 
 @dataclass

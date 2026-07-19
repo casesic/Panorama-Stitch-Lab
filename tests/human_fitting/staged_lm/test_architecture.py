@@ -116,12 +116,12 @@ def test_production_builder_signatures_and_labels() -> None:
         assert not any("backend" in name for name in inspect.signature(function).parameters)
     assert config.PRODUCTION_STAGE1_LINEARIZATION == "analytic_stage1"
     assert config.PRODUCTION_STAGE1_EVALUATION == "analytic"
-    assert config.PRODUCTION_POSE_LINEARIZATION == "analytic"
+    assert config.PRODUCTION_POSE_LINEARIZATION == "analytic_batched_full_group"
     assert config.PRODUCTION_POSE_EVALUATION == "fast"
-    assert config.PRODUCTION_JOINT_LINEARIZATION == "analytic"
+    assert config.PRODUCTION_JOINT_LINEARIZATION == "analytic_batched_full_group"
     assert config.PRODUCTION_JOINT_EVALUATION == "fast"
     assert config.PRODUCTION_JOINT_LINEAR_SOLVER == "arrowhead_schur"
-    assert config.PRODUCTION_JOINT_FK == "combined"
+    assert config.PRODUCTION_JOINT_FK == "combined_batched_depth"
     assert "argparse" not in Path(config.__file__).read_text()
     validation_only = {
         "initial_lbfgs_parameters", "lbfgs_outer_steps",

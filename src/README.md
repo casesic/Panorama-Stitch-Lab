@@ -405,3 +405,25 @@ validation checks -> validation references -> production library
 ```text
 src/lib_pano/human_fitting/staged_lm/README.md
 ```
+
+# 运行示例
+
+python src/script/human_fitting/staged_lm/run.py \
+  --frames 513 \
+  --hmr_dir data_process/Output/20260311_riding/hmr_cache \
+  --sam3d_dense_dir data_process/Output/20260311_riding/sam3dbody/smplx_dense \
+  --bbox_dir data_process/Output/20260311_riding/image/equirect_crop_rotate \
+  --output_dir data_process/Vis/staged_lm_cpu \
+  --device cpu \
+  --reproj_objective charbonnier_irls \
+  --profile_timing
+
+python src/script/human_fitting/staged_lm/run.py \
+  --frames 513,514,515,516 \
+  --hmr_dir data_process/Output/20260311_riding/hmr_cache \
+  --sam3d_dense_dir data_process/Output/20260311_riding/sam3dbody/smplx_dense \
+  --bbox_dir data_process/Output/20260311_riding/image/equirect_crop_rotate \
+  --output_dir data_process/Vis/staged_lm_cpu_t4 \
+  --device cpu \
+  --reproj_objective charbonnier_irls \
+  --profile_timing

@@ -21,9 +21,23 @@ def resolve_execution_device(requested: str) -> torch.device:
     """解析设备，支持 auto/cpu/cuda/cuda:N"""
     requested = str(requested).strip().lower()
     if requested == "auto":
-        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    # 直接丢给 PyTorch 解析，格式不对或设备不存在 PyTorch 会自己抛错
-    return torch.device(requested)
+        return torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    if requested == "cpu":
+        return torch.device("cpu")
+    if requested == "cuda" or requested.startswith("cuda:"):
+        if not torch.cuda.is_available():
+            raise RuntimeError("CUDA_REQUESTED_BUT_UNAVAILABLE")
+        try:
+            device = torch.device("cuda:0" if requested == "cuda" else requested)
+        except (RuntimeError, ValueError) as exc:
+            raise RuntimeError(f"INVALID_EXECUTION_DEVICE: {requested}") from exc
+        if device.index is None or device.index < 0 or device.index >= torch.cuda.device_count():
+            raise RuntimeError(
+                f"CUDA_DEVICE_INDEX_OUT_OF_RANGE: requested={requested} "
+                f"count={torch.cuda.device_count()}"
+            )
+        return device
+    raise RuntimeError(f"INVALID_EXECUTION_DEVICE: {requested}")
 
 
 def _move_float_tensor(

@@ -327,3 +327,45 @@ run_stage1_jacobian_validation = run_all_stage1_validations
 run_stage1_surrogate_validation = run_all_stage1_validations
 run_stage1_solver_validation = run_all_stage1_validations
 run_stage1_benchmark = run_all_stage1_validations
+
+
+def run_stage1_batch_shadow(cli=None) -> int:
+    """Concise serial-reference versus FULL_BATCH Stage-1 solver gate."""
+    import contextlib, io
+    from lib_pano.human_fitting.staged_lm.lm_solver import run_lm_optimization
+    from lib_pano.human_fitting.staged_lm.stages import build_stage1_definition as build_production_stage1
+    from script.benchmark.staged_lm.stage1_batch_candidates import build_stage1_batch_cache
+    from script.benchmark.staged_lm.stage1_shadow_common import Stage1NEMode
+    from script.benchmark.staged_lm.stage1_shadow_lm import (
+        compare_stage1_lm_results, run_stage1_lm_independent_batch,
+        run_stage1_lm_lockstep,
+    )
+    cli=cli or parse_args();context=build_context(_context_args(cli,"analytic_stage1"))
+    stage=build_production_stage1(context);batch=build_stage1_batch_cache(stage.analytic_cache)
+    with contextlib.redirect_stdout(io.StringIO()):
+        serial=run_lm_optimization(
+            "STAGE1_SERIAL_REFERENCE",lambda x:stage.linearization_builder(x,stage.aggregation_spec),
+            stage.raw_metrics_fn,stage.initial_lm_parameters,stage.parameter_dimension,
+            stage.lm_max_accepted_steps,context.solver_config.lm_max_trials,
+            context.solver_config,True,0,stage.lm_true_objective_fn,validate_irls=False)
+        candidate=run_stage1_lm_independent_batch(stage,batch,context,
+            mode=Stage1NEMode.FULL_BATCH_GROUP_GEMM)
+        lock=run_stage1_lm_lockstep(stage,batch,context,
+            candidate_mode=Stage1NEMode.FULL_BATCH_GROUP_GEMM)
+    comparison=compare_stage1_lm_results(serial,candidate)
+    threshold=5e-5 if context.device.type=="cuda" else 1e-5
+    ok=(comparison["first_divergent_trial"] is None and comparison["status_match"]
+        and comparison["accepted_match"] and comparison["rejected_match"]
+        and comparison["trial_count_match"] and comparison["solve_path_match"]
+        and comparison["final_parameter_max_abs"]<=threshold
+        and comparison["objective_relative"]<=1e-6
+        and lock.acceptance_mismatch_count==0 and lock.solve_path_mismatch_count==0)
+    print(f"[STAGE1_BATCH_SHADOW] acceptance_mismatch={lock.acceptance_mismatch_count} "
+          f"first_divergent={comparison['first_divergent_trial']} "
+          f"param_max={comparison['final_parameter_max_abs']:.3e} "
+          f"obj_rel={comparison['objective_relative']:.3e} "
+          f"metrics_max={comparison['metrics_max_abs']:.3e} "
+          f"serial_ms={serial.wall_time_ms:.3f} batch_ms={candidate.wall_time_ms:.3f} "
+          f"speedup={serial.wall_time_ms/candidate.wall_time_ms:.3f}x")
+    if not ok:raise RuntimeError("STAGE1_FULL_BATCH_SHADOW_GATE_FAILED")
+    print("[PASS] Stage1 serial-reference vs FULL_BATCH shadow");return 0

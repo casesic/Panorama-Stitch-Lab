@@ -289,7 +289,7 @@ def joint_jacobian_context_args(c):
         stop_after_stage="stage2_pose",run_lbfgs_oracle=False,jacobian_backend="analytic_stage1",stage1_eval_backend="analytic",
         validate_stage1_fast_eval=False,stage2_pose_linearization_backend="analytic",stage2_pose_eval_backend="fast",
         validate_stage2_pose_fast_eval=False,validate_irls_first_order=False,validate_irls_each_accepted=False,
-        profile_timing=c.profile,progress_every_accepted=0)
+        profile_timing=c.profile,progress_every_accepted=0,device=getattr(c,"device","auto"))
 
 
 def joint_jacobian_error(a,b):
@@ -425,3 +425,46 @@ def run_joint_analytic_validation(cli=None):
 def run_all_joint_jacobian_validations(args) -> None:
     run_joint_beta_validation(args)
     run_joint_analytic_validation(args)
+
+
+def run_joint_production_shadow(args) -> int:
+    """Concise serial-Joint versus FULL_BATCH shadow solver gate."""
+    import contextlib, io
+    from lib_pano.human_fitting.staged_lm.lm_solver import run_lm_optimization
+    from lib_pano.human_fitting.staged_lm.stage2_joint_jacobian import build_stage2_joint_analytic_linearization
+    from lib_pano.human_fitting.staged_lm.stage2_shared_cache import build_stage2_shared_geometry_cache
+    from lib_pano.human_fitting.staged_lm.stages import build_stage1_definition, build_pose_stage_definition, build_joint_stage_definition, run_stage
+    from script.benchmark.staged_lm.joint_batch_candidates import JointNEMode, build_joint_batch_cache
+    from script.benchmark.staged_lm.joint_shadow_lm import compare_joint_lm_results, run_joint_lm_independent_batch
+    context=build_context(joint_jacobian_context_args(args))
+    with contextlib.redirect_stdout(io.StringIO()):
+        s1=run_stage(build_stage1_definition(context),context);shared=build_stage2_shared_geometry_cache(context)
+        pose,_=build_pose_stage_definition(context,s1,shared);pose_out=run_stage(pose,context)
+        joint,_=build_joint_stage_definition(context,pose_out,shared)
+        def serial_linearization(x):
+            return build_stage2_joint_analytic_linearization(
+                joint.analytic_cache, x, context.objective_config.beta_abs_limit,
+                context.beta_anchor, context.body_pose_anchors,
+                context.scaling.pose_anchor_scale, context.scaling.shape_anchor_scale,
+                is_irls=context.is_irls, charbonnier_eps=context.charbonnier_eps,
+                aggregation_spec=joint.aggregation_spec,
+                rep_scale=context.scaling.rep_scale,
+            )
+        serial=run_lm_optimization("JOINT_SERIAL_REFERENCE",serial_linearization,
+            joint.raw_metrics_fn,joint.initial_lm_parameters,joint.parameter_dimension,joint.lm_max_accepted_steps,
+            context.solver_config.lm_max_trials,context.solver_config,True,0,joint.lm_true_objective_fn,validate_irls=False)
+        batch=joint.analytic_cache.batch_cache
+        if batch is None:
+            batch=build_joint_batch_cache(joint.analytic_cache,context.scaling.pose_anchor_scale)
+        candidate=run_joint_lm_independent_batch(joint,batch,context,mode=JointNEMode.FULL_BATCH_PRODUCTION_REDUCTION)
+    comparison=compare_joint_lm_results(serial,candidate,context.objective_config.beta_abs_limit,context.beta_dim)
+    ok=(comparison["status_match"] and comparison["accepted_match"] and comparison["rejected_match"]
+        and comparison["trial_count_match"] and comparison["schur_match"]
+        and comparison["weight_history_structure_match"]
+        and comparison["final_parameter_max_abs"] <= (5e-5 if context.device.type=="cuda" else 1e-5)
+        and comparison["physical_beta_max_abs"] <= (5e-6 if context.device.type=="cuda" else 2e-6)
+        and comparison["objective_relative"] <= 1e-6 and comparison["metrics_max_abs"] <= 1e-3)
+    print(f"[JOINT_PRODUCTION_SHADOW] reference_backend=analytic_stage2_joint_serial "
+          f"production_backend=analytic_stage2_joint_batched {comparison}")
+    if not ok:raise RuntimeError("JOINT_FULL_BATCH_SHADOW_GATE_FAILED")
+    print("[PASS] Joint serial-reference vs FULL_BATCH shadow");return 0

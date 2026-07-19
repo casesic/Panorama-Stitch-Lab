@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import sys
 from collections import defaultdict
 from dataclasses import replace
@@ -43,9 +44,9 @@ from script.benchmark.staged_lm.joint_kernel_candidates import (
     pack_exact_lbs_weights, selected_lbs_exact_sparse_b3,
 )
 from lib_pano.human_fitting.staged_lm.stage2_pose_jacobian import compute_selected_lbs_with_jacobian
-from script.validation.staged_lm.references.stage_backends import (
-    _build_joint_refinement_definition, _build_pose_warmup_definition,
-    build_stage1_definition, run_stage,
+from lib_pano.human_fitting.staged_lm.stages import (
+    build_stage1_definition, build_pose_stage_definition,
+    build_joint_stage_definition, run_stage,
 )
 
 
@@ -93,16 +94,18 @@ def _move_cache(cache, device: torch.device) -> None:
 
 
 def _load_parameters(cli, context):
+    stage1 = run_stage(build_stage1_definition(context), context)
+    shared = build_stage2_shared_geometry_cache(context)
+    pose_definition, _ = build_pose_stage_definition(context, stage1, shared)
+    pose = run_stage(pose_definition, context)
+    joint_definition, _ = build_joint_stage_definition(context, pose, shared)
     if cli.joint_npz:
         archive = np.load(cli.joint_npz)
         if "x_stage2_joint_lm" in archive:
-            return torch.as_tensor(archive["x_stage2_joint_lm"], dtype=torch.float32),None
-    stage1 = run_stage(build_stage1_definition(context), context)
-    pose_definition, _ = _build_pose_warmup_definition(context, stage1)
-    pose = run_stage(pose_definition, context)
-    joint_definition, _ = _build_joint_refinement_definition(
-        context, pose, pose.true_objective_fn, pose.definition.raw_groups_fn,
-    )
+            return torch.as_tensor(
+                archive["x_stage2_joint_lm"], dtype=torch.float32,
+                device=context.device,
+            ), joint_definition
     return joint_definition.initial_lm_parameters.detach().clone(),joint_definition
 
 
@@ -110,7 +113,7 @@ def _summary(samples):
     ordered = sorted(samples)
     return {
         "p50": statistics.median(samples),
-        "p90": ordered[min(len(ordered)-1, int(.9*(len(ordered)-1)))],
+        "p90": ordered[min(len(ordered)-1, math.ceil(.9*len(ordered))-1)],
         "mean": statistics.mean(samples), "min": min(samples),
     }
 
@@ -131,9 +134,7 @@ def main() -> int:
     device = torch.device(cli.device)
     context = build_context(experiment_args(cli))
     parameters,joint_definition = _load_parameters(cli, context)
-    cache = build_stage2_joint_fast_cache(
-        context, build_stage2_shared_geometry_cache(context),
-    )
+    cache = joint_definition.analytic_cache
     _move_cache(cache, device); parameters = parameters.to(device)
     beta_limit = context.objective_config.beta_abs_limit
     beta_anchor = context.beta_anchor.to(device)
@@ -164,21 +165,38 @@ def main() -> int:
     # Fine-grained section timing. Profiling itself is intentionally isolated
     # from production counters and normal-equation timings.
     section_samples = defaultdict(list)
+    per_group_samples = [defaultdict(list) for _ in cache.groups]
+    serial_sum_samples = []
     first_profile = None
     for _ in range(cli.warmup):
-        profile_joint_group_baseline(cache, cache.groups[0], shape, parameters, scales[0])
+        for group, scale in zip(cache.groups, scales):
+            profile_joint_group_baseline(cache, group, shape, parameters, scale)
     for _ in range(cli.repeats):
-        profile = profile_joint_group_baseline(cache, cache.groups[0], shape, parameters, scales[0])
-        first_profile = first_profile or profile
-        for name, elapsed in profile.section_ms.items():
-            section_samples[name].append(elapsed)
-    totals = [sum(section_samples[name][i] for name in section_samples) for i in range(cli.repeats)]
-    total_p50 = statistics.median(totals)
+        serial_total = 0.0
+        for group_index, (group, scale) in enumerate(zip(cache.groups, scales)):
+            profile = profile_joint_group_baseline(cache, group, shape, parameters, scale)
+            first_profile = first_profile or profile
+            group_total = sum(profile.section_ms.values()); serial_total += group_total
+            for name, elapsed in profile.section_ms.items():
+                section_samples[name].append(elapsed)
+                per_group_samples[group_index][name].append(elapsed)
+        serial_sum_samples.append(serial_total)
+    total_p50 = statistics.median(serial_sum_samples)
     for name, samples in section_samples.items():
         stats = _summary(samples)
-        print(f"[SECTION {name}] p50={stats['p50']:.4f} p90={stats['p90']:.4f} "
-              f"mean={stats['mean']:.4f} min={stats['min']:.4f} pct={100*stats['p50']/total_p50:.2f}")
-    print(f"[GROUP_TOTAL] p50={total_p50:.4f}ms")
+        print(f"[JOINT_PRODUCTION_COMBINED SECTION {name}] group_p50={stats['p50']:.4f} "
+              f"group_p90={stats['p90']:.4f} mean={stats['mean']:.4f} min={stats['min']:.4f}")
+    group_p50_values = []
+    for index, group in enumerate(cache.groups):
+        totals = [sum(per_group_samples[index][name][repeat] for name in per_group_samples[index])
+                  for repeat in range(cli.repeats)]
+        group_p50_values.append(statistics.median(totals))
+        print(f"[PER_GROUP] frame={group.frame_index} camera={group.camera} N={group.targets.shape[0]} "
+              f"p50={statistics.median(totals):.4f} p90={_summary(totals)['p90']:.4f}")
+    weighted_mean = sum(value * count for value, count in zip(group_p50_values, counts)) / sum(counts)
+    print(f"[GROUP_AGGREGATE] p50_across_groups={statistics.median(group_p50_values):.4f} "
+          f"weighted_mean_by_N={weighted_mean:.4f} min_N={min(counts)} max_N={max(counts)}")
+    print(f"[JOINT_PRODUCTION_COMBINED SERIAL_GROUP_SUM] p50={total_p50:.4f}ms")
     audit = tensor_audit(first_profile.tensors)
     largest = max(audit, key=lambda value: value["bytes"])
     print(f"[TENSOR_LARGEST] {largest}")
@@ -201,7 +219,7 @@ def main() -> int:
         base_fk_value = baseline_fk(); candidate_fk = combined_fk()
         fk_error = max(_rel(candidate_fk.d_relative_transforms_d_pose, base_fk_value.d_relative_transforms_d_pose),
                        _rel(candidate_fk.d_relative_transforms_d_beta, base_fk_value.d_relative_transforms_d_beta))
-        print(f"[CANDIDATE_A] status=PRODUCTION production_backend=combined "
+        print(f"[JOINT_SEPARATE_REFERENCE] reference_only=True "
               f"reference_backend=separate correctness_rel={fk_error:.3e} "
               f"separate={benchmark_callable(baseline_fk,parameters,cli.warmup,cli.repeats)} "
               f"combined={benchmark_callable(combined_fk,parameters,cli.warmup,cli.repeats)}")

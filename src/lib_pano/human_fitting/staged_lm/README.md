@@ -15,9 +15,10 @@ Production 只保留一条受支持的执行路径。应用、正确性验证和
   计算 objective 和 metrics。
 - **Stage 2 pose：** beta 固定，使用解析 pose Jacobian 和 selected-vertex 快速
   objective/metrics。
-- **Stage 2 joint：** 在当前动态 beta 下计算 pose Jacobian 和 shared-beta
-  Jacobian；使用合并的 pose/beta FK 导数传播、direct arrowhead normal equations、
-  selected-vertex 快速 objective/metrics，以及 Schur complement 求解。
+- **Stage 2 joint：** serial residual-only 路径构建 IRLS weights；FULL_BATCH FP32
+  rotation/shape/FK/LBS/projection 同时生成 pose/shared-beta Jacobian；FP64 batched
+  GEMM 构建 Arrowhead A/B/C/g 并按 production group 顺序归约；objective/metrics
+  仍为 serial fast，求解仍为原 Schur complement。
 
 执行设备默认值为 `auto`。优化参数和模型前向使用 float32；法向方程累计与线性求解
 使用 float64，并始终与优化参数位于同一个 CPU 或 CUDA 设备上。
@@ -36,6 +37,8 @@ Production 只保留一条受支持的执行路径。应用、正确性验证和
 - `lm_solver.py`：通用 LM 流程，以及 dense/structured 法向方程求解分派。
 - `analytic_stage1.py`：Stage 1 快速前向、解析 Jacobian 和 direct H/g。
 - `stage2_pose_fast.py`：beta 固定时的 selected-vertex pose 前向和 objective。
+- `stage2_pose_batched.py`：Pose FULL_BATCH 几何、解析 Jacobian，以及 FP64 batched
+  H/g 和 production-order frame reduction。
 - `stage2_shared_cache.py`：Pose/Joint 共用的不可变 observation、posedirs rows、
   LBS weights rows 和模型布局。
 - `stage2_pose_jacobian.py`：Stage 2 pose 解析 Jacobian 和 direct H/g。
@@ -43,6 +46,8 @@ Production 只保留一条受支持的执行路径。应用、正确性验证和
 - `stage2_joint_beta_jacobian.py`：physical beta 与 beta latent 的解析导数。
 - `stage2_joint_jacobian.py`：合并 pose/beta 解析 Jacobian 和 direct arrowhead
   H/g 累计。
+- `stage2_joint_batched.py`：正式 Joint FULL_BATCH geometry/Jacobian 与 FP64
+  Arrowhead normal equations；不提供运行时 backend 选择。
 - `arrowhead_schur.py`：shared-beta arrowhead 系统和带 LM damping 的 Schur 求解。
 - `stages.py`：固定的正式 Stage 构建、轻量 state-only handoff 和执行流程。
 - `data_loading.py`：输入数据读取和 StageContext 构建。
@@ -130,8 +135,7 @@ python src/script/validation/staged_lm/run.py handoff \
 - CUDA，T=1：p50 约 1587 ms；
 - CUDA，T=8：每个 segment 的 p50 约 15844 ms。
 
-当前逐 group 串行执行的 CUDA 路径慢于 CPU。下一项性能工作是多 group batching；
-此前没有引入新的数学或 kernel，但消除了准备、日志、JSON 和 objective breakdown 中
+Stage 2 Pose 的正式 normal-equation 路径现已使用多 group FULL_BATCH；此前还消除了准备、日志、JSON 和 objective breakdown 中
 的重复 full SMPL-X forward。在当前 CPU T=1 数据上，fitting steady p50 从约
 921 ms 降至约 696 ms；objective、参数、metrics 和 NPZ 数组保持逐元素一致。
 
@@ -148,7 +152,13 @@ CPU T=1 实测 Stage2 cache p50 从约 127.51 ms 降至约 63.88 ms，fitting p5
 695.78 ms 降至约 640.06 ms。Shared cache 仍需执行一次约 62.25 ms 的 posedirs row
 selection，因此 cache 并未被完全省略。
 
-Pipeline timing 当前使用 schema v3，明确区分：
+Pose 的数值策略固定为：serial residual-only IRLS weights、FULL_BATCH
+rotation/FK/LBS/projection/Jacobian、FP64 batched H/g、production group-order frame
+reduction、serial fast objective/metrics，以及原 dense LM solve。FP32 batch 与 serial
+的首个差异来自 rotation value；FP64 单算子诊断将误差降至约 `1e-16`，完整 LM
+trajectory 和最终结果通过 production gate。旧 microkernel gate 继续作为诊断指标。
+
+Pipeline timing 当前使用 schema v5，明确区分：
 
 - `*_prepare_total_ms`；
 - `*_handoff_ms`；
@@ -156,6 +166,10 @@ Pipeline timing 当前使用 schema v3，明确区分：
 - `*_definition_bind_ms`；
 - `*_run_ms` 和 `*_run_overhead_ms`；
 - `stage2_shared_*`、Pose/Joint derived cache 和 `stage2_total_cache_setup_ms`；
+- `stage2_pose_fast_cache_setup_ms`、`stage2_pose_batch_cache_setup_ms` 和 batch
+  padding/persistent-memory metadata；
+- Joint fast/batch cache setup、batch padding/persistent metadata，以及 batched NE、
+  shape-state、full-analytic 调用计数；
 - `objective_breakdown_ms`。
 
 必要的 Stage cache 预计算仍计入 fitting total，不会被隐藏到 solver 内。
@@ -248,6 +262,6 @@ pytest -q tests/human_fitting/staged_lm
 
 - 将 input/output 职责进一步迁移到 `fitting_io`；
 - 整理和公开当前 private API；
-- 实现 production pose/joint 多 group batching。
+- 完成 Joint FULL_BATCH shadow regression，并据结果决定是否接入 production。
 
 上述事项不属于当前单路径代码整理范围。

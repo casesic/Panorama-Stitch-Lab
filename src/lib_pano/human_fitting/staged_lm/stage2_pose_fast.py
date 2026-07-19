@@ -78,6 +78,15 @@ class Stage2PoseFastCache:
     explicit_jacobian_ms: float = 0.0
     explicit_jacobian_calls: int = 0
     group_analytic_calls: int = 0
+    batch_cache: Any | None = None
+    batch_cache_setup_ms: float = 0.0
+    batched_normal_equations_ms: float = 0.0
+    batched_normal_equations_calls: int = 0
+    batched_group_analytic_calls: int = 0
+    batch_padding_ratio: float = 0.0
+    batch_persistent_bytes: int = 0
+    batch_group_count: int = 0
+    batch_nmax: int = 0
 
     def reset_timing(self) -> None:
         self.residual_ms = self.normal_equations_ms = 0.0
@@ -85,6 +94,9 @@ class Stage2PoseFastCache:
         self.residual_calls = self.normal_equations_calls = 0
         self.objective_calls = self.metrics_calls = self.explicit_jacobian_calls = 0
         self.group_analytic_calls = 0
+        self.batched_normal_equations_ms = 0.0
+        self.batched_normal_equations_calls = 0
+        self.batched_group_analytic_calls = 0
 
     @staticmethod
     def _per_call(total: float, calls: int) -> float:
@@ -93,7 +105,9 @@ class Stage2PoseFastCache:
     def timing_dict(self) -> dict[str, float | int]:
         prefix = "stage2_pose_"
         result: dict[str, float | int] = {
-            f"{prefix}cache_setup_ms": self.setup_ms,
+            f"{prefix}cache_setup_ms": self.setup_ms + self.batch_cache_setup_ms,
+            f"{prefix}fast_cache_setup_ms": self.setup_ms,
+            f"{prefix}batch_cache_setup_ms": self.batch_cache_setup_ms,
             f"{prefix}derived_cache_setup_ms": self.setup_ms,
         }
         for name in ("residual", "normal_equations", "objective", "metrics", "explicit_jacobian"):
@@ -103,6 +117,16 @@ class Stage2PoseFastCache:
             result[f"{prefix}{name}_calls"] = calls
             result[f"{prefix}{name}_ms_per_call"] = self._per_call(total, calls)
         result[f"{prefix}group_analytic_calls"] = self.group_analytic_calls
+        result[f"{prefix}batched_normal_equations_ms"] = self.batched_normal_equations_ms
+        result[f"{prefix}batched_normal_equations_calls"] = self.batched_normal_equations_calls
+        result[f"{prefix}batched_normal_equations_ms_per_call"] = self._per_call(
+            self.batched_normal_equations_ms, self.batched_normal_equations_calls,
+        )
+        result[f"{prefix}batched_group_analytic_calls"] = self.batched_group_analytic_calls
+        result[f"{prefix}batch_padding_ratio"] = self.batch_padding_ratio
+        result[f"{prefix}batch_persistent_bytes"] = self.batch_persistent_bytes
+        result[f"{prefix}batch_group_count"] = self.batch_group_count
+        result[f"{prefix}batch_nmax"] = self.batch_nmax
         return result
 
     def true_objective(

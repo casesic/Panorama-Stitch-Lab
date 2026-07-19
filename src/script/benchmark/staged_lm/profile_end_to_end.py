@@ -67,7 +67,7 @@ def _range(name: str, enabled: bool):
 
 def run_fitting_once(context, *, record_ranges: bool = False) -> dict[str, Any]:
     """Run all production stage builders/solvers from unchanged context initial state."""
-    timing: dict[str, float] = {"timing_schema_version": 3}
+    timing: dict[str, float] = {"timing_schema_version": 5}
     _sync(context.device)
     fitting_start = time.perf_counter()
     with _range("stage1_prepare", record_ranges):
@@ -337,6 +337,7 @@ def _cache_memory_audit(run: dict[str, Any]) -> dict[str, int]:
         "estimated_legacy_stage2_cache_tensor_bytes": (
             2 * shared_bytes + pose_bytes + joint_bytes
         ),
+        "pose_batch_persistent_tensor_bytes": int(pose.batch_persistent_bytes),
     }
 
 

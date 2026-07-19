@@ -12,6 +12,7 @@ def add_data_arguments(parser: argparse.ArgumentParser) -> None:
         parser.add_argument(f"--{name}", required=True)
     parser.add_argument("--image_width", type=int, default=5760)
     parser.add_argument("--image_height", type=int, default=2880)
+    parser.add_argument("--device", default="auto")
 
 
 def add_profile_argument(parser: argparse.ArgumentParser) -> None:

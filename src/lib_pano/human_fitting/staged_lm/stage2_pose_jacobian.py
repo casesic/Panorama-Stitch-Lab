@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import time
-from typing import Any
+from typing import Any, Callable
 
 import torch
 
@@ -65,6 +65,15 @@ class FKJacobianResult:
 class SurrogateJacobianResult:
     residual: torch.Tensor
     jacobian: torch.Tensor
+
+
+@dataclass(frozen=True)
+class Stage2PoseLinearizationCommon:
+    row_scales_by_group: list[torch.Tensor]
+    weight_stats: dict[str, Any]
+    surrogate_fn: Callable[[torch.Tensor], torch.Tensor]
+    jacobian_fn: Callable[[torch.Tensor], torch.Tensor]
+    spec: dict[str, Any]
 
 
 def rotation_matrix_jacobian_additive(axis_angle: torch.Tensor) -> torch.Tensor:
@@ -447,7 +456,7 @@ def stage2_pose_normal_equations(
     return result
 
 
-def build_stage2_pose_analytic_linearization(
+def build_stage2_pose_linearization_common(
     cache: Stage2PoseFastCache,
     linearisation_point: torch.Tensor,
     body_pose_anchors: list[torch.Tensor],
@@ -457,7 +466,7 @@ def build_stage2_pose_analytic_linearization(
     charbonnier_eps: float,
     aggregation_spec: dict[str, Any] | None,
     rep_scale: float,
-) -> dict[str, Any]:
+) -> Stage2PoseLinearizationCommon:
     validate_stage2_pose_analytic_layout(cache)
     groups = fast_raw_groups(cache, linearisation_point)
     if is_irls:
@@ -514,17 +523,44 @@ def build_stage2_pose_analytic_linearization(
             parameters, body_pose_anchors, cache.frame_count, pose_anchor_scale,
         )[1]), dim=0)
 
+    return Stage2PoseLinearizationCommon(
+        row_scales_by_group=row_scales,
+        weight_stats=weight_stats,
+        surrogate_fn=surrogate_fn,
+        jacobian_fn=jacobian_fn,
+        spec=aggregation_spec or {},
+    )
+
+
+def build_stage2_pose_analytic_linearization(
+    cache: Stage2PoseFastCache,
+    linearisation_point: torch.Tensor,
+    body_pose_anchors: list[torch.Tensor],
+    pose_anchor_scale: float,
+    *,
+    is_irls: bool,
+    charbonnier_eps: float,
+    aggregation_spec: dict[str, Any] | None,
+    rep_scale: float,
+) -> dict[str, Any]:
+    common = build_stage2_pose_linearization_common(
+        cache, linearisation_point, body_pose_anchors, pose_anchor_scale,
+        is_irls=is_irls, charbonnier_eps=charbonnier_eps,
+        aggregation_spec=aggregation_spec, rep_scale=rep_scale,
+    )
+
     def normal_equations_fn(parameters: torch.Tensor) -> NormalEquations:
         return stage2_pose_normal_equations(
-            cache, parameters, row_scales, body_pose_anchors, pose_anchor_scale,
+            cache, parameters, common.row_scales_by_group,
+            body_pose_anchors, pose_anchor_scale,
         )
 
     return {
-        "surrogate_fn": surrogate_fn,
-        "jacobian_fn": jacobian_fn,
+        "surrogate_fn": common.surrogate_fn,
+        "jacobian_fn": common.jacobian_fn,
         "normal_equations_fn": normal_equations_fn,
-        "weight_stats": weight_stats,
-        "spec": aggregation_spec or {},
+        "weight_stats": common.weight_stats,
+        "spec": common.spec,
         "jacobian_backend": "analytic_stage2_pose",
         "linearization_backend": "direct_normal_equations",
     }
