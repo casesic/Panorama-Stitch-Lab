@@ -39,8 +39,8 @@ def joint_beta_context_args(cli):
         jacobian_backend="analytic_stage1", stage1_eval_backend="analytic",
         validate_stage1_fast_eval=False, stage2_pose_linearization_backend="analytic",
         stage2_pose_eval_backend="fast", validate_stage2_pose_fast_eval=False,
-        validate_irls_first_order=False, validate_irls_each_accepted=False,
-        profile_timing=cli.profile, progress_every_accepted=0,
+        validate_irls_first_order=False,
+        profile_timing=cli.profile,
     )
 
 
@@ -288,8 +288,8 @@ def joint_jacobian_context_args(c):
         image_width=c.image_width,image_height=c.image_height,output_dir="/tmp/debug116",reproj_objective="charbonnier_irls",
         stop_after_stage="stage2_pose",run_lbfgs_oracle=False,jacobian_backend="analytic_stage1",stage1_eval_backend="analytic",
         validate_stage1_fast_eval=False,stage2_pose_linearization_backend="analytic",stage2_pose_eval_backend="fast",
-        validate_stage2_pose_fast_eval=False,validate_irls_first_order=False,validate_irls_each_accepted=False,
-        profile_timing=c.profile,progress_every_accepted=0,device=getattr(c,"device","auto"))
+        validate_stage2_pose_fast_eval=False,validate_irls_first_order=False,
+        profile_timing=c.profile,device=getattr(c,"device","auto"))
 
 
 def joint_jacobian_error(a,b):
@@ -452,7 +452,7 @@ def run_joint_production_shadow(args) -> int:
             )
         serial=run_lm_optimization("JOINT_SERIAL_REFERENCE",serial_linearization,
             joint.raw_metrics_fn,joint.initial_lm_parameters,joint.parameter_dimension,joint.lm_max_accepted_steps,
-            context.solver_config.lm_max_trials,context.solver_config,True,0,joint.lm_true_objective_fn,validate_irls=False)
+            context.solver_config.lm_max_trials,context.solver_config,True,joint.lm_true_objective_fn)
         batch=joint.analytic_cache.batch_cache
         if batch is None:
             batch=build_joint_batch_cache(joint.analytic_cache,context.scaling.pose_anchor_scale)

@@ -155,6 +155,33 @@ def test_output_keys_stage1_no_lbfgs() -> None:
     print("test_output_keys_stage1_no_lbfgs: PASS")
 
 
+def test_lm_result_json_has_distinct_solver_counters() -> None:
+    """JSON exposes attempts/successes without the duplicate dense materialisation key."""
+    from lib_pano.human_fitting.staged_lm.types import LMResult, LMSolverCounters
+
+    counters = LMSolverCounters(
+        solve_attempt_count=4,
+        cholesky_success_count=2,
+        solve_fallback_count=1,
+        schur_failure_count=1,
+    )
+    result = LMResult(
+        label="TEST", parameters=torch.zeros(1), objective=1.0,
+        status="MAX_ACCEPTED_STEPS", counters=counters,
+        final_lambda=0.1, wall_time_ms=1.0,
+        rms_metrics={"rms": 1.0, "median": 1.0, "p95": 1.0},
+        weight_history=[], first_order_checks={}, spec={},
+    ).to_json_dict()
+
+    assert result["solve_attempt_count"] == 4
+    assert result["successful_solve_count"] == 3
+    assert result["schur_failure_count"] == 1
+    assert "solve_count" not in result
+    assert "structured_to_dense_count" not in result
+    assert "stage1_eval_backend" not in result
+    assert "full_forward_oracle_validation_ms" not in result
+
+
 def test_output_keys_stage2_with_lbfgs() -> None:
     """Full Stage 2 NPZ keys use pose/joint naming with L-BFGS."""
     from lib_pano.human_fitting.staged_lm.output import collect_stage2_arrays
@@ -272,6 +299,7 @@ if __name__ == "__main__":
     test_handoff_s1_to_pose_preserves_state()
     test_beta_atanh_tanh_reversibility()
     test_output_keys_stage1_no_lbfgs()
+    test_lm_result_json_has_distinct_solver_counters()
     test_output_keys_stage2_with_lbfgs()
     test_objective_breakdown_modes()
     test_gate_c_three_states()

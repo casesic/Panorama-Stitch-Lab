@@ -220,8 +220,8 @@ def analytic_errors(cache, batch, parameters, candidate) -> dict[str, Any]:
 
 def step_errors(candidate, reference, parameter_dimension: int) -> dict[str, Any]:
     damping=normal_equations_max_diagonal(reference.equations)*1e-3
-    rd,*_=solve_normal_equations(reference.equations,damping,parameter_dimension)
-    cd,*_=solve_normal_equations(candidate.equations,damping,parameter_dimension)
+    rd=solve_normal_equations(reference.equations,damping).delta
+    cd=solve_normal_equations(candidate.equations,damping).delta
     output={"max_diagonal_abs":abs(normal_equations_max_diagonal(candidate.equations)-normal_equations_max_diagonal(reference.equations)),
             "scaled_gradient_abs":abs(compute_scaled_gradient(candidate.equations)-compute_scaled_gradient(reference.equations))}
     if rd is None or cd is None:return {**output,"solve_success_match":rd is None and cd is None}

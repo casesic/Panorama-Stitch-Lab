@@ -1,19 +1,4 @@
 """Levenberg-Marquardt optimiser for staged fitting.
-
-The LM solver (``run_lm_optimization``) is the primary optimiser under test.
-It implements a classic damped Gauss-Newton iteration with:
-
-* Cholesky-based normal-equation solve with a ``torch.linalg.solve`` fallback.
-* Levenberg-Marquardz damping update (``rho > 0.75`` -> shrink, ``rho < 0.25``
-  -> grow).
-* Three convergence criteria: scaled gradient, step norm, relative objective
-  change.
-* Optional IRLS first-order validation after each accepted step.
-
-The numerical behaviour — damping initialisation, lambda update rule,
-predicted/actual reduction, Cholesky-then-fallback order, convergence
-thresholds and float32/float64 usage — is identical to the original
-``identity_lm`` and ``run_lbfgs`` functions.
 """
 
 from __future__ import annotations
@@ -25,9 +10,8 @@ from typing import Any, Callable
 import torch
 from torch.func import jacfwd
 
-from .irls import validate_first_order
 from .config import SolverConfig
-from .types import LMResult, LMSolverCounters, NormalEquations
+from .types import LinearSolveResult, LMResult, LMSolverCounters, NormalEquations
 
 # Damping bounds.  ``lam_min`` prevents the damping from collapsing to zero
 # (which would make the normal equations ill-conditioned), while ``lam_max``
@@ -57,18 +41,11 @@ def solve_damped_normal_equations(
     hessian: torch.Tensor,
     gradient: torch.Tensor,
     damping: float,
-    param_dim: int,
-) -> tuple[torch.Tensor | None, bool, bool]:
-    """Solve ``(H + lambda*I) delta = -g`` with Cholesky then dense fallback.
-
-    Returns
-    -------
-    (delta, cholesky_ok, fallback_ok):
-        ``delta`` is ``None`` if both solvers fail.  The two booleans indicate
-        which path succeeded so the caller can update counters.
-    """
+) -> LinearSolveResult:
+    """Solve one dense damped system with Cholesky then ``linalg.solve``."""
+    parameter_dimension = int(hessian.shape[0])
     identity = torch.eye(
-        param_dim, dtype=hessian.dtype, device=hessian.device,
+        parameter_dimension, dtype=hessian.dtype, device=hessian.device,
     )
     matrix = hessian + damping * identity
     try:
@@ -76,13 +53,13 @@ def solve_damped_normal_equations(
         if info.item():
             raise RuntimeError
         delta = torch.cholesky_solve(-gradient.unsqueeze(1), lower).squeeze(1)
-        return delta, True, False
+        return LinearSolveResult(delta, "cholesky")
     except Exception:
         try:
             delta = torch.linalg.solve(matrix, -gradient.unsqueeze(1)).squeeze(1)
-            return delta, False, True
+            return LinearSolveResult(delta, "dense_solve")
         except Exception:
-            return None, False, False
+            return LinearSolveResult(None, "dense_solve")
 
 
 def compute_scaled_gradient_from_normal_equations(
@@ -96,7 +73,11 @@ def compute_scaled_gradient_from_normal_equations(
     return float(gradient.norm() / max(1, hessian.norm()))
 
 
-def _validate_normal_equation_representation(equations: NormalEquations) -> None:
+def _validate_normal_equations(
+    equations: NormalEquations,
+    parameters: torch.Tensor,
+) -> None:
+    """Validate representation, device and dtype once after construction."""
     dense = equations.hessian is not None
     structured = equations.structured_system is not None
     if dense == structured:
@@ -106,16 +87,51 @@ def _validate_normal_equation_representation(equations: NormalEquations) -> None
         if equations.gradient.shape != flat.shape or not torch.equal(equations.gradient, flat):
             raise RuntimeError("INVALID_NORMAL_EQUATION_REPRESENTATION")
 
+    expected_device = parameters.device
+    tensors = [("residual", equations.residual), ("gradient", equations.gradient)]
+    if dense:
+        tensors.append(("hessian", equations.hessian))
+    else:
+        system = equations.structured_system
+        tensors.extend((
+            ("frame_hessians", system.frame_hessians),
+            ("frame_beta_cross", system.frame_beta_cross),
+            ("beta_hessian", system.beta_hessian),
+            ("frame_gradients", system.frame_gradients),
+            ("beta_gradient", system.beta_gradient),
+        ))
+    for name, tensor in tensors:
+        if tensor.device != expected_device:
+            error = (
+                "UNEXPECTED_CPU_FALLBACK_IN_CUDA_PIPELINE"
+                if parameters.is_cuda else "DEVICE_CONTRACT_VIOLATION"
+            )
+            raise RuntimeError(
+                f"{error}: {name} expected={expected_device} actual={tensor.device}"
+            )
+
+    double_tensors = [("gradient", equations.gradient)]
+    if dense:
+        double_tensors.append(("hessian", equations.hessian))
+    else:
+        double_tensors.extend(
+            (f"structured.{name}", tensor) for name, tensor in tensors[2:]
+        )
+    for name, tensor in double_tensors:
+        if tensor.dtype != torch.float64:
+            raise RuntimeError(
+                "DEVICE_CONTRACT_VIOLATION: "
+                f"{name} expected_dtype=torch.float64 actual_dtype={tensor.dtype}"
+            )
+
 
 def normal_equations_max_diagonal(equations: NormalEquations) -> float:
-    _validate_normal_equation_representation(equations)
     value = (torch.diagonal(equations.hessian).max() if equations.hessian is not None
              else equations.structured_system.max_diagonal())
     return float(value)
 
 
 def normal_equations_hessian_norm(equations: NormalEquations) -> torch.Tensor:
-    _validate_normal_equation_representation(equations)
     return (equations.hessian.norm() if equations.hessian is not None
             else equations.structured_system.hessian_frobenius_norm())
 
@@ -123,7 +139,6 @@ def normal_equations_hessian_norm(equations: NormalEquations) -> torch.Tensor:
 def normal_equations_quadratic_form(
     equations: NormalEquations, delta: torch.Tensor,
 ) -> torch.Tensor:
-    _validate_normal_equation_representation(equations)
     if equations.hessian is not None:
         return delta @ equations.hessian @ delta
     return equations.structured_system.quadratic_form(delta)
@@ -133,34 +148,34 @@ def compute_scaled_gradient(equations: NormalEquations) -> float:
     return float(equations.gradient.norm() / max(1, normal_equations_hessian_norm(equations)))
 
 
-def solve_normal_equations(
-    equations: NormalEquations, damping: float, param_dim: int,
-) -> tuple[torch.Tensor | None, bool, bool, bool, bool, bool]:
-    """Solve dense or structured equations.
-
-    Returns ``delta, cholesky_ok, fallback_ok, schur_ok,
-    schur_dense_fallback_ok, structured_to_dense``.
-    """
-    _validate_normal_equation_representation(equations)
-    if equations.hessian is not None:
-        delta, chol, fallback = solve_damped_normal_equations(
-            equations.hessian, equations.gradient, damping, param_dim,
-        )
-        return delta, chol, fallback, False, False, False
+def _solve_structured_normal_equations(
+    equations: NormalEquations, damping: float,
+) -> LinearSolveResult:
+    """Solve Arrowhead equations, materialising dense H only after failure."""
     system = equations.structured_system
     delta = system.solve_damped(damping)
     if delta is not None:
-        return delta, True, False, True, False, False
+        return LinearSolveResult(delta, "schur")
     dense = system.to_dense()
     if system.timing_sink is not None:
         system.timing_sink.schur_dense_fallback_calls += 1
-    delta, chol, fallback = solve_damped_normal_equations(
-        dense, equations.gradient, damping, param_dim,
+    dense_result = solve_damped_normal_equations(
+        dense, equations.gradient, damping,
     )
-    dense_ok = delta is not None
-    # A successful dense fallback is represented by the legacy fallback
-    # counter regardless of whether dense Cholesky or linalg.solve succeeded.
-    return delta, False, dense_ok, False, dense_ok, True
+    return LinearSolveResult(
+        dense_result.delta, dense_result.backend, schur_failed=True,
+    )
+
+
+def solve_normal_equations(
+    equations: NormalEquations, damping: float,
+) -> LinearSolveResult:
+    """Dispatch a dense or Arrowhead normal-equation solve."""
+    if equations.hessian is not None:
+        return solve_damped_normal_equations(
+            equations.hessian, equations.gradient, damping,
+        )
+    return _solve_structured_normal_equations(equations, damping)
 
 
 def _evaluate_linearization(
@@ -171,60 +186,19 @@ def _evaluate_linearization(
         equations = normal_equations_fn(x)
         if not isinstance(equations, NormalEquations):
             raise TypeError(f"normal_equations_fn returned {type(equations)}")
-        _validate_normal_equation_representation(equations)
+        _validate_normal_equations(equations, x)
         return equations, True
     residual = linearization["surrogate_fn"](x).detach()
     jacobian = compute_jacobian(linearization, x)
     jacobian_64 = jacobian.to(torch.float64)
     residual_64 = residual.to(torch.float64)
-    return NormalEquations(
+    equations = NormalEquations(
         residual=residual,
         hessian=jacobian_64.T @ jacobian_64,
         gradient=jacobian_64.T @ residual_64,
-    ), False
-
-
-def _validate_equations_device(equations: NormalEquations, parameters: torch.Tensor) -> None:
-    """Reject any CPU fallback or cross-device normal-equation representation."""
-    expected = parameters.device
-    tensors = [("residual", equations.residual), ("gradient", equations.gradient)]
-    if equations.hessian is not None:
-        tensors.append(("hessian", equations.hessian))
-    elif equations.structured_system is not None:
-        system = equations.structured_system
-        tensors.extend((
-            ("frame_hessians", system.frame_hessians),
-            ("frame_beta_cross", system.frame_beta_cross),
-            ("beta_hessian", system.beta_hessian),
-            ("frame_gradients", system.frame_gradients),
-            ("beta_gradient", system.beta_gradient),
-        ))
-    for name, tensor in tensors:
-        if tensor.device != expected:
-            error = "UNEXPECTED_CPU_FALLBACK_IN_CUDA_PIPELINE" if parameters.is_cuda else "DEVICE_CONTRACT_VIOLATION"
-            raise RuntimeError(f"{error}: {name} expected={expected} actual={tensor.device}")
-    if equations.gradient.dtype != torch.float64:
-        raise RuntimeError(
-            "DEVICE_CONTRACT_VIOLATION: gradient "
-            f"expected_dtype=torch.float64 actual_dtype={equations.gradient.dtype}"
-        )
-    if equations.hessian is not None and equations.hessian.dtype != torch.float64:
-        raise RuntimeError(
-            "DEVICE_CONTRACT_VIOLATION: hessian "
-            f"expected_dtype=torch.float64 actual_dtype={equations.hessian.dtype}"
-        )
-    if equations.structured_system is not None:
-        for name in (
-            "frame_hessians", "frame_beta_cross", "beta_hessian",
-            "frame_gradients", "beta_gradient",
-        ):
-            tensor = getattr(equations.structured_system, name)
-            if tensor.dtype != torch.float64:
-                raise RuntimeError(
-                    "DEVICE_CONTRACT_VIOLATION: "
-                    f"structured.{name} expected_dtype=torch.float64 "
-                    f"actual_dtype={tensor.dtype}"
-                )
+    )
+    _validate_normal_equations(equations, x)
+    return equations, False
 
 
 def check_convergence(
@@ -253,10 +227,7 @@ def run_lm_optimization(
     max_trials: int,
     solver_config: SolverConfig,
     profile_timing: bool,
-    progress_every_accepted: int,
     true_objective_fn: Callable[[torch.Tensor], torch.Tensor],
-    validate_irls: bool = False,
-    init_irls_check: dict[str, Any] | None = None,
 ) -> LMResult:
     """Run the Levenberg-Marquardt optimiser and return structured results.
 
@@ -268,14 +239,9 @@ def run_lm_optimization(
         returns the plain residual.
     true_objective_fn:
         The true scalar objective used for acceptance and convergence checks.
-    init_irls_check:
-        Optional pre-computed initial first-order validation (IRLS mode only).
     """
-    if true_objective_fn is None:
-        raise RuntimeError("identity_lm requires explicit true_obj_fn")
 
     profile = profile_timing
-    progress_every = progress_every_accepted
     do_sync = profile and initial_parameters.is_cuda
 
     def sync() -> None:
@@ -285,7 +251,6 @@ def run_lm_optimization(
     timing: dict[str, float] = {
         "initial_linearization_ms": 0.0,
         "solver_jacobian_ms": 0.0,
-        "validation_ms": 0.0,
         "objective_eval_ms": 0.0,
         "linear_solve_ms": 0.0,
         "final_metrics_ms": 0.0,
@@ -300,7 +265,6 @@ def run_lm_optimization(
 
     t_j = time.perf_counter()
     equations, uses_direct_normal_equations = _evaluate_linearization(linearization, x)
-    _validate_equations_device(equations, x)
     if profile:
         timing["solver_jacobian_ms"] += (time.perf_counter() - t_j) * 1000.0
     if profile:
@@ -319,9 +283,6 @@ def run_lm_optimization(
     )
     status = "RUNNING"
     weight_history: list[dict[str, Any]] = [{"outer": -1, **linearization.get("weight_stats", {})}]
-    irls_checks: list[dict[str, Any]] = []
-    if init_irls_check is not None:
-        irls_checks.append(init_irls_check)
     spec = linearization.get("spec", {})
     linear_solver_backend = linearization.get("linear_solver_backend", "dense")
     trial_history: list[dict[str, Any]] = []
@@ -341,20 +302,11 @@ def run_lm_optimization(
         for _trial in range(max_trials):
             sync()
             t_ls = time.perf_counter()
-            counters.solve_attempt_count += 1
             trial_damping = damping
-            delta, chol_ok, fb_ok, schur_ok, schur_fb_ok, materialized = solve_normal_equations(
-                equations, damping, param_dim,
-            )
-            counters.schur_success_count += int(schur_ok)
-            counters.schur_dense_fallback_count += int(schur_fb_ok)
-            counters.schur_failure_count += int(materialized)
-            counters.structured_to_dense_count += int(materialized)
-            if chol_ok:
-                counters.cholesky_success_count += 1
-            elif fb_ok:
-                counters.solve_fallback_count += 1
-            else:
+            solve_result = solve_normal_equations(equations, damping)
+            counters.record_linear_solve(solve_result)
+            delta = solve_result.delta
+            if not solve_result.success:
                 # Both solvers failed: increase damping and retry.
                 damping = min(damping * 10, _LAMBDA_MAX)
                 counters.rejected_trials += 1
@@ -364,7 +316,7 @@ def run_lm_optimization(
                     "solve_success": False, "delta_norm": None,
                     "predicted_reduction": None, "actual_reduction": None,
                     "rho": None, "accepted": False,
-                    "used_dense_fallback": materialized,
+                    "used_dense_fallback": solve_result.schur_failed,
                 })
                 if profile:
                     timing["linear_solve_ms"] += (time.perf_counter() - t_ls) * 1000.0
@@ -394,7 +346,8 @@ def run_lm_optimization(
                 "solve_success": True, "delta_norm": float(delta.norm()),
                 "predicted_reduction": predicted_reduction,
                 "actual_reduction": actual_reduction, "rho": rho,
-                "accepted": accepted_trial, "used_dense_fallback": materialized,
+                "accepted": accepted_trial,
+                "used_dense_fallback": solve_result.schur_failed,
             })
             if accepted_trial:
                 x = candidate
@@ -419,7 +372,7 @@ def run_lm_optimization(
                 jacobian_now = compute_jacobian(linearization, x)
                 if profile:
                     timing["solver_jacobian_ms"] += (time.perf_counter() - t_j) * 1000.0
-                counters.validation_jacobian_count += 1
+                counters.solver_jacobian_count += 1
                 jacobian_now_64 = jacobian_now.to(torch.float64)
                 residual_now_64 = residual_now.to(torch.float64)
                 scaled_grad = compute_scaled_gradient_from_normal_equations(
@@ -433,7 +386,6 @@ def run_lm_optimization(
         next_linearization = make_linearization(x)
         t_j = time.perf_counter()
         next_equations, next_uses_direct = _evaluate_linearization(next_linearization, x)
-        _validate_equations_device(next_equations, x)
         if profile:
             timing["solver_jacobian_ms"] += (time.perf_counter() - t_j) * 1000.0
         counters.solver_jacobian_count += 1
@@ -441,30 +393,12 @@ def run_lm_optimization(
         counters.normal_equation_count += int(next_uses_direct)
         weight_history.append({"outer": outer, **next_linearization.get("weight_stats", {})})
 
-        if validate_irls:
-            sync()
-            t_v = time.perf_counter()
-            check = validate_first_order(
-                next_linearization["surrogate_fn"], true_objective_fn, x,
-                f"{label}_acc{counters.accepted_steps}", solver_config.irls_gradient_rel_tol,
-            )
-            if profile:
-                timing["validation_ms"] += (time.perf_counter() - t_v) * 1000.0
-            irls_checks.append({"label": f"acc_{counters.accepted_steps}", **check})
-            if not check["pass"]:
-                raise RuntimeError(f"IRLS_FIRST_ORDER_MISMATCH at {label} outer={outer}")
-
         scaled_grad_final = compute_scaled_gradient(next_equations)
         sync()
         t_o = time.perf_counter()
         rel = (obj_before - float(true_objective_fn(x).detach().item())) / max(abs(obj_before), 1e-16)
         if profile:
             timing["objective_eval_ms"] += (time.perf_counter() - t_o) * 1000.0
-
-        if progress_every > 0 and counters.accepted_steps % progress_every == 0:
-            print(f"[{label}] prog acc={counters.accepted_steps} rej={counters.rejected_trials} "
-                  f"obj={float(true_objective_fn(x).detach().item()):.6e} "
-                  f"lam={damping:.2e} wall={(time.perf_counter()-t0)*1000:.0f}ms")
 
         convergence = check_convergence(scaled_grad_final, float(torch.norm(delta)), rel, solver_config)
         if convergence is not None:
@@ -488,19 +422,8 @@ def run_lm_optimization(
 
     wall_ms = _elapsed_ms(t0, x, do_sync)
 
-    first_order_checks: dict[str, Any] = {}
-    if irls_checks:
-        first_order_checks = {
-            "initial": irls_checks[0],
-            "accepted_endpoints": irls_checks[1:] if len(irls_checks) > 1 else [],
-            "worst_abs_max": max(c["abs_max"] for c in irls_checks),
-            "worst_rel_l2": max(c["rel_l2"] for c in irls_checks),
-            "all_pass": all(c["pass"] for c in irls_checks),
-        }
-
     print(f"[{label}] {status} acc={counters.accepted_steps} rej={counters.rejected_trials} "
-          f"solver_jac={counters.solver_jacobian_count} val_jac={counters.validation_jacobian_count} "
-          f"total_jac={counters.jacobian_count_total} lins={counters.linearization_count} "
+          f"jac={counters.solver_jacobian_count} lins={counters.linearization_count} "
           f"slv={counters.solve_attempt_count} "
           f"chol_ok={counters.cholesky_success_count} fb={counters.solve_fallback_count} "
           f"obj={obj_final:.6e} rms={rms_metrics['rms']:.1f}")
@@ -515,7 +438,7 @@ def run_lm_optimization(
         wall_time_ms=wall_ms,
         rms_metrics=rms_metrics,
         weight_history=weight_history,
-        first_order_checks=first_order_checks,
+        first_order_checks={},
         spec=spec,
         jacobian_backend=linearization.get("jacobian_backend", "autograd"),
         linearization_backend=linearization.get("linearization_backend", "jacobian"),
@@ -523,4 +446,3 @@ def run_lm_optimization(
         trial_history=trial_history,
         profile_timing=timing if profile else None,
     )
-

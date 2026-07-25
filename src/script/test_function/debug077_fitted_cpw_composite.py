@@ -735,10 +735,10 @@ python src/script/test_function/debug077_fitted_densekp138_valid_cpw_composite.p
   --directions both
 
 # 自定义 fitting_dir 与 output（覆盖 dataset 默认值）
-python src/script/test_function/debug077_fitted_densekp138_valid_cpw_composite.py \
-  --dataset 20260320_riding_dataset2 \
+python src/script/test_function/debug077_fitted_cpw_composite.py \
+  --dataset 20260311_riding \
   --segment all \
   --directions both \
-  --fitting_dir data_process/Output/20260320_riding_dataset2/fitting/dual_cam_sam3d_dense \
-  --output data_process/Output/20260320_riding_dataset2/tps_result/sam3dbody_cpw
+  --fitting_dir data_process/Vis/staged_lm_cpu/513_518 \
+  --output data_process/Vis/cpw_lm
 """

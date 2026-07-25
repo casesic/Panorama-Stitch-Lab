@@ -28,7 +28,15 @@ def build_argument_parser() -> argparse.ArgumentParser:
         default="stage2",
     )
     parser.add_argument("--profile_timing", action="store_true", default=False)
-    parser.add_argument("--progress_every_accepted", type=int, default=0)
+    parser.add_argument(
+        "--export_debug029_format",
+        action="store_true",
+        default=False,
+        help=(
+            "Additionally export cam2/cam4 seg_<start>_<end>_seq.pkl files "
+            "compatible with debug029/debug077. Frames must be contiguous."
+        ),
+    )
     return parser
 
 

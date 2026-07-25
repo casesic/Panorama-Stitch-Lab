@@ -80,8 +80,8 @@ def run_stage1_lm_independent_batch(
     return run_lm_optimization(
         "STAGE1_BATCH_SHADOW",lambda x:make_stage1_batch_linearization(stage,batch,context,x,mode),
         stage.raw_metrics_fn,initial,stage.parameter_dimension,stage.lm_max_accepted_steps,
-        context.solver_config.lm_max_trials,context.solver_config,profile_timing,0,
-        stage.lm_true_objective_fn,validate_irls=False,
+        context.solver_config.lm_max_trials,context.solver_config,profile_timing,
+        stage.lm_true_objective_fn,
     )
 
 
@@ -96,8 +96,7 @@ def run_stage1_serial_reference(
         lambda x: stage.linearization_builder(x, stage.aggregation_spec),
         stage.raw_metrics_fn, initial, stage.parameter_dimension,
         stage.lm_max_accepted_steps, context.solver_config.lm_max_trials,
-        context.solver_config, profile_timing, 0, stage.lm_true_objective_fn,
-        validate_irls=False,
+        context.solver_config, profile_timing, stage.lm_true_objective_fn,
     )
 
 
@@ -133,8 +132,9 @@ def run_stage1_lm_lockstep(
         before=float(stage.lm_true_objective_fn(x).detach()); accepted_this=False
         for trial in range(context.solver_config.lm_max_trials):
             trial_damping=damping
-            sd,sc,sf,_,_,sm=solve_normal_equations(serial.equations,damping,stage.parameter_dimension)
-            cd,cc,cf,_,_,cm=solve_normal_equations(candidate.equations,damping,stage.parameter_dimension)
+            serial_solve=solve_normal_equations(serial.equations,damping)
+            candidate_solve=solve_normal_equations(candidate.equations,damping)
+            sd,cd=serial_solve.delta,candidate_solve.delta
             if sd is None:
                 damping=min(damping*10,1e12);rejected+=1;continue
             sx=(x+sd.to(torch.float32)).detach(); so=float(stage.lm_true_objective_fn(sx).detach())
@@ -147,7 +147,10 @@ def run_stage1_lm_lockstep(
                 ca=before-co;cr=ca/max(cp,1e-12) if cp>0 else 0.;cacc=cp>0 and ca>0 and cr>0
             dd=None if cd is None else cd-sd
             records.append(Stage1ShadowTrialRecord(
-                outer,trial,trial_damping,sd is not None,cd is not None,sc,cc,bool(sf or sm),bool(cf or cm),
+                outer,trial,trial_damping,sd is not None,cd is not None,
+                serial_solve.cholesky_success,candidate_solve.cholesky_success,
+                bool(serial_solve.fallback_success or serial_solve.schur_failed),
+                bool(candidate_solve.fallback_success or candidate_solve.schur_failed),
                 None if dd is None else float(dd.abs().max()),
                 None if dd is None else float(dd.norm())/max(float(sd.norm()),1e-30),
                 sp,cp,None if cp is None else abs(cp-sp)/max(abs(sp),1e-30),sa,ca,sr,cr,

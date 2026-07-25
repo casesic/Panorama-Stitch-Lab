@@ -42,8 +42,7 @@ def _context_args(cli: argparse.Namespace, backend: str, objective: str = "charb
         stop_after_stage="stage1", run_lbfgs_oracle=False,
         jacobian_backend=backend, validate_irls_first_order=False,
         stage1_eval_backend="full_forward", validate_stage1_fast_eval=False,
-        validate_irls_each_accepted=False, profile_timing=True,
-        progress_every_accepted=0,
+        profile_timing=True,
     )
 
 
@@ -347,7 +346,7 @@ def run_stage1_batch_shadow(cli=None) -> int:
             "STAGE1_SERIAL_REFERENCE",lambda x:stage.linearization_builder(x,stage.aggregation_spec),
             stage.raw_metrics_fn,stage.initial_lm_parameters,stage.parameter_dimension,
             stage.lm_max_accepted_steps,context.solver_config.lm_max_trials,
-            context.solver_config,True,0,stage.lm_true_objective_fn,validate_irls=False)
+            context.solver_config,True,stage.lm_true_objective_fn)
         candidate=run_stage1_lm_independent_batch(stage,batch,context,
             mode=Stage1NEMode.FULL_BATCH_GROUP_GEMM)
         lock=run_stage1_lm_lockstep(stage,batch,context,

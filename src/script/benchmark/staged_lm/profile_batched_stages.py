@@ -91,7 +91,7 @@ def _valid_rows(tensor, counts):
 
 def _run_one(args, frames: list[str], warmup: int, repeats: int) -> dict[str,Any]:
     local=argparse.Namespace(**vars(args));local.frames=",".join(frames);local.output_dir="/tmp/staged_lm_batch_bakeoff"
-    local.profile_timing=True;local.stop_after_stage="stage2";local.progress_every_accepted=0
+    local.profile_timing=True;local.stop_after_stage="stage2"
     context=build_context(local)
     with contextlib.redirect_stdout(open("/dev/null","w")):
         s1_definition=build_stage1_definition(context);s1=run_stage(s1_definition,context)

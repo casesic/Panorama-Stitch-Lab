@@ -19,3 +19,14 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+r'''
+python src/script/human_fitting/staged_lm/run.py \
+  --frames 513,514,515,516,517,518 \
+  --hmr_dir data_process/Output/20260311_riding/hmr_cache \
+  --sam3d_dense_dir data_process/Output/20260311_riding/sam3dbody/smplx_dense \
+  --bbox_dir data_process/Output/20260311_riding/image/equirect_crop_rotate \
+  --output_dir data_process/Vis/staged_lm_cpu \
+  --stop_after_stage stage2 \
+  --export_debug029_format
+'''

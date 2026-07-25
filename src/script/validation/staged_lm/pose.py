@@ -46,8 +46,7 @@ def pose_forward_context_args(cli: argparse.Namespace) -> argparse.Namespace:
         stop_after_stage="stage1", run_lbfgs_oracle=False,
         jacobian_backend="autograd", stage1_eval_backend="full_forward",
         validate_stage1_fast_eval=False, validate_irls_first_order=False,
-        validate_irls_each_accepted=False, profile_timing=False,
-        progress_every_accepted=0,
+        profile_timing=False,
     )
 
 
@@ -295,8 +294,8 @@ def pose_jacobian_context_args(cli: argparse.Namespace) -> argparse.Namespace:
         output_dir="/tmp/debug113", reproj_objective="charbonnier_irls",
         stop_after_stage="stage1", run_lbfgs_oracle=False, jacobian_backend="autograd",
         stage1_eval_backend="full_forward", validate_stage1_fast_eval=False,
-        validate_irls_first_order=False, validate_irls_each_accepted=False,
-        profile_timing=False, progress_every_accepted=0,
+        validate_irls_first_order=False,
+        profile_timing=False,
     )
 
 
@@ -654,8 +653,8 @@ def pose_solver_context_args(cli: argparse.Namespace) -> argparse.Namespace:
         jacobian_backend="analytic_stage1", stage1_eval_backend="analytic",
         validate_stage1_fast_eval=False, stage2_pose_linearization_backend="autograd",
         stage2_pose_eval_backend="full_forward", validate_stage2_pose_fast_eval=False,
-        validate_irls_first_order=False, validate_irls_each_accepted=False,
-        profile_timing=cli.profile, progress_every_accepted=0,
+        validate_irls_first_order=False,
+        profile_timing=cli.profile,
         device=getattr(cli, "device", "auto"),
     )
 

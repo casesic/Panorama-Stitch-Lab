@@ -80,8 +80,8 @@ def experiment_args(cli: argparse.Namespace) -> argparse.Namespace:
         stage2_joint_linearization_backend="analytic", stage2_joint_eval_backend="fast",
         stage2_joint_linear_solver="schur", validate_stage2_joint_fast_eval=False,
         stage2_joint_fk_jacobian_backend="combined",
-        validate_irls_first_order=False, validate_irls_each_accepted=False,
-        profile_timing=False, progress_every_accepted=0,
+        validate_irls_first_order=False,
+        profile_timing=False,
     )
 
 

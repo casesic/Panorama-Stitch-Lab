@@ -104,14 +104,9 @@ def run_stage(stage: StageDefinition, context: StageContext) -> StageOutcome:
         max_trials=context.solver_config.lm_max_trials,
         solver_config=context.solver_config,
         profile_timing=context.args.profile_timing,
-        progress_every_accepted=context.args.progress_every_accepted,
         true_objective_fn=true_objective,
-        validate_irls=False,
-        init_irls_check=None,
     )
     result.eval_backend = stage.eval_backend
-    if stage.name == "S1":
-        result.stage1_eval_backend = stage.eval_backend
     if context.args.profile_timing and stage.analytic_cache is not None:
         if result.profile_timing is not None:
             result.profile_timing.update(stage.analytic_cache.timing_dict())
@@ -119,9 +114,6 @@ def run_stage(stage: StageDefinition, context: StageContext) -> StageOutcome:
         result.profile_timing["eval_backend"] = stage.eval_backend
         result.profile_timing["linearization_backend"] = stage.linearization_backend
         result.profile_timing["linear_solver_backend"] = stage.linear_solver_backend
-        if stage.name == "S1":
-            result.profile_timing["stage1_eval_backend"] = stage.eval_backend
-        result.profile_timing["full_forward_oracle_validation_ms"] = 0.0
 
     return StageOutcome(
         lm_result=result,

@@ -239,8 +239,12 @@ def test_timing_reset_and_cuda_solve() -> None:
         from lib_pano.human_fitting.staged_lm.lm_solver import solve_damped_normal_equations
         hessian = torch.eye(3, dtype=torch.float64, device="cuda")
         gradient = torch.ones(3, dtype=torch.float64, device="cuda")
-        delta, cholesky_ok, _ = solve_damped_normal_equations(hessian, gradient, 1e-3, 3)
-        assert cholesky_ok and delta is not None and delta.device == hessian.device
+        result = solve_damped_normal_equations(hessian, gradient, 1e-3)
+        assert (
+            result.backend == "cholesky"
+            and result.delta is not None
+            and result.delta.device == hessian.device
+        )
     print("test_timing_reset_and_cuda_solve: PASS")
 
 

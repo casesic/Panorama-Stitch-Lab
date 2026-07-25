@@ -92,18 +92,56 @@ class ReprojectionGroup:
         return int(self.residual_2d.shape[0])
 
 
+LinearSolveBackend = Literal[
+    "cholesky",
+    "dense_solve",
+    "schur",
+]
+
+
+@dataclass(frozen=True)
+class LinearSolveResult:
+    """Named outcome of one damped normal-equation solve attempt."""
+
+    delta: torch.Tensor | None
+    backend: LinearSolveBackend
+    schur_failed: bool = False
+
+    @property
+    def success(self) -> bool:
+        return self.delta is not None
+
+    @property
+    def cholesky_success(self) -> bool:
+        # Preserve the legacy counter semantics: a successful Schur solve was
+        # counted as a Cholesky success.
+        return self.success and self.backend in ("cholesky", "schur")
+
+    @property
+    def fallback_success(self) -> bool:
+        return self.success and (
+            self.backend == "dense_solve" or self.schur_failed
+        )
+
+    @property
+    def schur_success(self) -> bool:
+        return self.backend == "schur"
+
+    @property
+    def schur_dense_fallback_success(self) -> bool:
+        return self.success and self.schur_failed
+
+
 @dataclass
 class LMSolverCounters:
     """Counters accumulated during a single LM optimisation run.
 
-    These are exported verbatim into the JSON result, so the attribute names
-    must stay in sync with the legacy keys.
+    Keep only distinct solver events.
     """
 
     accepted_steps: int = 0
     rejected_trials: int = 0
     solver_jacobian_count: int = 0
-    validation_jacobian_count: int = 0
     linearization_count: int = 0
     solve_attempt_count: int = 0
     cholesky_success_count: int = 0
@@ -112,18 +150,22 @@ class LMSolverCounters:
     schur_success_count: int = 0
     schur_dense_fallback_count: int = 0
     schur_failure_count: int = 0
-    structured_to_dense_count: int = 0
+
+    def record_linear_solve(self, result: LinearSolveResult) -> None:
+        """Record one solve path without duplicating flag logic in the LM loop."""
+        self.solve_attempt_count += 1
+        self.cholesky_success_count += int(result.cholesky_success)
+        self.solve_fallback_count += int(result.fallback_success)
+        self.schur_success_count += int(result.schur_success)
+        self.schur_dense_fallback_count += int(
+            result.schur_dense_fallback_success
+        )
+        self.schur_failure_count += int(result.schur_failed)
 
     @property
-    def solve_count(self) -> int:
-        """Total successful linear solves (cholesky + fallback)."""
+    def successful_solve_count(self) -> int:
+        """Total successful linear solves (Cholesky + fallback)."""
         return self.cholesky_success_count + self.solve_fallback_count
-
-    @property
-    def jacobian_count_total(self) -> int:
-        """Total Jacobian evaluations (solver + validation)."""
-        return self.solver_jacobian_count + self.validation_jacobian_count
-
 
 @dataclass
 class LMResult:
@@ -149,8 +191,6 @@ class LMResult:
     eval_backend: str = "full_forward"
     linear_solver_backend: str = "dense"
     trial_history: list[dict[str, Any]] = field(default_factory=list)
-    stage1_eval_backend: str = "full_forward"
-    full_forward_oracle_validation_ms: float = 0.0
     profile_timing: dict[str, Any] | None = None
 
     def to_json_dict(self) -> dict[str, Any]:
@@ -160,10 +200,9 @@ class LMResult:
             "obj": self.objective,
             "status": self.status,
             "solver_jacobian_count": self.counters.solver_jacobian_count,
-            "validation_jacobian_count": self.counters.validation_jacobian_count,
-            "jacobian_count_total": self.counters.jacobian_count_total,
             "linearization_count": self.counters.linearization_count,
-            "solve_count": self.counters.solve_count,
+            "solve_attempt_count": self.counters.solve_attempt_count,
+            "successful_solve_count": self.counters.successful_solve_count,
             "cholesky_success_count": self.counters.cholesky_success_count,
             "solve_fallback_count": self.counters.solve_fallback_count,
             "accepted_steps": self.counters.accepted_steps,
@@ -181,11 +220,8 @@ class LMResult:
             "schur_success_count": self.counters.schur_success_count,
             "schur_dense_fallback_count": self.counters.schur_dense_fallback_count,
             "schur_failure_count": self.counters.schur_failure_count,
-            "structured_to_dense_count": self.counters.structured_to_dense_count,
             "trial_history": self.trial_history,
             "normal_equation_count": self.counters.normal_equation_count,
-            "stage1_eval_backend": self.stage1_eval_backend,
-            "full_forward_oracle_validation_ms": self.full_forward_oracle_validation_ms,
         }
         if self.profile_timing is not None:
             result["profile_timing"] = self.profile_timing
@@ -267,24 +303,6 @@ class StageDefinition:
     Bundles the functions and hyper-parameters that ``run_stage`` needs so the
     orchestration code can treat all three stages uniformly.
 
-    Attributes
-    ----------
-    name:
-        Short label used in logs (``"S1"``, ``"STAGE2_POSE"``, or
-        ``"STAGE2_JOINT"``).
-    parameter_dimension:
-        Total length of the optimisation vector ``x``.
-    initial_lm_parameters:
-        Starting point for the LM solver.
-    raw_groups_fn:
-        Maps a parameter vector to a list of :class:`ReprojectionGroup`.
-    anchor_residual_fn:
-        Optional anchor residual appended to the surrogate.  ``None`` when the
-        stage has no anchor term.
-    raw_metrics_fn:
-        Maps a parameter vector to ``{"rms", "median", "p95"}`` metrics.
-    lm_max_accepted_steps:
-        Outer-loop budget for the LM solver.
     """
 
     name: str

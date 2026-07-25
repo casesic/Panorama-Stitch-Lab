@@ -43,7 +43,7 @@ def _result(result):
     return {"status":result.status,"objective":result.objective,"parameters":result.parameters.detach().cpu().tolist(),
             "accepted_steps":c.accepted_steps,"rejected_trials":c.rejected_trials,"normal_equation_count":c.normal_equation_count,
             "solve_attempt_count":c.solve_attempt_count,"schur_success_count":c.schur_success_count,
-            "schur_dense_fallback_count":c.schur_dense_fallback_count,"structured_to_dense_count":c.structured_to_dense_count,
+            "schur_dense_fallback_count":c.schur_dense_fallback_count,"schur_failure_count":c.schur_failure_count,
             "final_lambda":result.final_lambda,"wall_time_ms":result.wall_time_ms,"metrics":result.rms_metrics,
             "trial_history":result.trial_history,"weight_history":result.weight_history}
 
@@ -61,7 +61,7 @@ def _serial(stage,context,initial):
         )
     return run_lm_optimization("STAGE2_JOINT_SERIAL_REFERENCE",linearize,
         stage.raw_metrics_fn,initial,stage.parameter_dimension,stage.lm_max_accepted_steps,context.solver_config.lm_max_trials,
-        context.solver_config,True,0,stage.lm_true_objective_fn,validate_irls=False)
+        context.solver_config,True,stage.lm_true_objective_fn)
 
 
 def _timed(fn,warmup,repeats,reference):
@@ -83,7 +83,7 @@ def _perturb(initial,pose_scale,beta_scale,beta_dim):
 
 
 def _run_count(args,frames):
-    local=argparse.Namespace(**vars(args));local.frames=",".join(frames);local.output_dir="/tmp/staged_lm_joint_shadow";local.stop_after_stage="stage2";local.profile_timing=True;local.progress_every_accepted=0
+    local=argparse.Namespace(**vars(args));local.frames=",".join(frames);local.output_dir="/tmp/staged_lm_joint_shadow";local.stop_after_stage="stage2";local.profile_timing=True
     context=build_context(local)
     with contextlib.redirect_stdout(io.StringIO()):
         s1=run_stage(build_stage1_definition(context),context);shared=build_stage2_shared_geometry_cache(context)

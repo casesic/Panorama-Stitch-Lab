@@ -226,8 +226,6 @@ def run_stage(stage: StageDefinition, context: StageContext) -> StageOutcome:
     print(f"\n{'='*60}\n[{stage.name}] T={context.frame_count} param_dim={stage.parameter_dimension} "
           f"groups={n_groups} valid_pts={total_valid} surr_dim={surrogate_dim}\n{'='*60}")
 
-    validate_each_accepted = context.args.validate_irls_each_accepted and context.is_irls
-
     lm_result = run_lm_optimization(
         label=f"{stage.name}_LM",
         make_linearization=make_linearization,
@@ -238,16 +236,19 @@ def run_stage(stage: StageDefinition, context: StageContext) -> StageOutcome:
         max_trials=context.solver_config.lm_max_trials,
         solver_config=context.solver_config,
         profile_timing=context.args.profile_timing,
-        progress_every_accepted=context.args.progress_every_accepted,
         true_objective_fn=lm_true_objective,
-        validate_irls=validate_each_accepted,
-        init_irls_check=init_check,
     )
 
-    # Fold the initial-validation timing (measured outside the solver) into
-    # the solver's validation_ms counter, matching the original behaviour.
+    if init_check is not None:
+        lm_result.first_order_checks = {
+            "initial": init_check,
+            "worst_abs_max": init_check["abs_max"],
+            "worst_rel_l2": init_check["rel_l2"],
+            "all_pass": init_check["pass"],
+        }
+
     if context.args.profile_timing and init_check is not None and lm_result.profile_timing is not None:
-        lm_result.profile_timing["validation_ms"] += init_validation_ms
+        lm_result.profile_timing["initial_irls_validation_ms"] = init_validation_ms
     if stage.fast_eval_validator is not None:
         start = time.perf_counter()
         stage.fast_eval_validator("LM_FINAL", lm_result.parameters)
@@ -272,17 +273,12 @@ def run_stage(stage: StageDefinition, context: StageContext) -> StageOutcome:
     if verdict:
         print(f"[V_{stage.name}] {verdict}")
     lm_result.eval_backend = stage.eval_backend
-    if stage.name == "S1":
-        lm_result.stage1_eval_backend = stage.eval_backend
-    lm_result.full_forward_oracle_validation_ms = stage.full_forward_oracle_validation_ms
     if context.args.profile_timing and stage.analytic_cache is not None and lm_result.profile_timing is not None:
         lm_result.profile_timing.update(stage.analytic_cache.timing_dict())
     if lm_result.profile_timing is not None:
         lm_result.profile_timing["eval_backend"] = stage.eval_backend
         lm_result.profile_timing["linearization_backend"] = stage.linearization_backend
         lm_result.profile_timing["linear_solver_backend"] = stage.linear_solver_backend
-        if stage.name == "S1":
-            lm_result.profile_timing["stage1_eval_backend"] = stage.eval_backend
         lm_result.profile_timing["full_forward_oracle_validation_ms"] = (
             stage.full_forward_oracle_validation_ms
         )

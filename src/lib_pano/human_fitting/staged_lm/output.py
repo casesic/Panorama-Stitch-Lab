@@ -14,8 +14,136 @@ from typing import Any
 import numpy as np
 import torch
 
+from lib_pano.fitting_io.fitting_result_io import save_segment_result
+from lib_pano.human_fitting.smplx_sequence import SMPLX_Seq_Forward_Module
+
+from .parameter_layout import unpack_frame_parameters
 from .residuals import flatten_reprojection_groups
 from .types import LBFGSResult, LMResult, StageOutcome
+
+
+_COMPAT_RESULT_KEYS = {
+    "stage1": ("x_s1_lm", "beta_anchor", False),
+    "pose_warmup": ("x_stage2_pose_lm", "beta_anchor", True),
+    "joint_refinement": ("x_stage2_joint_lm", "beta_lm", True),
+}
+
+
+def _flat_cpu_tensor(value: Any, name: str, expected_size: int) -> torch.Tensor:
+    tensor = torch.as_tensor(value).detach().reshape(-1).to(device="cpu", dtype=torch.float32).clone()
+    if tensor.numel() != expected_size:
+        raise ValueError(
+            f"{name} shape mismatch: expected {expected_size} values, got {tensor.numel()}"
+        )
+    return tensor
+
+
+def build_compatible_smplx_sequences(
+    context: Any,
+    arrays: dict[str, np.ndarray],
+    stage: str,
+) -> tuple[Any, Any, torch.Tensor]:
+    """Rebuild debug029-compatible CPU SMPL-X sequences from staged-LM arrays."""
+    if stage not in _COMPAT_RESULT_KEYS:
+        raise ValueError(f"Unsupported compatibility export stage: {stage}")
+    parameter_key, beta_key, include_body_pose = _COMPAT_RESULT_KEYS[stage]
+    if parameter_key not in arrays or beta_key not in arrays:
+        raise KeyError(f"Compatibility export requires {parameter_key!r} and {beta_key!r}")
+
+    per_frame_dim = 12 + (context.body_pose_dim if include_body_pose else 0)
+    expected_parameter_count = context.frame_count * per_frame_dim
+    if stage == "joint_refinement":
+        expected_parameter_count += context.beta_dim
+    parameters = _flat_cpu_tensor(arrays[parameter_key], parameter_key, expected_parameter_count)
+    shared_beta = _flat_cpu_tensor(arrays[beta_key], beta_key, context.beta_dim)
+
+    sequences = [
+        SMPLX_Seq_Forward_Module.SMPLX_Param_Seq(
+            num_batch=context.frame_count, gender="neutral",
+        )
+        for _ in range(2)
+    ]
+    scales: list[list[torch.Tensor]] = [[], []]
+    for position in range(context.frame_count):
+        body_pose_override = None
+        if not include_body_pose:
+            body_pose_override = context.body_pose_anchors[position].reshape(1, -1)
+        unpacked = unpack_frame_parameters(
+            parameters, position, per_frame_dim, include_body_pose,
+            body_pose_override=body_pose_override,
+        )
+        frozen = context.frozen_params_by_frame[position]
+        for camera_index, camera in enumerate(("cam2", "cam4")):
+            sequence = sequences[camera_index]
+            sequence.orient[position] = _flat_cpu_tensor(
+                getattr(unpacked, f"{camera}_orient"), f"{camera} orient", 3,
+            )
+            sequence.transl[position] = _flat_cpu_tensor(
+                getattr(unpacked, f"{camera}_transl"), f"{camera} transl", 3,
+            )
+            sequence.body_pose[position] = _flat_cpu_tensor(
+                unpacked.body_pose, "body pose", context.body_pose_dim,
+            )
+            sequence.left_hand_pose[position] = _flat_cpu_tensor(
+                getattr(frozen, f"{camera}_left_hand_pose"), f"{camera} left hand pose", 45,
+            )
+            sequence.right_hand_pose[position] = _flat_cpu_tensor(
+                getattr(frozen, f"{camera}_right_hand_pose"), f"{camera} right hand pose", 45,
+            )
+            scales[camera_index].append(_flat_cpu_tensor(
+                getattr(frozen, f"{camera}_scale"), f"{camera} scale", 1,
+            ))
+
+    for camera_index, sequence in enumerate(sequences):
+        reference_scale = scales[camera_index][0]
+        if any(not torch.equal(scale, reference_scale) for scale in scales[camera_index][1:]):
+            raise ValueError(
+                "Cannot export debug029 format: SMPLX_Param_Seq supports one shared scale "
+                f"but cam{2 if camera_index == 0 else 4} scales differ between frames"
+            )
+        sequence.beta = shared_beta.clone()
+        sequence.scale = reference_scale.clone()
+    return sequences[0], sequences[1], shared_beta
+
+
+def export_debug029_compatible_result(
+    output_root: Path,
+    context: Any,
+    arrays: dict[str, np.ndarray],
+    stage: str,
+) -> None:
+    """Write the cam2/cam4 pickle layout consumed by debug077."""
+    frame_indices = list(context.frame_indices)
+    expected = list(range(frame_indices[0], frame_indices[-1] + 1))
+    if frame_indices != expected:
+        raise ValueError(
+            "--export_debug029_format requires contiguous ascending --frames; "
+            f"got {frame_indices}"
+        )
+    result_c2, result_c4, shared_beta = build_compatible_smplx_sequences(
+        context, arrays, stage,
+    )
+    valid_frame_count_c2 = sum(int(ids.numel() > 0) for ids in context.cam2_vertex_ids_by_frame)
+    valid_frame_count_c4 = sum(int(ids.numel() > 0) for ids in context.cam4_vertex_ids_by_frame)
+    save_segment_result(
+        result_c2=result_c2,
+        result_c4=result_c4,
+        shared_beta=shared_beta,
+        output_dir=output_root,
+        frame_idxs=frame_indices,
+        valid_frame_count_c2=valid_frame_count_c2,
+        valid_frame_count_c4=valid_frame_count_c4,
+    )
+    segment_key = f"{frame_indices[0]}_{frame_indices[-1]}"
+    for camera in ("cam2", "cam4"):
+        meta_path = output_root / camera / f"seg_{segment_key}_meta.json"
+        with meta_path.open("r", encoding="utf-8") as file:
+            metadata = json.load(file)
+        metadata["export_source"] = "staged_lm"
+        metadata["export_stage"] = stage
+        with meta_path.open("w", encoding="utf-8") as file:
+            json.dump(metadata, file, ensure_ascii=False, indent=2)
+    print(f"[SAVE debug029-compatible] {output_root} segment={frame_indices[0]}_{frame_indices[-1]}")
 
 
 def build_output_directory(output_root: Path, frame_indices: list[int]) -> Path:

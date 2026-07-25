@@ -159,9 +159,7 @@ def run_pose_lm_independent_batch(
         max_trials=context.solver_config.lm_max_trials,
         solver_config=context.solver_config,
         profile_timing=profile_timing,
-        progress_every_accepted=0,
         true_objective_fn=stage.lm_true_objective_fn,
-        validate_irls=False,
     )
 
 
@@ -204,8 +202,9 @@ def run_pose_lm_lockstep(
         accepted_this = False
         for trial in range(context.solver_config.lm_max_trials):
             trial_damping = damping
-            sd, _, sfb, _, _, smat = solve_normal_equations(serial_eval.equations, damping, stage.parameter_dimension)
-            bd, _, bfb, _, _, bmat = solve_normal_equations(candidate_eval.equations, damping, stage.parameter_dimension)
+            serial_solve = solve_normal_equations(serial_eval.equations, damping)
+            batch_solve = solve_normal_equations(candidate_eval.equations, damping)
+            sd, bd = serial_solve.delta, batch_solve.delta
             if sd is None:
                 damping = min(damping * 10, 1e12); rejected_trials += 1
                 continue
@@ -234,7 +233,8 @@ def run_pose_lm_lockstep(
                 None if delta_diff is None else float(delta_diff.norm()) / max(float(sd.norm()), 1e-30),
                 sp, bp, None if bp is None else abs(bp-sp)/max(abs(sp),1e-30), sa, ba, sr, br,
                 None if br is None else abs(br-sr), sacc, bacc, sacc == bacc,
-                bool(sfb or smat), bool(bfb or bmat),
+                bool(serial_solve.fallback_success or serial_solve.schur_failed),
+                bool(batch_solve.fallback_success or batch_solve.schur_failed),
                 errors["H"]["relative_frobenius"], errors["H"]["max_abs"],
                 errors["g"]["relative_frobenius"], errors["g"]["max_abs"],
                 float(gref.norm()), float(gcand.norm()), errors["residual"]["relative_frobenius"],

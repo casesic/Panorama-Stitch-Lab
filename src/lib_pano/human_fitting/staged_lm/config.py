@@ -94,13 +94,5 @@ class ObjectiveConfig:
 
 def resolve_objective_config(namespace: Any) -> ObjectiveConfig:
     """Load saved nested/legacy objective values or use current code defaults."""
-    # nested = getattr(namespace, "objective_config", None)
-    # if isinstance(nested, dict):
-    #     return ObjectiveConfig(**nested)
-    # defaults = ObjectiveConfig()
-    # values = {
-    #     name: getattr(namespace, name, getattr(defaults, name))
-    #     for name in ObjectiveConfig.__dataclass_fields__
-    # }
-    # return ObjectiveConfig(**values)
+
     return ObjectiveConfig()

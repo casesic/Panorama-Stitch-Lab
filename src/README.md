@@ -118,7 +118,6 @@ python src/script/human_fitting/staged_lm/run.py \
 | `--reproj_objective` | `charbonnier_irls` 或 `raw_l2` | `charbonnier_irls` |
 | `--stop_after_stage` | `stage1`、`stage2_pose` 或 `stage2` | `stage2` |
 | `--profile_timing` | 输出细粒度 timing | 关闭 |
-| `--progress_every_accepted` | 每隔多少 accepted step 打印进度 | `0` |
 
 查看最新参数：
 

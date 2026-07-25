@@ -67,8 +67,8 @@ def _serial(stage,context,initial):
     return run_lm_optimization(
         "STAGE1_SERIAL_REFERENCE",lambda x:stage.linearization_builder(x,stage.aggregation_spec),
         stage.raw_metrics_fn,initial,stage.parameter_dimension,stage.lm_max_accepted_steps,
-        context.solver_config.lm_max_trials,context.solver_config,True,0,
-        stage.lm_true_objective_fn,validate_irls=False)
+        context.solver_config.lm_max_trials,context.solver_config,True,
+        stage.lm_true_objective_fn)
 
 
 def _timed(fn,warmup,repeats,reference):
@@ -142,7 +142,7 @@ def _downstream(context,stage,serial,candidate):
 
 
 def _run_count(args,frames):
-    local=argparse.Namespace(**vars(args));local.frames=",".join(frames);local.profile_timing=True;local.progress_every_accepted=0
+    local=argparse.Namespace(**vars(args));local.frames=",".join(frames);local.profile_timing=True
     context=build_context(local);stage=build_stage1_definition(context);cache=stage.analytic_cache
     batch=build_stage1_batch_cache(cache);modes=[_mode(x) for x in _csv(args.candidate_modes)]
     rotations=list(map(float,_csv(args.rotation_perturbation_scales)));translations=list(map(float,_csv(args.translation_perturbation_scales)))

@@ -85,6 +85,7 @@ from lib_pano.human_fitting.staged_lm.output import (
     collect_stage2_pose_arrays,
     collect_stage2_arrays,
     compute_objective_breakdown,
+    export_debug029_compatible_result,
     lbfgs_result_to_json,
     lm_result_to_json,
     save_experiment_outputs,
@@ -335,7 +336,6 @@ def run_production_pipeline(
         "validate_stage2_pose_fast_eval": False,
         "validate_stage2_joint_fast_eval": False,
         "validate_irls_first_order": False,
-        "validate_irls_each_accepted": False,
         "solver_config": asdict(context.solver_config),
         "objective_config": asdict(context.objective_config),
     }
@@ -367,6 +367,10 @@ def run_production_pipeline(
                 output_directory, results, arrays,
                 pipeline_timing=pipeline_timing, command_start=command_start,
             )
+            if getattr(args, "export_debug029_format", False):
+                export_debug029_compatible_result(
+                    Path(args.output_dir), context, arrays, "stage1",
+                )
         return ProductionRunResult(
             context, stage1_outcome, None, None, results, arrays,
             output_directory, pipeline_timing,
@@ -396,6 +400,10 @@ def run_production_pipeline(
                 output_directory, results, arrays,
                 pipeline_timing=pipeline_timing, command_start=command_start,
             )
+            if getattr(args, "export_debug029_format", False):
+                export_debug029_compatible_result(
+                    Path(args.output_dir), context, arrays, "pose_warmup",
+                )
         return ProductionRunResult(
             context, stage1_outcome, pose_outcome, None, results, arrays,
             output_directory, pipeline_timing,
@@ -455,6 +463,10 @@ def run_production_pipeline(
             output_directory, results, arrays,
             pipeline_timing=pipeline_timing, command_start=command_start,
         )
+        if getattr(args, "export_debug029_format", False):
+            export_debug029_compatible_result(
+                Path(args.output_dir), context, arrays, "joint_refinement",
+            )
     return ProductionRunResult(
         context, stage1_outcome, pose_outcome, joint_outcome, results, arrays,
         output_directory, pipeline_timing,

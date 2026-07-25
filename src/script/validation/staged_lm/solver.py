@@ -22,7 +22,7 @@ def backend_args(c):return argparse.Namespace(frames=c.frames,hmr_dir=c.hmr_dir,
     run_lbfgs_oracle=False,jacobian_backend="analytic_stage1",stage1_eval_backend="analytic",validate_stage1_fast_eval=False,
     stage2_pose_linearization_backend="analytic",stage2_pose_eval_backend="fast",validate_stage2_pose_fast_eval=False,
     stage2_joint_linearization_backend="autograd",stage2_joint_eval_backend="full_forward",validate_stage2_joint_fast_eval=False,
-    validate_irls_first_order=False,validate_irls_each_accepted=False,profile_timing=c.profile,progress_every_accepted=0)
+    validate_irls_first_order=False,profile_timing=c.profile)
 
 
 def backend_metric_close(a,b):return abs(a-b)<=1e-3 or abs(a-b)/max(abs(b),1e-16)<=1e-5
@@ -76,8 +76,7 @@ def schur_make_args(cli: argparse.Namespace) -> argparse.Namespace:
         stage2_joint_linearization_backend="autograd",
         stage2_joint_eval_backend="full_forward", stage2_joint_linear_solver="dense",
         validate_stage2_joint_fast_eval=False, validate_irls_first_order=False,
-        validate_irls_each_accepted=False, profile_timing=cli.profile,
-        progress_every_accepted=0,
+        profile_timing=cli.profile,
     )
 
 
@@ -207,8 +206,7 @@ def fk_make_args(cli: argparse.Namespace) -> argparse.Namespace:
         stage2_joint_eval_backend="fast", stage2_joint_linear_solver="schur",
         stage2_joint_fk_jacobian_backend="combined",
         validate_stage2_joint_fast_eval=False, validate_irls_first_order=False,
-        validate_irls_each_accepted=False, profile_timing=cli.profile,
-        progress_every_accepted=0,
+        profile_timing=cli.profile,
     )
 
 

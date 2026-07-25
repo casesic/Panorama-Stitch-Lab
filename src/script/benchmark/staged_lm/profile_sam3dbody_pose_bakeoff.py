@@ -39,7 +39,7 @@ def _load_pose(root:Path,cam:str,frames:list[int],device,dtype):
  return values
 
 def _run(args,frames,candidate):
- local=argparse.Namespace(**vars(args));local.frames=','.join(map(str,frames));local.profile_timing=True;local.progress_every_accepted=0
+ local=argparse.Namespace(**vars(args));local.frames=','.join(map(str,frames));local.profile_timing=True
  context=build_context(local)
  if candidate!="CURRENT_HYBRID_BASELINE":
   cam='cam2' if candidate.endswith('CAM2') else 'cam4';context.body_pose_anchors=_load_pose(Path(args.official_init_dir),cam,frames,context.device,context.dtype)

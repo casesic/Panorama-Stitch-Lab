@@ -57,12 +57,12 @@ def _csv(value:str)->list[str]:return [item.strip() for item in value.split(",")
 def _run_pose_lm(stage,context,initial,max_steps):
     return run_lm_optimization("POSE_ABLATION_SERIAL",lambda x:stage.linearization_builder(x,stage.aggregation_spec),
         stage.raw_metrics_fn,initial,stage.parameter_dimension,max_steps,context.solver_config.lm_max_trials,
-        context.solver_config,False,0,stage.lm_true_objective_fn,validate_irls=False)
+        context.solver_config,False,stage.lm_true_objective_fn)
 
 
 def _prepare(args,frames:list[str]):
     local=argparse.Namespace(**vars(args));local.frames=",".join(frames);local.output_dir="/tmp/staged_lm_pose_ablation"
-    local.stop_after_stage="stage2_pose";local.profile_timing=False;local.progress_every_accepted=0
+    local.stop_after_stage="stage2_pose";local.profile_timing=False
     context=build_context(local)
     with contextlib.redirect_stdout(io.StringIO()):
         stage1=run_stage(build_stage1_definition(context),context);shared=build_stage2_shared_geometry_cache(context)
@@ -97,7 +97,8 @@ def _solver_gate(path:str)->dict[str,Any]:
 
 def _hg_step(reference,candidate,stage,parameters):
     damping=float(torch.diagonal(reference.hessian).max())*1e-3
-    rd,*_=solve_normal_equations(reference,damping,stage.parameter_dimension);cd,*_=solve_normal_equations(candidate,damping,stage.parameter_dimension)
+    rd=solve_normal_equations(reference,damping).delta
+    cd=solve_normal_equations(candidate,damping).delta
     rp=float(-reference.gradient.dot(rd)-.5*normal_equations_quadratic_form(reference,rd))
     cp=float(-candidate.gradient.dot(cd)-.5*normal_equations_quadratic_form(candidate,cd))
     before=float(stage.lm_true_objective_fn(parameters).detach())

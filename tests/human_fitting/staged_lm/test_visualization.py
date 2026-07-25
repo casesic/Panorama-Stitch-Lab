@@ -84,6 +84,27 @@ def test_joint_latent_excluded_and_physical_beta_unchanged() -> None:
     print("test_joint_latent_excluded_and_physical_beta_unchanged: PASS")
 
 
+def test_cuda_frozen_parameters_are_normalized_to_cpu() -> None:
+    if not torch.cuda.is_available():
+        print("test_cuda_frozen_parameters_are_normalized_to_cpu: SKIP (CUDA unavailable)")
+        return
+    context = _context([513])
+    for frozen in context.frozen_params_by_frame:
+        for name, value in vars(frozen).items():
+            setattr(frozen, name, value.cuda())
+    vector = np.arange(75, dtype=np.float32)
+    cam2, cam4 = build_visualization_params(
+        context, vector, context.beta_anchor.numpy(), "pose_warmup",
+    )
+    for param in (cam2[0], cam4[0]):
+        for name in (
+            "orient", "transl", "body_pose", "left_hand_pose",
+            "right_hand_pose", "beta", "scale",
+        ):
+            assert getattr(param, name).device.type == "cpu"
+    print("test_cuda_frozen_parameters_are_normalized_to_cpu: PASS")
+
+
 def test_missing_lbfgs_error() -> None:
     try:
         require_result_arrays({"beta_anchor": np.zeros(2)}, "joint_refinement", "lbfgs")
@@ -100,5 +121,6 @@ if __name__ == "__main__":
     test_stage1_dimensions_and_noncontinuous_frames()
     test_pose_single_and_two_frame_slicing()
     test_joint_latent_excluded_and_physical_beta_unchanged()
+    test_cuda_frozen_parameters_are_normalized_to_cpu()
     test_missing_lbfgs_error()
     print("\nAll debug110 tests PASSED")

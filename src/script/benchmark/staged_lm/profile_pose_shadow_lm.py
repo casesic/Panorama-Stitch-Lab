@@ -78,8 +78,7 @@ def _run_serial(stage, context, initial, *, profile=True):
         lambda x: stage.linearization_builder(x, stage.aggregation_spec),
         stage.raw_metrics_fn, initial, stage.parameter_dimension,
         stage.lm_max_accepted_steps, context.solver_config.lm_max_trials,
-        context.solver_config, profile, 0, stage.lm_true_objective_fn,
-        validate_irls=False,
+        context.solver_config, profile, stage.lm_true_objective_fn,
     )
 
 
@@ -121,7 +120,7 @@ def _profile_isolated(path: Path, callables: dict[str, Any], reference: torch.Te
 
 def _run_frame_count(args, frames: list[str]) -> dict[str, Any]:
     local=argparse.Namespace(**vars(args)); local.frames=",".join(frames);local.output_dir="/tmp/staged_lm_pose_shadow"
-    local.stop_after_stage="stage2_pose";local.profile_timing=True;local.progress_every_accepted=0
+    local.stop_after_stage="stage2_pose";local.profile_timing=True
     context=build_context(local)
     with contextlib.redirect_stdout(io.StringIO()):
         stage1=run_stage(build_stage1_definition(context),context)

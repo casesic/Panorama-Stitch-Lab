@@ -112,7 +112,6 @@ def test_run_stage_does_not_call_raw_groups() -> None:
         frame_count=1,
         args=SimpleNamespace(
             validate_device_contract=False, profile_timing=False,
-            progress_every_accepted=0,
         ),
         solver_config=SimpleNamespace(lm_max_trials=1),
     )

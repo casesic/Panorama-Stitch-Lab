@@ -69,7 +69,7 @@ def run_audit(args):
     if len(frames)!=4:raise ValueError("SEMANTIC_AUDIT_REQUIRES_EXACTLY_T4")
     if args.candidate_mode!="full_batch_group_gemm":raise ValueError("SEMANTIC_AUDIT_REQUIRES_FULL_BATCH_GROUP_GEMM")
     if args.reproj_objective!="charbonnier_irls":raise ValueError("SEMANTIC_AUDIT_REQUIRES_CHARBONNIER_IRLS")
-    args.profile_timing=True;args.progress_every_accepted=0
+    args.profile_timing=True
     context=build_context(args);stage=build_stage1_definition(context);cache=stage.analytic_cache
     batch=build_stage1_batch_cache(cache);labels=parameter_labels(context.frame_indices)
     initial=perturb(stage.initial_lm_parameters,args.rotation_perturbation_scale,args.translation_perturbation_scale,args.seed)

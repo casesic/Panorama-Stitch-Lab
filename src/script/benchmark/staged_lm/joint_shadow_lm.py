@@ -77,8 +77,8 @@ def run_joint_lm_independent_batch(
     return run_lm_optimization(
         "STAGE2_JOINT_BATCH_SHADOW",lambda x:make_batched_joint_linearization(stage,batch,context,x,mode),
         stage.raw_metrics_fn,initial,stage.parameter_dimension,stage.lm_max_accepted_steps,
-        context.solver_config.lm_max_trials,context.solver_config,profile_timing,0,
-        stage.lm_true_objective_fn,validate_irls=False,
+        context.solver_config.lm_max_trials,context.solver_config,profile_timing,
+        stage.lm_true_objective_fn,
     )
 
 
@@ -103,8 +103,9 @@ def run_joint_lm_lockstep(
         if damping is None:damping=normal_equations_max_diagonal(serial)*1e-3
         before=float(stage.lm_true_objective_fn(x).detach());accepted_this=False
         for trial in range(context.solver_config.lm_max_trials):
-            sd,_,sfb,sschur,_,smat=solve_normal_equations(serial,damping,stage.parameter_dimension)
-            bd,_,bfb,bschur,_,bmat=solve_normal_equations(candidate,damping,stage.parameter_dimension)
+            serial_solve=solve_normal_equations(serial,damping)
+            batch_solve=solve_normal_equations(candidate,damping)
+            sd,bd=serial_solve.delta,batch_solve.delta
             if sd is None:
                 damping=min(damping*10,1e12);rejected+=1;continue
             sx=(x+sd.to(x.dtype)).detach();sobj=float(stage.lm_true_objective_fn(sx).detach())
@@ -119,8 +120,10 @@ def run_joint_lm_lockstep(
             df=None if delta is None else delta[:-beta_dim].reshape(batch.layout.frame_count,75)
             db=None if delta is None else delta[-beta_dim:]
             records.append(JointShadowTrialRecord(
-                outer,trial,float(damping),sd is not None,bd is not None,sschur,bschur,
-                bool(sfb or smat),bool(bfb or bmat),None if df is None else float(df.abs().max()),
+                outer,trial,float(damping),sd is not None,bd is not None,
+                serial_solve.schur_success,batch_solve.schur_success,
+                serial_solve.schur_failed,batch_solve.schur_failed,
+                None if df is None else float(df.abs().max()),
                 None if db is None else float(db.abs().max()),None if delta is None else float(delta.norm())/max(float(sd.norm()),1e-30),
                 sp,bp,None if bp is None else abs(bp-sp)/max(abs(sp),1e-30),sa,ba,sr,br,
                 None if br is None else abs(br-sr),sacc,bacc,sacc==bacc,
@@ -174,7 +177,7 @@ def compare_joint_lm_results(serial: LMResult,candidate: LMResult,beta_abs_limit
             "status_match":serial.status==candidate.status,"accepted_match":serial.counters.accepted_steps==candidate.counters.accepted_steps,
             "rejected_match":serial.counters.rejected_trials==candidate.counters.rejected_trials,
             "trial_count_match":len(serial.trial_history)==len(candidate.trial_history),
-            "schur_match":(serial.counters.schur_success_count,counters_value(serial,"schur_dense_fallback_count"),counters_value(serial,"structured_to_dense_count"))==(candidate.counters.schur_success_count,counters_value(candidate,"schur_dense_fallback_count"),counters_value(candidate,"structured_to_dense_count")),
+            "schur_match":(serial.counters.schur_success_count,counters_value(serial,"schur_dense_fallback_count"),serial.counters.schur_failure_count)==(candidate.counters.schur_success_count,counters_value(candidate,"schur_dense_fallback_count"),candidate.counters.schur_failure_count),
             "weight_history_match":serial.weight_history==candidate.weight_history,
             "weight_history_structure_match":weight_structure_match,
             "weight_history_numeric_max_abs":weight_numeric_max_abs}

@@ -179,7 +179,16 @@ def require_result_arrays(
 
 
 def _as_flat_tensor(value: Any, name: str, expected_size: int) -> torch.Tensor:
-    tensor = torch.as_tensor(value).detach().clone().reshape(-1).to(dtype=torch.float32)
+    # Visualization uses a separate CPU SMPL-X forwarder.  Rebuilt fitting
+    # contexts may live on CUDA, so frozen hand poses/scales must not retain
+    # their source device while NPZ-derived orient/pose/beta tensors are CPU.
+    tensor = (
+        torch.as_tensor(value)
+        .detach()
+        .reshape(-1)
+        .to(device="cpu", dtype=torch.float32)
+        .clone()
+    )
     if tensor.numel() != expected_size:
         raise ValueError(f"{name} shape mismatch: expected {expected_size} values, got {tuple(tensor.shape)}")
     return tensor
@@ -435,9 +444,9 @@ if __name__ == "__main__":
 
 r'''
 python src/script/human_fitting/staged_lm/visualize.py \
-    --result_dir data_process/Vis/staged_lm/513_518 \
+    --result_dir data_process/Vis/staged_lm_cpu/704_711 \
     --image_dir data_process/Output/20260311_riding/image/equirect_rotate \
-    --output_dir data_process/Output/20260311_riding/vis/staged_lm_stage2_joint \
+    --output_dir data_process/Vis/staged_lm_render \
     --stage joint_refinement \
     --solver lm \
     --mesh \

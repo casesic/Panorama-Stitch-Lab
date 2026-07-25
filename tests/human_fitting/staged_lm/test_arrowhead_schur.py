@@ -16,6 +16,7 @@ ensure_test_paths(__file__)
 
 from lib_pano.human_fitting.staged_lm.arrowhead_schur import ArrowheadNormalEquationSystem
 from lib_pano.human_fitting.staged_lm.lm_solver import (
+    _validate_normal_equations,
     normal_equations_hessian_norm, normal_equations_max_diagonal,
     normal_equations_quadratic_form, solve_damped_normal_equations,
     solve_normal_equations,
@@ -70,9 +71,10 @@ class ArrowheadSchurTests(unittest.TestCase):
                         self.assertEqual(float(block.abs().max()), 0.0)
             for damping in (1e-10, 1e-7, 1e-4, 1e-2, 1.0, 1e3):
                 schur = system.solve_damped(damping)
-                dense_delta, _, _ = solve_damped_normal_equations(
-                    dense, system.flat_gradient(), damping, system.parameter_dimension,
+                dense_result = solve_damped_normal_equations(
+                    dense, system.flat_gradient(), damping,
                 )
+                dense_delta = dense_result.delta
                 self.assertIsNotNone(schur)
                 self.assertIsNotNone(dense_delta)
                 torch.testing.assert_close(schur, dense_delta, rtol=1e-10, atol=1e-10)
@@ -83,23 +85,22 @@ class ArrowheadSchurTests(unittest.TestCase):
     def test_normal_path_never_materializes_dense(self) -> None:
         system = make_system(4)
         equations = NormalEquations(torch.empty(0), None, system.flat_gradient(), system)
-        delta, chol, fallback, schur, schur_fallback, materialized = solve_normal_equations(
-            equations, 1e-3, system.parameter_dimension,
-        )
-        self.assertIsNotNone(delta)
-        self.assertTrue(chol and schur)
-        self.assertFalse(fallback or schur_fallback or materialized)
+        result = solve_normal_equations(equations, 1e-3)
+        self.assertIsNotNone(result.delta)
+        self.assertEqual(result.backend, "schur")
+        self.assertFalse(result.schur_failed)
         self.assertEqual(system.to_dense_calls, 0)
 
     def test_schur_failure_dense_fallback_once(self) -> None:
-        # Indefinite local block: Schur Cholesky fails, while sufficiently
-        # damped dense Cholesky succeeds.
+        # Indefinite local block: Schur Cholesky fails, then the dense
+        # ``linalg.solve`` fallback succeeds.
         system = make_system(2)
         system.frame_hessians[0, 0, 0] = -0.5
         equations = NormalEquations(torch.empty(0), None, system.flat_gradient(), system)
-        result = solve_normal_equations(equations, 1.0, system.parameter_dimension)
-        self.assertIsNotNone(result[0])
-        self.assertTrue(result[4] and result[5])
+        result = solve_normal_equations(equations, 1.0)
+        self.assertIsNotNone(result.delta)
+        self.assertEqual(result.backend, "dense_solve")
+        self.assertTrue(result.schur_failed)
         self.assertEqual(system.to_dense_calls, 1)
 
     def test_nonfinite_rejected_and_invalid_representation(self) -> None:
@@ -111,7 +112,10 @@ class ArrowheadSchurTests(unittest.TestCase):
                 system.frame_gradients, system.beta_gradient,
             )
         with self.assertRaisesRegex(RuntimeError, "INVALID_NORMAL_EQUATION_REPRESENTATION"):
-            normal_equations_max_diagonal(NormalEquations(torch.empty(0), None, torch.empty(0)))
+            _validate_normal_equations(
+                NormalEquations(torch.empty(0), None, torch.empty(0)),
+                torch.empty(0),
+            )
 
     @unittest.skipUnless(torch.cuda.is_available(), "CUDA unavailable")
     def test_cuda_device_dtype(self) -> None:

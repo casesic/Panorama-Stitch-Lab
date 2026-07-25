@@ -30,7 +30,7 @@ from lib_pano.human_fitting.staged_lm.device import (  # noqa: E402
     validate_context_device,
     validate_stage_initial_parameters,
 )
-from lib_pano.human_fitting.staged_lm.lm_solver import _validate_equations_device  # noqa: E402
+from lib_pano.human_fitting.staged_lm.lm_solver import _validate_normal_equations  # noqa: E402
 from lib_pano.human_fitting.staged_lm.parameter_layout import (  # noqa: E402
     build_stage1_initial_parameters,
 )
@@ -152,11 +152,11 @@ def test_normal_equations_device_and_dtype() -> None:
         residual=torch.zeros(2), hessian=torch.eye(4, dtype=torch.float64),
         gradient=torch.zeros(4, dtype=torch.float64),
     )
-    _validate_equations_device(equations, parameters)
+    _validate_normal_equations(equations, parameters)
     bad = NormalEquations(
         residual=torch.zeros(2), hessian=torch.eye(4), gradient=torch.zeros(4),
     )
-    _raises("DEVICE_CONTRACT_VIOLATION", lambda: _validate_equations_device(bad, parameters))
+    _raises("DEVICE_CONTRACT_VIOLATION", lambda: _validate_normal_equations(bad, parameters))
     # Output serialization boundaries are explicitly allowed to move tensors.
     assert parameters.detach().cpu().numpy().shape == (4,)
 
