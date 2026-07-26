@@ -20,6 +20,7 @@ from lib_pano.human_fitting.staged_lm.analytic_stage1 import (
     stage1_normal_equations,
 )
 from lib_pano.human_fitting.staged_lm.config import STAGE1_PER_FRAME_DIM
+from lib_pano.human_fitting.staged_lm.linearization import Linearization
 from lib_pano.human_fitting.staged_lm.irls import build_primary_aggregation_spec, make_irls_linearization
 from lib_pano.human_fitting.staged_lm.residuals import flatten_reprojection_groups
 from script.validation.staged_lm.references.stage_backends import build_stage1_definition, run_stage
@@ -146,18 +147,18 @@ def check_surrogates(context, definition, cache, initial) -> None:
             scale = context.scaling.rep_scale
             def residual(value):
                 return flatten_reprojection_groups(definition.raw_groups_fn(value)) * scale
-            oracle = {"surrogate_fn": residual}
+            oracle = Linearization(surrogate=residual)
         analytic = build_stage1_analytic_linearization(
             cache, initial, is_irls=is_irls, charbonnier_eps=context.charbonnier_eps,
             aggregation_spec=spec if is_irls else None, rep_scale=context.scaling.rep_scale,
         )
-        residual_error = _error(analytic["surrogate_fn"](initial), oracle["surrogate_fn"](initial))
+        residual_error = _error(analytic.surrogate(initial), oracle.surrogate(initial))
         jacobian_error = _error(
-            analytic["jacobian_fn"](initial), jacfwd(oracle["surrogate_fn"])(initial),
+            analytic.jacobian(initial), jacfwd(oracle.surrogate)(initial),
         )
-        explicit_residual = analytic["surrogate_fn"](initial)
-        explicit_jacobian = analytic["jacobian_fn"](initial).to(torch.float64)
-        equations = analytic["normal_equations_fn"](initial)
+        explicit_residual = analytic.surrogate(initial)
+        explicit_jacobian = analytic.jacobian(initial).to(torch.float64)
+        equations = analytic.normal_equations(initial)
         hessian_error = _error(equations.hessian, explicit_jacobian.T @ explicit_jacobian)
         gradient_error = _error(
             equations.gradient, explicit_jacobian.T @ explicit_residual.to(torch.float64),
@@ -331,8 +332,8 @@ run_stage1_benchmark = run_all_stage1_validations
 def run_stage1_batch_shadow(cli=None) -> int:
     """Concise serial-reference versus FULL_BATCH Stage-1 solver gate."""
     import contextlib, io
-    from lib_pano.human_fitting.staged_lm.lm_solver import run_lm_optimization
-    from lib_pano.human_fitting.staged_lm.stages import build_stage1_definition as build_production_stage1
+    from lib_pano.human_fitting.staged_lm.lm.runner import run_lm_optimization
+    from lib_pano.human_fitting.staged_lm.stage_definitions.rigid import build_stage1_definition as build_production_stage1
     from script.benchmark.staged_lm.stage1_batch_candidates import build_stage1_batch_cache
     from script.benchmark.staged_lm.stage1_shadow_common import Stage1NEMode
     from script.benchmark.staged_lm.stage1_shadow_lm import (

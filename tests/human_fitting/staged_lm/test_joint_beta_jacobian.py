@@ -16,18 +16,18 @@ ensure_test_paths(__file__)
 
 from lib_pano.human_fitting.staged_lm.irls import build_primary_aggregation_spec, compute_primary_charbonnier_tensor  # noqa: E402
 from lib_pano.human_fitting.staged_lm.residuals import flatten_reprojection_groups  # noqa: E402
-from lib_pano.human_fitting.staged_lm.stage2_joint_fast import (  # noqa: E402
+from lib_pano.human_fitting.staged_lm.joint import (  # noqa: E402
     Stage2JointFastCache, Stage2JointFrameCameraCache, Stage2JointModelCache,
     Stage2JointShapeState, evaluate_joint_shape_state, joint_fast_raw_groups,
     joint_fast_raw_residual, joint_fast_selected_vertices, physical_beta_from_latent,
 )
-from lib_pano.human_fitting.staged_lm.stage2_joint_beta_jacobian import (  # noqa: E402
+from lib_pano.human_fitting.staged_lm.joint.beta_derivatives import (  # noqa: E402
     compute_fk_beta_jacobian, joint_explicit_raw_beta_jacobian,
     joint_explicit_raw_global_beta_block, joint_fast_selected_vertices_with_beta_jacobian,
     joint_group_raw_residual_and_beta_jacobian, joint_shape_anchor_residual_and_jacobian,
     joint_surrogate_residual_and_beta_jacobian,
 )
-from lib_pano.human_fitting.staged_lm.stage2_pose_fast import _aa_to_rotmat  # noqa: E402
+from lib_pano.human_fitting.staged_lm.pose.forward import _aa_to_rotmat  # noqa: E402
 
 from tests.human_fitting.staged_lm.helpers import DTYPE, _cache, _parameters
 

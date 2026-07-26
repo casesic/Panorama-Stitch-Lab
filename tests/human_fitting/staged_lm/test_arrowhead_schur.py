@@ -15,7 +15,7 @@ except ImportError:
 ensure_test_paths(__file__)
 
 from lib_pano.human_fitting.staged_lm.arrowhead_schur import ArrowheadNormalEquationSystem
-from lib_pano.human_fitting.staged_lm.lm_solver import (
+from lib_pano.human_fitting.staged_lm.lm.equations import (
     _validate_normal_equations,
     normal_equations_hessian_norm, normal_equations_max_diagonal,
     normal_equations_quadratic_form, solve_damped_normal_equations,

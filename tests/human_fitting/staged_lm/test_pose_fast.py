@@ -13,10 +13,12 @@ except ImportError:
     from _bootstrap import ensure_test_paths
 ensure_test_paths(__file__)
 
-from lib_pano.human_fitting.staged_lm.stage2_pose_fast import (
+from lib_pano.human_fitting.staged_lm.pose.cache import (
     Stage2PoseFastCache,
     Stage2PoseFrameCameraCache,
     Stage2PoseModelCache,
+)
+from lib_pano.human_fitting.staged_lm.pose.forward import (
     compute_selected_lbs,
     compute_selected_pose_offsets,
     fast_raw_groups,

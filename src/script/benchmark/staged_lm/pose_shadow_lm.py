@@ -8,9 +8,15 @@ from typing import Any
 
 import torch
 
-from lib_pano.human_fitting.staged_lm.lm_solver import (
-    check_convergence, compute_scaled_gradient, normal_equations_max_diagonal,
-    normal_equations_quadratic_form, run_lm_optimization, solve_normal_equations,
+from lib_pano.human_fitting.staged_lm.lm.convergence import check_convergence
+from lib_pano.human_fitting.staged_lm.lm.equations import (
+    compute_scaled_gradient, normal_equations_max_diagonal,
+    normal_equations_quadratic_form, solve_normal_equations,
+)
+from lib_pano.human_fitting.staged_lm.lm.runner import run_lm_optimization
+from lib_pano.human_fitting.staged_lm.linearization import (
+    Linearization,
+    LinearizationProvenance,
 )
 from lib_pano.human_fitting.staged_lm.types import LMResult, StageDefinition
 from script.benchmark.staged_lm.pose_batch_candidates import (
@@ -117,7 +123,7 @@ def make_batched_pose_linearization(
     stage: StageDefinition, batch: PoseGroupBatch, context: Any,
     linearization_point: torch.Tensor, *, mode: PoseNEMode,
     weight_source: str, hg_reduction_mode: str,
-) -> dict[str, Any]:
+) -> Linearization:
     scales, stats = _candidate_scales(stage, batch, linearization_point, context, weight_source)
     def equations(parameters: torch.Tensor):
         return evaluate_pose_equations(
@@ -126,18 +132,20 @@ def make_batched_pose_linearization(
             hg_reduction_mode=hg_reduction_mode,
         ).equations
 
-    return {
-        "normal_equations_fn": equations,
+    return Linearization(
+        normal_equations=equations,
         # Direct normal equations are the active path.  Keep a lightweight
         # placeholder for the generic LM interface without rebuilding serial
         # weights a second time.
-        "surrogate_fn": lambda x: x.new_empty(0),
-        "weight_stats": stats,
-        "spec": stage.aggregation_spec or {},
-        "jacobian_backend": "batched_pose_shadow",
-        "linearization_backend": "direct_normal_equations_batch_shadow",
-        "linear_solver_backend": "dense",
-    }
+        surrogate=lambda x: x.new_empty(0),
+        weight_stats=stats,
+        aggregation_spec=stage.aggregation_spec or {},
+        provenance=LinearizationProvenance(
+            jacobian_backend="batched_pose_shadow",
+            linearization_backend="direct_normal_equations_batch_shadow",
+            linear_solver_backend="dense",
+        ),
+    )
 
 
 def run_pose_lm_independent_batch(
@@ -259,7 +267,7 @@ def run_pose_lm_lockstep(
         if not accepted_this:
             status = "LM_NO_ACCEPTED_TRIAL"; break
         next_linear = stage.linearization_builder(x, stage.aggregation_spec)
-        next_eq = next_linear["normal_equations_fn"](x)
+        next_eq = next_linear.normal_equations(x)
         scaled = compute_scaled_gradient(next_eq)
         rel = (obj_before - float(stage.lm_true_objective_fn(x).detach())) / max(abs(obj_before), 1e-16)
         convergence = check_convergence(scaled, float(sd.norm()), rel, context.solver_config)

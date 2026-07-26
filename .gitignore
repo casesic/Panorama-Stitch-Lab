@@ -13,6 +13,9 @@ docs/*
 !docs/data_flow.md
 !docs/debug_scripts.md
 !docs/pipeline_overview.md
+!docs/Architecture/
+!docs/Architecture/staged_lm/
+!docs/Architecture/staged_lm/*.md
 *.zip
 src/lib_pano/local_setting.py
 *.zip

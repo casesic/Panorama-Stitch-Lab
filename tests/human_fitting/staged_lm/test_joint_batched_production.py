@@ -11,8 +11,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import torch
 
 from helpers import synthetic_joint_cache, synthetic_joint_parameters
-from lib_pano.human_fitting.staged_lm import config, stages
-from lib_pano.human_fitting.staged_lm.stage2_joint_batched import (
+from lib_pano.human_fitting.staged_lm import config
+from lib_pano.human_fitting.staged_lm.stage_definitions.joint import (
+    build_joint_stage_definition,
+)
+from lib_pano.human_fitting.staged_lm.joint.batched import (
     Stage2JointBatchLayout,
     build_stage2_joint_batch_cache,
     gather_stage2_joint_batch_parameters,
@@ -85,11 +88,11 @@ def test_provenance_architecture_and_no_backend_cli() -> None:
     source = Path(inspect.getsourcefile(stage2_joint_batched_normal_equations)).read_text()
     assert "script.benchmark" not in source and "script.validation" not in source
     assert "build_stage2_joint_batched_linearization" in inspect.getsource(
-        stages.build_joint_stage_definition,
+        build_joint_stage_definition,
     )
     assert not any(
         "backend" in name
-        for name in inspect.signature(stages.build_joint_stage_definition).parameters
+        for name in inspect.signature(build_joint_stage_definition).parameters
     )
 
 

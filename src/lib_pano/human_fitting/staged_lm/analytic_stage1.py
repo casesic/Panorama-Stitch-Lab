@@ -2,147 +2,27 @@
 
 from __future__ import annotations
 
-import math
 import time
 from dataclasses import dataclass
 from typing import Any
 
 import torch
 
-from lib_pano.human_fitting.projection import ROTATION_MATRIX
 from lib_pano.human_fitting.smplx_sequence import forward_smplx_tensor_batch
 
 from .config import STAGE1_PER_FRAME_DIM
+from .geometry.erp import (
+    project_unified_erp,
+    project_unified_erp_with_jacobian,
+)
+from .geometry.so3 import (
+    axis_angle_to_matrix,
+    rotated_point_jacobian,
+)
 from .irls import compute_irls_point_weights, compute_primary_charbonnier_tensor
+from .linearization import Linearization, LinearizationProvenance
 from .residuals import flatten_reprojection_groups, raw_reproj_metrics
 from .types import NormalEquations, ReprojectionGroup, StageContext
-
-
-def _skew(vectors: torch.Tensor) -> torch.Tensor:
-    zeros = torch.zeros_like(vectors[..., 0])
-    x, y, z = vectors.unbind(-1)
-    return torch.stack((
-        zeros, -z, y,
-        z, zeros, -x,
-        -y, x, zeros,
-    ), dim=-1).reshape(vectors.shape[:-1] + (3, 3))
-
-
-def axis_angle_to_matrix(axis_angle: torch.Tensor) -> torch.Tensor:
-    """Stable Rodrigues map supporting exactly zero axis-angle vectors."""
-    theta2 = torch.sum(axis_angle * axis_angle, dim=-1, keepdim=True)
-    theta = torch.sqrt(theta2)
-    small = theta2 < 1e-8
-    safe_theta = torch.where(small, torch.ones_like(theta), theta)
-    a_regular = torch.sin(theta) / safe_theta
-    b_regular = (1.0 - torch.cos(theta)) / torch.where(small, torch.ones_like(theta2), theta2)
-    a = torch.where(small, 1.0 - theta2 / 6.0 + theta2 * theta2 / 120.0, a_regular)
-    b = torch.where(small, 0.5 - theta2 / 24.0 + theta2 * theta2 / 720.0, b_regular)
-    phi_hat = _skew(axis_angle)
-    identity = torch.eye(3, dtype=axis_angle.dtype, device=axis_angle.device)
-    return identity + a[..., None] * phi_hat + b[..., None] * (phi_hat @ phi_hat)
-
-
-def so3_right_jacobian(axis_angle: torch.Tensor) -> torch.Tensor:
-    """Right Jacobian for additive axis-angle coordinates with stable Taylor terms."""
-    theta2 = torch.sum(axis_angle * axis_angle, dim=-1, keepdim=True)
-    theta = torch.sqrt(theta2)
-    small = theta2 < 1e-8
-    safe_theta2 = torch.where(small, torch.ones_like(theta2), theta2)
-    a_regular = (1.0 - torch.cos(theta)) / safe_theta2
-    b_regular = (theta - torch.sin(theta)) / torch.where(
-        small, torch.ones_like(theta2), safe_theta2 * torch.where(small, torch.ones_like(theta), theta)
-    )
-    a = torch.where(small, 0.5 - theta2 / 24.0 + theta2 * theta2 / 720.0, a_regular)
-    b = torch.where(small, 1.0 / 6.0 - theta2 / 120.0 + theta2 * theta2 / 5040.0, b_regular)
-    phi_hat = _skew(axis_angle)
-    identity = torch.eye(3, dtype=axis_angle.dtype, device=axis_angle.device)
-    return identity - a[..., None] * phi_hat + b[..., None] * (phi_hat @ phi_hat)
-
-
-def rotated_point_jacobian(axis_angle: torch.Tensor, local_points: torch.Tensor) -> torch.Tensor:
-    """Return ``d(R(phi)p)/d(phi)`` for direct additive axis-angle coordinates."""
-    rotation = axis_angle_to_matrix(axis_angle.reshape(3))
-    right_jacobian = so3_right_jacobian(axis_angle.reshape(3))
-    return -torch.einsum("ij,njk,kl->nil", rotation, _skew(local_points), right_jacobian)
-
-
-def _erp_projection_values(
-    points: torch.Tensor,
-    image_width: int,
-    image_height: int,
-) -> tuple[torch.Tensor, tuple[torch.Tensor, ...]]:
-    """Shared ERP values used by both the UV-only and derivative paths."""
-    x, y, z = points.unbind(-1)
-    horizontal2 = x * x + z * z
-    horizontal = torch.sqrt(horizontal2.clamp_min(1e-12))
-    radius2 = horizontal2 + y * y
-    longitude = torch.atan2(x, z)
-    # Match production ``project_erp`` operation order for FP32 parity.
-    radius = torch.norm(points, dim=-1).clamp_min(1e-6)
-    latitude_argument = (-y / radius).clamp(-1.0 + 1e-6, 1.0 - 1e-6)
-    latitude = torch.asin(latitude_argument)
-    u = (longitude / (2.0 * math.pi) + 0.5) * image_width
-    v = (0.5 - latitude / math.pi) * image_height
-    return torch.stack((u, v), dim=-1), (x, y, z, horizontal2, horizontal, radius2, radius)
-
-
-def erp_projection(points: torch.Tensor, image_width: int, image_height: int) -> torch.Tensor:
-    """ERP UV-only path; it never constructs a projection Jacobian."""
-    uv, _ = _erp_projection_values(points, image_width, image_height)
-    return uv
-
-
-def erp_projection_with_jacobian(
-    points: torch.Tensor,
-    image_width: int,
-    image_height: int,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Project ERP camera-space points and return batched ``d(uv)/d(xyz)``."""
-    uv, values = _erp_projection_values(points, image_width, image_height)
-    x, y, z, horizontal2, horizontal, radius2, radius = values
-    safe_radius2 = radius2.clamp_min(1e-12)
-
-    safe_horizontal2 = horizontal2.clamp_min(1e-12)
-    du_scale = image_width / (2.0 * math.pi)
-    dv_scale = image_height / math.pi
-    du = torch.stack((
-        du_scale * z / safe_horizontal2,
-        torch.zeros_like(x),
-        -du_scale * x / safe_horizontal2,
-    ), dim=-1)
-    dv = torch.stack((
-        -dv_scale * y * x / (horizontal * safe_radius2),
-        dv_scale * horizontal / safe_radius2,
-        -dv_scale * y * z / (horizontal * safe_radius2),
-    ), dim=-1)
-    latitude_active = (
-        (radius2 > 1e-12)
-        & ((-y / radius) > -1.0 + 1e-6)
-        & ((-y / radius) < 1.0 - 1e-6)
-    )
-    dv = torch.where(latitude_active.unsqueeze(-1), dv, torch.zeros_like(dv))
-    return uv, torch.stack((du, dv), dim=-2)
-
-
-def project_cam2_erp(points: torch.Tensor, image_width: int, image_height: int) -> torch.Tensor:
-    """Apply the fixed cam2 rotation and compute UV without derivative work."""
-    fixed_rotation = ROTATION_MATRIX.to(device=points.device, dtype=points.dtype)
-    return erp_projection(points @ fixed_rotation.T, image_width, image_height)
-
-
-def project_cam2_erp_with_jacobian(
-    points: torch.Tensor, image_width: int, image_height: int,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Match the current Stage 1 ``fitter._project_cam2`` path exactly."""
-    fixed_rotation = ROTATION_MATRIX.to(device=points.device, dtype=points.dtype)
-    camera_points = points @ fixed_rotation.T
-    uv, jacobian_camera = erp_projection_with_jacobian(camera_points, image_width, image_height)
-    return uv, torch.einsum("nij,jk->nik", jacobian_camera, fixed_rotation)
-
-
-# Explicit compatibility alias for existing diagnostics.
-project_cam2_with_jacobian = project_cam2_erp_with_jacobian
 
 
 def metric_close_with_absolute_or_relative(
@@ -339,7 +219,7 @@ def stage1_raw_groups(cache: Stage1AnalyticCache, parameters: torch.Tensor) -> l
     groups = []
     for cached in cache.groups:
         points, _ = _group_transform(parameters, cached)
-        uv = project_cam2_erp(points, cache.image_width, cache.image_height)
+        uv = project_unified_erp(points, cache.image_width, cache.image_height)
         groups.append(ReprojectionGroup(
             frame_index=cached.frame_index, camera=cached.camera,
             residual_2d=uv - cached.targets.to(parameters),
@@ -368,7 +248,7 @@ def stage1_raw_jacobian(cache: Stage1AnalyticCache, parameters: torch.Tensor) ->
     row = 0
     for cached in cache.groups:
         points, orient = _group_transform(parameters, cached)
-        _, projection_jacobian = project_cam2_erp_with_jacobian(
+        _, projection_jacobian = project_unified_erp_with_jacobian(
             points, cache.image_width, cache.image_height,
         )
         local = cached.local_vertices.to(parameters)
@@ -391,7 +271,7 @@ def _group_raw_residual_and_local_jacobian(
     cached: Stage1AnalyticGroupCache,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     points, orient = _group_transform(parameters, cached)
-    uv, projection_jacobian = project_cam2_erp_with_jacobian(
+    uv, projection_jacobian = project_unified_erp_with_jacobian(
         points, cache.image_width, cache.image_height,
     )
     local = cached.local_vertices.to(parameters)
@@ -459,7 +339,7 @@ def build_stage1_analytic_linearization(
     charbonnier_eps: float,
     aggregation_spec: dict[str, Any] | None,
     rep_scale: float,
-) -> dict[str, Any]:
+) -> Linearization:
     """Build frozen-weight analytic Stage 1 surrogate residual and Jacobian."""
     if is_irls:
         groups = stage1_raw_groups(cache, linearisation_point)
@@ -488,12 +368,27 @@ def build_stage1_analytic_linearization(
     def normal_equations_fn(parameters: torch.Tensor) -> NormalEquations:
         return stage1_normal_equations(cache, parameters, point_scales)
 
-    return {
-        "surrogate_fn": surrogate_fn,
-        "jacobian_fn": jacobian_fn,
-        "normal_equations_fn": normal_equations_fn,
-        "weight_stats": weight_stats,
-        "spec": aggregation_spec or {},
-        "jacobian_backend": "analytic_stage1",
-        "linearization_backend": "direct_normal_equations",
-    }
+    return Linearization(
+        surrogate=surrogate_fn,
+        jacobian=jacobian_fn,
+        normal_equations=normal_equations_fn,
+        weight_stats=weight_stats,
+        aggregation_spec=aggregation_spec or {},
+        provenance=LinearizationProvenance(
+            jacobian_backend="analytic_stage1",
+            linearization_backend="direct_normal_equations",
+            linear_solver_backend="dense",
+        ),
+    )
+
+
+# Compatibility re-exports for external diagnostics. Production code imports
+# canonical names directly from ``geometry``.
+from .geometry.erp import (  # noqa: E402,F401
+    erp_projection,
+    erp_projection_with_jacobian,
+    project_cam2_erp,
+    project_cam2_erp_with_jacobian,
+    project_cam2_with_jacobian,
+)
+from .geometry.so3 import skew as _skew, so3_right_jacobian  # noqa: E402,F401

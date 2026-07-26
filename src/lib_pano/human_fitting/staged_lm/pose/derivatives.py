@@ -1,4 +1,4 @@
-"""Explicit analytic Jacobian and direct normal equations for Stage 2 pose.
+"""Explicit serial/reference analytic derivative chain for Stage 2 Pose.
 
 The dense global Jacobian remains debug-only; production LM accumulates
 per-frame normal-equation blocks directly.
@@ -12,23 +12,22 @@ from typing import Any, Callable
 
 import torch
 
-from .analytic_stage1 import (
-    _skew,
-    axis_angle_to_matrix,
-    project_cam2_erp_with_jacobian,
-    so3_right_jacobian,
-)
-from .config import STAGE1_PER_FRAME_DIM
-from .irls import build_primary_aggregation_spec, compute_irls_point_weights
-from .parameter_layout import unpack_frame_parameters
-from .stage2_pose_fast import (
+from ..config import STAGE1_PER_FRAME_DIM
+from ..geometry.erp import project_unified_erp_with_jacobian
+from ..geometry.so3 import axis_angle_to_matrix, skew, so3_right_jacobian
+from ..irls import build_primary_aggregation_spec, compute_irls_point_weights
+from ..linearization import Linearization, LinearizationProvenance
+from ..parameter_layout import unpack_frame_parameters
+from .cache import (
     Stage2PoseFastCache,
     Stage2PoseFrameCameraCache,
+)
+from .forward import (
     assemble_full_pose_rotations,
     fast_raw_residual,
     fast_raw_groups,
 )
-from .types import NormalEquations, ReprojectionGroup
+from ..types import NormalEquations, ReprojectionGroup
 
 
 ROTATION_PARAMETER_DIM = 66
@@ -81,7 +80,7 @@ def rotation_matrix_jacobian_additive(axis_angle: torch.Tensor) -> torch.Tensor:
     phi = axis_angle.reshape(3)
     rotation = axis_angle_to_matrix(phi)
     right_jacobian = so3_right_jacobian(phi)
-    basis_skew = _skew(right_jacobian.T)
+    basis_skew = skew(right_jacobian.T)
     return torch.einsum("ij,kjl->ilk", rotation, basis_skew)
 
 
@@ -274,7 +273,7 @@ def stage2_pose_group_raw_residual_and_jacobian(
     vertices, d_vertices = fast_selected_vertices_with_jacobian(
         cache, camera_cache, orient, translation, frame.body_pose.reshape(-1),
     )
-    uv, projection_jacobian = project_cam2_erp_with_jacobian(
+    uv, projection_jacobian = project_unified_erp_with_jacobian(
         vertices, cache.image_width, cache.image_height,
     )
     uv_rot_pose = torch.einsum("nab,nbq->naq", projection_jacobian, d_vertices)
@@ -542,7 +541,7 @@ def build_stage2_pose_analytic_linearization(
     charbonnier_eps: float,
     aggregation_spec: dict[str, Any] | None,
     rep_scale: float,
-) -> dict[str, Any]:
+) -> Linearization:
     common = build_stage2_pose_linearization_common(
         cache, linearisation_point, body_pose_anchors, pose_anchor_scale,
         is_irls=is_irls, charbonnier_eps=charbonnier_eps,
@@ -555,12 +554,15 @@ def build_stage2_pose_analytic_linearization(
             body_pose_anchors, pose_anchor_scale,
         )
 
-    return {
-        "surrogate_fn": common.surrogate_fn,
-        "jacobian_fn": common.jacobian_fn,
-        "normal_equations_fn": normal_equations_fn,
-        "weight_stats": common.weight_stats,
-        "spec": common.spec,
-        "jacobian_backend": "analytic_stage2_pose",
-        "linearization_backend": "direct_normal_equations",
-    }
+    return Linearization(
+        surrogate=common.surrogate_fn,
+        jacobian=common.jacobian_fn,
+        normal_equations=normal_equations_fn,
+        weight_stats=common.weight_stats,
+        aggregation_spec=common.spec,
+        provenance=LinearizationProvenance(
+            jacobian_backend="analytic_stage2_pose",
+            linearization_backend="direct_normal_equations",
+            linear_solver_backend="dense",
+        ),
+    )

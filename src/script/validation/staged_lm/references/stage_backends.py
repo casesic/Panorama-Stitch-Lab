@@ -38,11 +38,13 @@ from lib_pano.human_fitting.staged_lm.analytic_stage1 import (
     build_stage1_analytic_linearization,
     metric_close_with_absolute_or_relative,
 )
-from lib_pano.human_fitting.staged_lm.lm_solver import run_lm_optimization
+from lib_pano.human_fitting.staged_lm.lm.runner import run_lm_optimization
+from lib_pano.human_fitting.staged_lm.linearization import Linearization
 from .lbfgs import run_lbfgs_oracle
-from lib_pano.human_fitting.staged_lm.stage2_pose_fast import build_stage2_pose_fast_cache, fast_raw_groups
-from lib_pano.human_fitting.staged_lm.stage2_pose_jacobian import build_stage2_pose_analytic_linearization
-from lib_pano.human_fitting.staged_lm.stage2_joint_fast import build_stage2_joint_fast_cache, joint_fast_raw_groups
+from lib_pano.human_fitting.staged_lm.pose.cache import build_stage2_pose_fast_cache
+from lib_pano.human_fitting.staged_lm.pose.forward import fast_raw_groups
+from lib_pano.human_fitting.staged_lm.pose.derivatives import build_stage2_pose_analytic_linearization
+from lib_pano.human_fitting.staged_lm.joint import build_stage2_joint_fast_cache, joint_fast_raw_groups
 from lib_pano.human_fitting.staged_lm.stage2_shared_cache import build_stage2_shared_geometry_cache
 from .joint_backends import (
     build_stage2_joint_reference_linearization as build_stage2_joint_analytic_linearization,
@@ -96,7 +98,7 @@ def _build_linearization_and_objective(
     stage: StageDefinition,
     context: StageContext,
 ) -> tuple[
-    Callable[[torch.Tensor], dict[str, Any]],
+    Callable[[torch.Tensor], Linearization],
     Callable[[torch.Tensor], torch.Tensor],
     Callable[[torch.Tensor], torch.Tensor],
     dict[str, Any] | None,
@@ -113,17 +115,17 @@ def _build_linearization_and_objective(
         static_spec = build_primary_aggregation_spec(stage.raw_groups_fn(stage.initial_lm_parameters))
 
         if stage.linearization_builder is not None:
-            def make_linearization(x: torch.Tensor) -> dict[str, Any]:
+            def make_linearization(x: torch.Tensor) -> Linearization:
                 return stage.linearization_builder(x, static_spec)
         elif stage.analytic_linearization:
-            def make_linearization(x: torch.Tensor) -> dict[str, Any]:
+            def make_linearization(x: torch.Tensor) -> Linearization:
                 return build_stage1_analytic_linearization(
                     stage.analytic_cache, x, is_irls=True,
                     charbonnier_eps=context.charbonnier_eps,
                     aggregation_spec=static_spec, rep_scale=context.scaling.rep_scale,
                 )
         else:
-            def make_linearization(x: torch.Tensor) -> dict[str, Any]:
+            def make_linearization(x: torch.Tensor) -> Linearization:
                 return make_irls_linearization(
                     stage.raw_groups_fn, stage.anchor_residual_fn, x,
                     context.charbonnier_eps, static_spec,
@@ -144,7 +146,7 @@ def _build_linearization_and_objective(
             t_iv = time.perf_counter() if context.args.profile_timing else 0
             init_linearization = make_linearization(stage.initial_lm_parameters)
             init_check = validate_first_order(
-                init_linearization["surrogate_fn"],
+                init_linearization.surrogate,
                 stage.lm_true_objective_fn or full_true_objective,
                 stage.initial_lm_parameters, f"{stage.name}_init",
                 context.solver_config.irls_gradient_rel_tol,
@@ -165,18 +167,18 @@ def _build_linearization_and_objective(
             return torch.cat([residual, stage.anchor_residual_fn(x)])
 
         if stage.linearization_builder is not None:
-            def make_linearization(x: torch.Tensor) -> dict[str, Any]:
+            def make_linearization(x: torch.Tensor) -> Linearization:
                 return stage.linearization_builder(x, None)
         elif stage.analytic_linearization:
-            def make_linearization(x: torch.Tensor) -> dict[str, Any]:
+            def make_linearization(x: torch.Tensor) -> Linearization:
                 return build_stage1_analytic_linearization(
                     stage.analytic_cache, x, is_irls=False,
                     charbonnier_eps=context.charbonnier_eps,
                     aggregation_spec=None, rep_scale=context.scaling.rep_scale,
                 )
         else:
-            def make_linearization(x: torch.Tensor) -> dict[str, Any]:
-                return {"surrogate_fn": total_residual, "weight_stats": {}, "jacobian_backend": "autograd"}
+            def make_linearization(x: torch.Tensor) -> Linearization:
+                return Linearization(surrogate=total_residual)
 
         def full_true_objective(x: torch.Tensor) -> torch.Tensor:
             return 0.5 * torch.sum(total_residual(x) ** 2)

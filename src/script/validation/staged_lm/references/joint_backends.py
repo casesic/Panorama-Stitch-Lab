@@ -10,17 +10,21 @@ import torch
 
 from lib_pano.human_fitting.staged_lm.config import STAGE1_PER_FRAME_DIM
 from lib_pano.human_fitting.staged_lm.irls import compute_irls_point_weights
-from lib_pano.human_fitting.staged_lm.stage2_joint_beta_jacobian import (
+from lib_pano.human_fitting.staged_lm.linearization import (
+    Linearization,
+    LinearizationProvenance,
+)
+from lib_pano.human_fitting.staged_lm.joint.beta_derivatives import (
     joint_shape_anchor_residual_and_jacobian,
 )
-from lib_pano.human_fitting.staged_lm.stage2_joint_fast import (
+from lib_pano.human_fitting.staged_lm.joint import (
     Stage2JointFastCache,
     evaluate_joint_shape_state,
     joint_fast_raw_groups,
     physical_beta_from_latent,
 )
-import lib_pano.human_fitting.staged_lm.stage2_joint_jacobian as _joint_production
-from lib_pano.human_fitting.staged_lm.stage2_joint_jacobian import (
+import lib_pano.human_fitting.staged_lm.joint as _joint_production
+from lib_pano.human_fitting.staged_lm.joint import (
     CombinedFKResult,
     accumulate_stage2_joint_arrowhead_system,
     joint_group_raw_residual_and_jacobians,
@@ -130,7 +134,7 @@ def build_stage2_joint_reference_linearization(
     shape_anchor_scale: float, *, is_irls: bool, charbonnier_eps: float,
     aggregation_spec: dict[str, Any] | None, rep_scale: float,
     linear_solver_backend: str,
-) -> dict[str, Any]:
+) -> Linearization:
     """Build dense or Schur analytic joint linearization for regression."""
     groups = joint_fast_raw_groups(cache, linearisation_point, beta_abs_limit)
     if is_irls:
@@ -227,13 +231,15 @@ def build_stage2_joint_reference_linearization(
             beta_anchor, pose_anchor_scale, shape_anchor_scale,
         )
 
-    return {
-        "surrogate_fn": surrogate_fn,
-        "jacobian_fn": jacobian_fn,
-        "normal_equations_fn": normal_equations_fn,
-        "weight_stats": stats,
-        "spec": aggregation_spec or {},
-        "jacobian_backend": "analytic_stage2_joint",
-        "linearization_backend": "direct_normal_equations",
-        "linear_solver_backend": solver_label,
-    }
+    return Linearization(
+        surrogate=surrogate_fn,
+        jacobian=jacobian_fn,
+        normal_equations=normal_equations_fn,
+        weight_stats=stats,
+        aggregation_spec=aggregation_spec or {},
+        provenance=LinearizationProvenance(
+            jacobian_backend="analytic_stage2_joint",
+            linearization_backend="direct_normal_equations",
+            linear_solver_backend=solver_label,
+        ),
+    )

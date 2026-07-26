@@ -1,4 +1,11 @@
-"""Explicit physical/latent beta Jacobian for dynamic Stage 2 joint forward."""
+"""Explicit physical/latent beta Jacobian for dynamic Stage 2 Joint.
+
+Purpose: preserve the pose-fixed beta-only reference chain through dynamic
+joints, FK/rest correction, selected LBS, ERP, and residuals.
+Mathematical scope distinguishes physical-beta and beta-latent derivatives.
+It does not merge with the combined pose/beta path or construct Arrowhead H/g.
+Read :mod:`.derivatives` next for the combined analytic chain.
+"""
 
 from __future__ import annotations
 
@@ -8,21 +15,23 @@ from typing import Any
 
 import torch
 
-from .analytic_stage1 import project_cam2_erp_with_jacobian
-from .config import STAGE1_PER_FRAME_DIM
-from .irls import build_primary_aggregation_spec, compute_irls_point_weights
-from .parameter_layout import unpack_frame_parameters
-from .stage2_joint_fast import (
+from ..config import STAGE1_PER_FRAME_DIM
+from ..geometry.erp import project_unified_erp_with_jacobian
+from ..irls import build_primary_aggregation_spec, compute_irls_point_weights
+from ..parameter_layout import unpack_frame_parameters
+from .cache import (
     Stage2JointFastCache,
     Stage2JointFrameCameraCache,
+    validate_stage2_joint_layout,
+)
+from .shape import (
     Stage2JointShapeState,
     evaluate_joint_shape_state,
     physical_beta_from_latent,
-    validate_stage2_joint_layout,
 )
-from .stage2_pose_fast import assemble_full_pose_rotations, compute_selected_pose_offsets
-from .stage2_pose_jacobian import compute_selected_lbs_with_jacobian
-from .types import ReprojectionGroup
+from ..pose.forward import assemble_full_pose_rotations, compute_selected_pose_offsets
+from ..pose.derivatives import compute_selected_lbs_with_jacobian
+from ..types import ReprojectionGroup
 
 
 @dataclass
@@ -169,7 +178,7 @@ def joint_group_raw_residual_and_beta_jacobian(
         cache, camera_cache, shape_state, orient.reshape(3), translation.reshape(3),
         frame.body_pose.reshape(-1),
     )
-    uv, projection_jacobian = project_cam2_erp_with_jacobian(
+    uv, projection_jacobian = project_unified_erp_with_jacobian(
         vertices, cache.image_width, cache.image_height,
     )
     jacobian = torch.einsum("nab,nbq->naq", projection_jacobian, d_vertices_latent)

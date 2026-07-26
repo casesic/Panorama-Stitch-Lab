@@ -14,8 +14,8 @@ except ImportError:
 ensure_test_paths(__file__)
 
 from tests.human_fitting.staged_lm.helpers import _cache, _parameters  # noqa:E402
-from lib_pano.human_fitting.staged_lm.stage2_joint_fast import evaluate_joint_shape_state  # noqa:E402
-from lib_pano.human_fitting.staged_lm.stage2_joint_jacobian import (  # noqa:E402
+from lib_pano.human_fitting.staged_lm.joint import evaluate_joint_shape_state  # noqa:E402
+from lib_pano.human_fitting.staged_lm.joint import (  # noqa:E402
     CombinedFKResult,
     accumulate_stage2_joint_arrowhead_system,
     compute_joint_fk_with_combined_jacobian,
@@ -34,7 +34,7 @@ from script.benchmark.staged_lm.joint_kernel_candidates import (  # noqa:E402
     selected_lbs_direct_b2, selected_lbs_low_memory_b1,
     pack_exact_lbs_weights, selected_lbs_exact_sparse_b3,
 )
-from lib_pano.human_fitting.staged_lm.stage2_pose_jacobian import (  # noqa:E402
+from lib_pano.human_fitting.staged_lm.pose.derivatives import (  # noqa:E402
     assemble_full_pose_rotation_jacobians, compute_selected_lbs_with_jacobian,
     compute_selected_pose_offsets_with_jacobian,
 )

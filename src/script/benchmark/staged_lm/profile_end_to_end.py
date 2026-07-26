@@ -27,15 +27,20 @@ from lib_pano.human_fitting.staged_lm.output import (
     build_output_directory, collect_stage2_arrays,
     compute_objective_breakdown, save_experiment_outputs,
 )
-from lib_pano.human_fitting.staged_lm.residuals import flatten_reprojection_groups
-from lib_pano.human_fitting.staged_lm import stages as production_stages
-from lib_pano.human_fitting.staged_lm.stages import (
-    build_joint_stage_definition,
-    build_pose_stage_definition,
-    build_stage1_definition,
-    run_stage,
-    run_stage2,
+from lib_pano.human_fitting.staged_lm.pipeline import run_stage2
+from lib_pano.human_fitting.staged_lm.residuals import (
+    flatten_reprojection_groups,
+    make_raw_reproj_groups,
 )
+from lib_pano.human_fitting.staged_lm.stage_definitions import (
+    joint as joint_definitions,
+    pose as pose_definitions,
+    rigid as rigid_definitions,
+)
+from lib_pano.human_fitting.staged_lm.stage_definitions.joint import build_joint_stage_definition
+from lib_pano.human_fitting.staged_lm.stage_definitions.pose import build_pose_stage_definition
+from lib_pano.human_fitting.staged_lm.stage_definitions.rigid import build_stage1_definition
+from lib_pano.human_fitting.staged_lm.stage_runtime import run_stage
 from lib_pano.human_fitting.staged_lm.stage2_shared_cache import (
     build_stage2_shared_geometry_cache,
 )
@@ -133,7 +138,7 @@ class FullForwardCallAudit:
             "output_array_build": 0,
         }
         self.current_phase = "stage_preparation"
-        self._original = production_stages.make_raw_reproj_groups
+        self._original = make_raw_reproj_groups
 
     @contextmanager
     def phase(self, name: str):
@@ -150,9 +155,15 @@ class FullForwardCallAudit:
 
     @contextmanager
     def installed(self):
-        with patch.object(
-            production_stages, "make_raw_reproj_groups", self.counted_forward,
-        ):
+        with contextlib.ExitStack() as stack:
+            for module in (
+                rigid_definitions,
+                pose_definitions,
+                joint_definitions,
+            ):
+                stack.enter_context(patch.object(
+                    module, "make_raw_reproj_groups", self.counted_forward,
+                ))
             yield self
 
 

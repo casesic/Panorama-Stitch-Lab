@@ -71,7 +71,7 @@ def test_unpack_frame_parameters_shapes() -> None:
 
 def test_handoff_s1_to_pose_preserves_state() -> None:
     """S1->Stage 2 pose handoff must preserve orient/transl and seed pose from anchor."""
-    from lib_pano.human_fitting.staged_lm.stages import check_s1_to_pose, handoff_s1_to_pose
+    from lib_pano.human_fitting.staged_lm.stage_handoff import check_s1_to_pose, handoff_s1_to_pose
 
     from lib_pano.human_fitting.staged_lm.config import STAGE1_PER_FRAME_DIM
 

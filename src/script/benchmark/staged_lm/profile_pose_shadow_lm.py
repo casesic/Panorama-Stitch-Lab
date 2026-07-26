@@ -17,12 +17,12 @@ import torch
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
-from lib_pano.human_fitting.staged_lm.lm_solver import run_lm_optimization
+from lib_pano.human_fitting.staged_lm.lm.runner import run_lm_optimization
 from lib_pano.human_fitting.staged_lm.device import resolve_execution_device
 from lib_pano.human_fitting.staged_lm.stage2_shared_cache import build_stage2_shared_geometry_cache
-from lib_pano.human_fitting.staged_lm.stages import (
-    build_pose_stage_definition, build_stage1_definition, run_stage,
-)
+from lib_pano.human_fitting.staged_lm.stage_definitions.pose import build_pose_stage_definition
+from lib_pano.human_fitting.staged_lm.stage_definitions.rigid import build_stage1_definition
+from lib_pano.human_fitting.staged_lm.stage_runtime import run_stage
 from script.benchmark.staged_lm.batch_common import environment_record
 from script.benchmark.staged_lm.pose_batch_candidates import build_pose_group_batch
 from script.benchmark.staged_lm.pose_shadow_common import PoseNEMode

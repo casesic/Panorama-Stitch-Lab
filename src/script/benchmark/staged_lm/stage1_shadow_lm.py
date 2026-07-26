@@ -6,9 +6,15 @@ from typing import Any
 
 import torch
 
-from lib_pano.human_fitting.staged_lm.lm_solver import (
-    check_convergence, compute_scaled_gradient, normal_equations_max_diagonal,
-    normal_equations_quadratic_form, run_lm_optimization, solve_normal_equations,
+from lib_pano.human_fitting.staged_lm.lm.convergence import check_convergence
+from lib_pano.human_fitting.staged_lm.lm.equations import (
+    compute_scaled_gradient, normal_equations_max_diagonal,
+    normal_equations_quadratic_form, solve_normal_equations,
+)
+from lib_pano.human_fitting.staged_lm.lm.runner import run_lm_optimization
+from lib_pano.human_fitting.staged_lm.linearization import (
+    Linearization,
+    LinearizationProvenance,
 )
 from lib_pano.human_fitting.staged_lm.types import LMResult, StageDefinition
 from script.benchmark.staged_lm.stage1_batch_candidates import Stage1BatchCache
@@ -61,14 +67,20 @@ def make_stage1_batch_linearization(stage, batch, context, point, mode):
         charbonnier_eps=context.charbonnier_eps,
         aggregation_spec=stage.aggregation_spec, rep_scale=context.scaling.rep_scale,
     )
-    return {"surrogate_fn":common.surrogate_fn,"jacobian_fn":common.jacobian_fn,
-            "normal_equations_fn":lambda x:evaluate_stage1_equations(
+    return Linearization(
+        surrogate=common.surrogate_fn,
+        jacobian=common.jacobian_fn,
+        normal_equations=lambda x:evaluate_stage1_equations(
                 mode,stage.analytic_cache,batch,x,common.padded_row_scales,
                 common.flat_row_scales).equations,
-            "weight_stats":common.weight_stats,"spec":common.spec,
-            "jacobian_backend":"analytic_stage1_batched_shadow",
-            "linearization_backend":"direct_normal_equations_batched_shadow",
-            "linear_solver_backend":"dense"}
+        weight_stats=common.weight_stats,
+        aggregation_spec=common.spec,
+        provenance=LinearizationProvenance(
+            jacobian_backend="analytic_stage1_batched_shadow",
+            linearization_backend="direct_normal_equations_batched_shadow",
+            linear_solver_backend="dense",
+        ),
+    )
 
 
 def run_stage1_lm_independent_batch(
@@ -166,7 +178,7 @@ def run_stage1_lm_lockstep(
             damping=min(damping*10,1e12);rejected+=1
         if not accepted_this:status="LM_NO_ACCEPTED_TRIAL";break
         nxt=make_stage1_batch_linearization(stage,batch,context,x,Stage1NEMode.SERIAL_REFERENCE)
-        eq=nxt["normal_equations_fn"](x)
+        eq=nxt.normal_equations(x)
         rel=(before-float(stage.lm_true_objective_fn(x).detach()))/max(abs(before),1e-16)
         convergence=check_convergence(compute_scaled_gradient(eq),float(sd.norm()),rel,context.solver_config)
         if convergence is not None:status=convergence;break

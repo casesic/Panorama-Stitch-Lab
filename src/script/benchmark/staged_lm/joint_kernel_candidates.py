@@ -14,16 +14,20 @@ from typing import Any, Callable
 
 import torch
 
-from lib_pano.human_fitting.staged_lm.analytic_stage1 import project_cam2_erp_with_jacobian
-from lib_pano.human_fitting.staged_lm.analytic_stage1 import _skew, axis_angle_to_matrix, so3_right_jacobian
+from lib_pano.human_fitting.staged_lm.geometry.erp import (
+    project_unified_erp_with_jacobian,
+)
+from lib_pano.human_fitting.staged_lm.geometry.so3 import (
+    axis_angle_to_matrix, skew, so3_right_jacobian,
+)
 from lib_pano.human_fitting.staged_lm.config import STAGE1_PER_FRAME_DIM
 from lib_pano.human_fitting.staged_lm.irls import compute_primary_charbonnier_tensor
 from lib_pano.human_fitting.staged_lm.parameter_layout import unpack_frame_parameters
-from lib_pano.human_fitting.staged_lm.stage2_joint_fast import (
+from lib_pano.human_fitting.staged_lm.joint import (
     Stage2JointFastCache, Stage2JointFrameCameraCache, Stage2JointShapeState,
     evaluate_joint_shape_state, physical_beta_from_latent,
 )
-from lib_pano.human_fitting.staged_lm.stage2_joint_jacobian import (
+from lib_pano.human_fitting.staged_lm.joint import (
     CombinedFKResult, JointGroupJacobianResult,
     compute_joint_fk_with_combined_jacobian,
     joint_group_raw_residual_and_jacobians,
@@ -34,7 +38,7 @@ from script.validation.staged_lm.references.joint_backends import (
 from lib_pano.human_fitting.staged_lm.arrowhead_schur import ArrowheadNormalEquationSystem
 from lib_pano.human_fitting.staged_lm.types import NormalEquations
 from lib_pano.human_fitting.staged_lm.types import ReprojectionGroup
-from lib_pano.human_fitting.staged_lm.stage2_pose_jacobian import (
+from lib_pano.human_fitting.staged_lm.pose.derivatives import (
     assemble_full_pose_rotation_jacobians,
     compute_selected_lbs_with_jacobian,
     compute_selected_pose_offsets_with_jacobian,
@@ -184,7 +188,7 @@ def profile_joint_group_baseline(
                 d_skinned[..., pose_dim:] * scale.unsqueeze(-1))
     (vertices, d_pose, d_beta), sections["H_scale_translation"] = _timed(parameters, finish_vertices)
     (uv, projection_j), sections["I_erp_projection"] = _timed(
-        parameters, lambda: project_cam2_erp_with_jacobian(vertices, cache.image_width, cache.image_height),
+        parameters, lambda: project_unified_erp_with_jacobian(vertices, cache.image_width, cache.image_height),
     )
     tensors["projection_jacobian"] = projection_j
     (uv_pose, uv_beta), sections["J_projection_chain"] = _timed(
@@ -536,7 +540,7 @@ def _batched_rotation_values_and_jacobians(
     variables = axis_angles[:, :22]
     variable_rotations = rotations[:, :22]
     right = so3_right_jacobian(variables)
-    basis = _skew(right.transpose(-1, -2))
+    basis = skew(right.transpose(-1, -2))
     block_derivatives = torch.einsum("...ij,...kjl->...ilk", variable_rotations, basis)
     derivatives = torch.zeros(g, 55, 3, 3, 66, dtype=orientations.dtype, device=orientations.device)
     mapping = torch.zeros(22, 66, 3, dtype=orientations.dtype, device=orientations.device)
@@ -626,7 +630,7 @@ def batched_joint_group_analytic_bench(
     vertices = vertices*scale + translations[:,None]
     d_vertices = d_vertices*scale.unsqueeze(-1)
     g, n = vertices.shape[:2]
-    uv, projection = project_cam2_erp_with_jacobian(vertices.reshape(g*n,3), image_width, image_height)
+    uv, projection = project_unified_erp_with_jacobian(vertices.reshape(g*n,3), image_width, image_height)
     uv=uv.reshape(g,n,2);projection=projection.reshape(g,n,2,3)
     uv_all = torch.einsum("gnab,gnbq->gnaq", projection, d_vertices)
     active = torch.cat((uv_all[..., :3], projection, uv_all[..., 3:66]), -1)
@@ -729,7 +733,7 @@ def batched_joint_residual_only(
     homogeneous=torch.cat((shaped+offsets,torch.ones_like(shaped[...,:1])),-1)
     vertices=torch.einsum("gnab,gnb->gna",transforms,homogeneous)
     vertices=vertices*batch.scale.reshape(-1,1,1)+translations[:,None]
-    uv,_=project_cam2_erp_with_jacobian(vertices.reshape(-1,3),image_width,image_height)
+    uv,_=project_unified_erp_with_jacobian(vertices.reshape(-1,3),image_width,image_height)
     return (uv.reshape(g,-1,2)-batch.targets)*batch.valid_mask[...,None]
 
 

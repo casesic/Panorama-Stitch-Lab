@@ -13,10 +13,10 @@ from helpers import synthetic_joint_parameters, synthetic_stage2_context
 from lib_pano.human_fitting.staged_lm.config import SolverConfig
 from lib_pano.human_fitting.staged_lm.irls import build_primary_aggregation_spec
 from lib_pano.human_fitting.staged_lm.stage2_shared_cache import build_stage2_shared_geometry_cache
-from lib_pano.human_fitting.staged_lm.stage2_pose_fast import (
-    build_stage2_pose_fast_cache, fast_raw_groups, stage2_pose_fast_true_objective,
-)
-from lib_pano.human_fitting.staged_lm.stage2_pose_jacobian import build_stage2_pose_analytic_linearization
+from lib_pano.human_fitting.staged_lm.pose.cache import build_stage2_pose_fast_cache
+from lib_pano.human_fitting.staged_lm.pose.forward import fast_raw_groups
+from lib_pano.human_fitting.staged_lm.pose.objective import stage2_pose_fast_true_objective
+from lib_pano.human_fitting.staged_lm.pose.derivatives import build_stage2_pose_analytic_linearization
 from lib_pano.human_fitting.staged_lm.types import NormalEquations, StageDefinition
 from script.benchmark.staged_lm.pose_batch_candidates import (
     build_pose_group_batch, gather_pose_batch_parameters,
@@ -107,4 +107,3 @@ if __name__=="__main__":
     test_pose_batch_parameters_and_static_layout();test_all_equation_modes_and_error_isolation()
     test_serial_and_batch_weight_sources_raw_and_charbonnier();test_lockstep_and_independent_lm_smoke()
     print("[PASS] pose shadow LM")
-

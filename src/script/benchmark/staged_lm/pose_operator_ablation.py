@@ -9,12 +9,14 @@ from typing import Any
 
 import torch
 
-from lib_pano.human_fitting.staged_lm.analytic_stage1 import (
-    _skew, axis_angle_to_matrix, project_cam2_erp_with_jacobian,
-    so3_right_jacobian,
+from lib_pano.human_fitting.staged_lm.geometry.erp import (
+    project_unified_erp_with_jacobian,
+)
+from lib_pano.human_fitting.staged_lm.geometry.so3 import (
+    axis_angle_to_matrix, skew, so3_right_jacobian,
 )
 from lib_pano.human_fitting.staged_lm.parameter_layout import unpack_frame_parameters
-from lib_pano.human_fitting.staged_lm.stage2_pose_jacobian import (
+from lib_pano.human_fitting.staged_lm.pose.derivatives import (
     assemble_full_pose_rotation_jacobians,
     compute_fk_with_jacobian,
     compute_selected_lbs_with_jacobian,
@@ -31,7 +33,7 @@ from script.benchmark.staged_lm.pose_batch_candidates import (
     batched_pose_rotations_and_jacobians,
     gather_pose_batch_parameters,
 )
-from lib_pano.human_fitting.staged_lm.stage2_pose_batched import Stage2PoseBatchLayout
+from lib_pano.human_fitting.staged_lm.pose.batched import Stage2PoseBatchLayout
 from script.benchmark.staged_lm.pose_shadow_common import _assemble_from_active
 
 
@@ -205,7 +207,7 @@ def _serial_projection(cache: Any,batch: PoseGroupBatch,vertices: torch.Tensor,d
     uv_pose=_zeros(batch,(n,2,66),reference);residual=_zeros(batch,(n,2),reference);active=_zeros(batch,(n,2,69),reference)
     for index,group in enumerate(cache.groups):
         count=group.targets.shape[0]
-        u,p=project_cam2_erp_with_jacobian(vertices[index,:count],cache.image_width,cache.image_height)
+        u,p=project_unified_erp_with_jacobian(vertices[index,:count],cache.image_width,cache.image_height)
         up=torch.einsum("nab,nbq->naq",p,d_vertices[index,:count])
         uv[index,:count]=u;projection[index,:count]=p;uv_pose[index,:count]=up
         residual[index,:count]=u-group.targets.to(reference)
@@ -350,7 +352,7 @@ def rotation_internal_ablation(cache: Any,batch: PoseGroupBatch,parameters: torc
         batch.left_hand_pose,batch.right_hand_pose,derivative_mapping=batch.derivative_mapping)
     variable=torch.cat((packed.group_orientations[:,None],packed.group_body_poses.reshape(-1,21,3)),1)
     batch_right=so3_right_jacobian(variable);serial_right=torch.stack([torch.stack([so3_right_jacobian(value) for value in group]) for group in variable])
-    batch_basis=_skew(batch_right.transpose(-1,-2));serial_basis=_skew(serial_right.transpose(-1,-2))
+    batch_basis=skew(batch_right.transpose(-1,-2));serial_basis=skew(serial_right.transpose(-1,-2))
     batch_blocks=torch.einsum("...ij,...kjl->...ilk",batch_r[:,:22],batch_basis)
     serial_blocks=torch.stack([torch.stack([torch.einsum("ij,kjl->ilk",serial_r[g,j],serial_basis[g,j]) for j in range(22)]) for g in range(batch.layout.group_count)])
     loop_d=torch.zeros_like(batch_d);loop_d[:,0,:,:,:3]=batch_blocks[:,0]

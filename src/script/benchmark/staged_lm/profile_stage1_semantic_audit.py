@@ -9,7 +9,7 @@ import torch
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
-from lib_pano.human_fitting.staged_lm.stages import build_stage1_definition
+from lib_pano.human_fitting.staged_lm.stage_definitions.rigid import build_stage1_definition
 from script.benchmark.staged_lm.batch_common import environment_record
 from script.benchmark.staged_lm.profile_stage1_shadow_lm import _downstream, _result
 from script.benchmark.staged_lm.stage1_batch_candidates import build_stage1_batch_cache

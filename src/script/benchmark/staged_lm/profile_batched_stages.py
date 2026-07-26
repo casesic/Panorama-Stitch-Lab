@@ -17,16 +17,16 @@ if __package__ in (None, ""):
 from script.human_fitting.staged_lm.app import build_context
 from script.human_fitting.staged_lm.cli import build_argument_parser
 from lib_pano.human_fitting.staged_lm.irls import compute_irls_point_weights
-from lib_pano.human_fitting.staged_lm.stages import (
-    build_stage1_definition, build_pose_stage_definition,
-    build_joint_stage_definition, run_stage,
-)
+from lib_pano.human_fitting.staged_lm.stage_definitions.joint import build_joint_stage_definition
+from lib_pano.human_fitting.staged_lm.stage_definitions.pose import build_pose_stage_definition
+from lib_pano.human_fitting.staged_lm.stage_definitions.rigid import build_stage1_definition
+from lib_pano.human_fitting.staged_lm.stage_runtime import run_stage
 from lib_pano.human_fitting.staged_lm.stage2_shared_cache import build_stage2_shared_geometry_cache
-from lib_pano.human_fitting.staged_lm.stage2_pose_fast import fast_raw_groups as pose_raw_groups
-from lib_pano.human_fitting.staged_lm.stage2_pose_jacobian import stage2_pose_group_raw_residual_and_jacobian
-from lib_pano.human_fitting.staged_lm.stage2_joint_fast import joint_fast_raw_groups
-from lib_pano.human_fitting.staged_lm.stage2_joint_fast import evaluate_joint_shape_state
-from lib_pano.human_fitting.staged_lm.stage2_joint_jacobian import joint_group_raw_residual_and_jacobians
+from lib_pano.human_fitting.staged_lm.pose.forward import fast_raw_groups as pose_raw_groups
+from lib_pano.human_fitting.staged_lm.pose.derivatives import stage2_pose_group_raw_residual_and_jacobian
+from lib_pano.human_fitting.staged_lm.joint import joint_fast_raw_groups
+from lib_pano.human_fitting.staged_lm.joint import evaluate_joint_shape_state
+from lib_pano.human_fitting.staged_lm.joint import joint_group_raw_residual_and_jacobians
 from lib_pano.human_fitting.staged_lm.analytic_stage1 import _group_raw_residual_and_local_jacobian
 from script.benchmark.staged_lm.batch_common import (
     TF32Disabled, benchmark_callable, environment_record, numerical_error,
@@ -112,7 +112,7 @@ def _run_one(args, frames: list[str], warmup: int, repeats: int) -> dict[str,Any
     batch=build_stage1_group_batch(cache);orient,translation=gather_stage1_group_parameters(parameters,batch.layout)
     groups=cache.raw_groups(parameters);scales,flat_scales=_padded_scales(groups,s1_definition.aggregation_spec,context,batch.layout.nmax)
     serial_linear=s1_definition.linearization_builder(parameters,s1_definition.aggregation_spec)
-    serial_ne=lambda:serial_linear["normal_equations_fn"](parameters)
+    serial_ne=lambda:serial_linear.normal_equations(parameters)
     batch_ne=lambda:batched_stage1_hg(batch,orient,translation,scales,cache.image_width,cache.image_height)
     serial_eq=serial_ne();candidate=batch_ne()
     serial_obj=lambda:s1_definition.lm_true_objective_fn(parameters)
@@ -143,7 +143,7 @@ def _run_one(args, frames: list[str], warmup: int, repeats: int) -> dict[str,Any
     pose_parameters=gather_pose_batch_parameters(parameters,batch.layout)
     groups=pose_raw_groups(cache,parameters);scales,scale_list=_padded_scales(groups,pose_definition.aggregation_spec,context,batch.layout.nmax)
     serial_linear=pose_definition.linearization_builder(parameters,pose_definition.aggregation_spec)
-    serial_ne=lambda:serial_linear["normal_equations_fn"](parameters)
+    serial_ne=lambda:serial_linear.normal_equations(parameters)
     batch_ne=lambda:batched_pose_hg(batch,orient,translation,body,scales,context.body_pose_anchors,
         context.scaling.pose_anchor_scale,cache.image_width,cache.image_height,
         frame_body_poses=pose_parameters.frame_body_poses)
@@ -183,7 +183,7 @@ def _run_one(args, frames: list[str], warmup: int, repeats: int) -> dict[str,Any
     batch=build_joint_group_batch(cache.groups);groups=joint_fast_raw_groups(cache,parameters,context.objective_config.beta_abs_limit)
     scales,scale_list=_padded_scales(groups,joint_definition.aggregation_spec,context,batch.valid_mask.shape[1])
     serial_linear=joint_definition.linearization_builder(parameters,joint_definition.aggregation_spec)
-    serial_ne=lambda:serial_linear["normal_equations_fn"](parameters)
+    serial_ne=lambda:serial_linear.normal_equations(parameters)
     batch_ne=lambda:batched_joint_arrowhead_hg(cache,batch,parameters,context.objective_config.beta_abs_limit,
         scales,context.body_pose_anchors,context.beta_anchor,context.scaling.pose_anchor_scale,context.scaling.shape_anchor_scale)
     serial_eq=serial_ne();candidate_values=batch_ne();candidate=candidate_values[0]

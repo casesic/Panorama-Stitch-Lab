@@ -313,14 +313,12 @@ print(result.output_directory)
 | `residuals.py` | reprojection group、残差展开及原始像素 metrics |
 | `irls.py` | Charbonnier IRLS、聚合规格和 frozen row scales |
 | `analytic_stage1.py` | Stage 1 selected forward、解析 Jacobian 和 direct H/g |
-| `stage2_pose_fast.py` | beta 固定的 selected-vertex pose forward/objective/metrics |
-| `stage2_pose_jacobian.py` | Stage 2 pose 解析 Jacobian 和 direct normal equations |
-| `stage2_joint_fast.py` | dynamic-beta selected forward、fast objective 和 metrics |
-| `stage2_joint_beta_jacobian.py` | physical beta 与 beta latent 的解析导数 |
-| `stage2_joint_jacobian.py` | joint pose+beta 解析 Jacobian、combined FK、arrowhead H/g |
+| `pose/` | Pose cache、forward、解析导数、objective/metrics 与 FULL_BATCH H/g |
+| `joint/` | Joint shape、forward、beta/combined 导数、Arrowhead 与 FULL_BATCH H/g |
 | `arrowhead_schur.py` | shared-beta arrowhead 系统、Schur solve 和 dense fallback |
-| `lm_solver.py` | 通用 LM iteration、damping、rho、accept/reject 和求解分派 |
-| `stages.py` | 三阶段 definition、handoff 和 production orchestration |
+| `lm/` | 通用 LM equations、trial、convergence 和 runner |
+| `stage_definitions/` | 三阶段 definition 构建 |
+| `stage_runtime.py` / `pipeline.py` | 单阶段执行与 Stage2 orchestration |
 | `output.py` | JSON/NPZ 数组构建、序列化和 timing metadata |
 
 Production library 不依赖 `src/script/`、validation、benchmark 或 tests。
@@ -392,12 +390,12 @@ validation checks -> validation references -> production library
 3. `src/script/human_fitting/staged_lm/app.py`
 4. `src/lib_pano/human_fitting/staged_lm/types.py`
 5. `src/lib_pano/human_fitting/staged_lm/config.py`
-6. `src/lib_pano/human_fitting/staged_lm/stages.py`
+6. `src/lib_pano/human_fitting/staged_lm/pipeline.py`
 7. `analytic_stage1.py`
-8. `stage2_pose_jacobian.py`
-9. `stage2_joint_jacobian.py`
-10. `arrowhead_schur.py`
-11. `lm_solver.py`
+8. `pose/derivatives.py`
+9. `joint/derivatives.py`
+10. `joint/arrowhead.py`
+11. `lm/runner.py`
 
 更详细的数学、验证状态和当前性能结论见：
 

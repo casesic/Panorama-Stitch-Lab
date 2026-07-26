@@ -18,13 +18,13 @@ from tests.human_fitting.staged_lm.helpers import _cache, _parameters  # noqa: E
 
 from lib_pano.human_fitting.staged_lm.irls import build_primary_aggregation_spec,compute_primary_charbonnier_tensor  # noqa: E402
 from lib_pano.human_fitting.staged_lm.residuals import flatten_reprojection_groups  # noqa: E402
-from lib_pano.human_fitting.staged_lm.stage2_joint_fast import (  # noqa: E402
+from lib_pano.human_fitting.staged_lm.joint import (  # noqa: E402
     evaluate_joint_shape_state,joint_fast_raw_groups,joint_fast_raw_residual,validate_stage2_joint_layout,
 )
-from lib_pano.human_fitting.staged_lm.stage2_joint_beta_jacobian import (  # noqa: E402
+from lib_pano.human_fitting.staged_lm.joint.beta_derivatives import (  # noqa: E402
     compute_fk_beta_jacobian,joint_group_raw_residual_and_beta_jacobian,
 )
-from lib_pano.human_fitting.staged_lm.stage2_joint_jacobian import (  # noqa: E402
+from lib_pano.human_fitting.staged_lm.joint import (  # noqa: E402
     accumulate_stage2_joint_arrowhead_system,
     compute_joint_fk_with_combined_jacobian,evaluate_joint_group_analytic_state,
     joint_explicit_raw_global_jacobian,joint_group_raw_residual_and_jacobians,
@@ -36,7 +36,7 @@ from script.validation.staged_lm.references.joint_backends import (  # noqa: E40
     build_stage2_joint_reference_linearization,
     use_separate_fk_reference,
 )
-from lib_pano.human_fitting.staged_lm.stage2_pose_jacobian import (  # noqa: E402
+from lib_pano.human_fitting.staged_lm.pose.derivatives import (  # noqa: E402
     assemble_full_pose_rotation_jacobians,compute_fk_with_jacobian,
 )
 
@@ -185,14 +185,14 @@ def test_direct_normal_equations_match_frozen_explicit() -> None:
             linear=build_stage2_joint_reference_linearization(cache,x,3.,torch.zeros(2,dtype=x.dtype),anchors,.2,.4,
                 is_irls=is_irls,charbonnier_eps=1.,aggregation_spec=spec if is_irls else None,rep_scale=.02,
                 linear_solver_backend="dense")
-            residual=linear["surrogate_fn"](x);jacobian=linear["jacobian_fn"](x)
-            cache.reset_timing();equations=linear["normal_equations_fn"](x)
+            residual=linear.surrogate(x);jacobian=linear.jacobian(x)
+            cache.reset_timing();equations=linear.normal_equations(x)
             schur_linear=build_stage2_joint_analytic_linearization(
                 cache,x,3.,torch.zeros(2,dtype=x.dtype),anchors,.2,.4,
                 is_irls=is_irls,charbonnier_eps=1.,aggregation_spec=spec if is_irls else None,
                 rep_scale=.02,
             )
-            structured=schur_linear["normal_equations_fn"](x)
+            structured=schur_linear.normal_equations(x)
             torch.testing.assert_close(equations.residual,residual,rtol=1e-10,atol=1e-10)
             torch.testing.assert_close(structured.residual,residual,rtol=1e-10,atol=1e-10)
             j64=jacobian.to(torch.float64);r64=residual.to(torch.float64)

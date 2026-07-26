@@ -21,12 +21,12 @@ from script.human_fitting.staged_lm.app import build_context
 from lib_pano.human_fitting.staged_lm.irls import (
     build_primary_aggregation_spec, compute_irls_point_weights,
 )
-from lib_pano.human_fitting.staged_lm.stage2_joint_fast import (
+from lib_pano.human_fitting.staged_lm.joint import (
     build_stage2_joint_fast_cache, evaluate_joint_shape_state,
     joint_fast_raw_groups,
 )
 from lib_pano.human_fitting.staged_lm.stage2_shared_cache import build_stage2_shared_geometry_cache
-from lib_pano.human_fitting.staged_lm.stage2_joint_jacobian import (
+from lib_pano.human_fitting.staged_lm.joint import (
     accumulate_stage2_joint_arrowhead_system,
     compute_joint_fk_with_combined_jacobian,
 )
@@ -43,11 +43,11 @@ from script.benchmark.staged_lm.joint_kernel_candidates import (
     selected_lbs_direct_b2, selected_lbs_low_memory_b1, tensor_audit,
     pack_exact_lbs_weights, selected_lbs_exact_sparse_b3,
 )
-from lib_pano.human_fitting.staged_lm.stage2_pose_jacobian import compute_selected_lbs_with_jacobian
-from lib_pano.human_fitting.staged_lm.stages import (
-    build_stage1_definition, build_pose_stage_definition,
-    build_joint_stage_definition, run_stage,
-)
+from lib_pano.human_fitting.staged_lm.pose.derivatives import compute_selected_lbs_with_jacobian
+from lib_pano.human_fitting.staged_lm.stage_definitions.joint import build_joint_stage_definition
+from lib_pano.human_fitting.staged_lm.stage_definitions.pose import build_pose_stage_definition
+from lib_pano.human_fitting.staged_lm.stage_definitions.rigid import build_stage1_definition
+from lib_pano.human_fitting.staged_lm.stage_runtime import run_stage
 
 
 def parse_args() -> argparse.Namespace:
@@ -315,11 +315,17 @@ def main() -> int:
                 current_groups=joint_fast_raw_groups(cache,point,beta_limit)
                 current_weights=compute_irls_point_weights(current_groups,context.charbonnier_eps,specification)
                 frozen=[torch.sqrt(value).repeat_interleave(2).detach() for value in current_weights]
-                linear["normal_equations_fn"]=lambda value:accumulate_stage2_joint_arrowhead_fp32_bench(
-                    cache,value,beta_limit,frozen,anchors,beta_anchor,
-                    context.scaling.pose_anchor_scale,context.scaling.shape_anchor_scale)
-                linear["linear_solver_backend"]="arrowhead_schur"
-                return linear
+                return replace(
+                    linear,
+                    normal_equations=lambda value:accumulate_stage2_joint_arrowhead_fp32_bench(
+                        cache,value,beta_limit,frozen,anchors,beta_anchor,
+                        context.scaling.pose_anchor_scale,context.scaling.shape_anchor_scale,
+                    ),
+                    provenance=replace(
+                        linear.provenance,
+                        linear_solver_backend="arrowhead_schur",
+                    ),
+                )
             d1_definition=replace(joint_definition,linearization_builder=d1_builder,
                                   fast_eval_validator=None,linear_solver_backend="arrowhead_schur")
             d1_outcome=run_stage(d1_definition,context)

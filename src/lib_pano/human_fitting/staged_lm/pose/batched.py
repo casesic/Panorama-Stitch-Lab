@@ -1,4 +1,4 @@
-"""Production FULL_BATCH normal equations for the Stage 2 pose warmup.
+"""Production FULL_BATCH equivalent of the Pose value/derivative chain.
 
 IRLS weights, the true objective, metrics, and the LM solver remain on their
 existing serial production paths.  This module batches only pose geometry,
@@ -12,13 +12,12 @@ import time
 
 import torch
 
-from .analytic_stage1 import (
-    _skew, axis_angle_to_matrix, project_cam2_erp_with_jacobian,
-    so3_right_jacobian,
-)
-from .stage2_pose_fast import Stage2PoseFastCache
-from .stage2_pose_jacobian import build_stage2_pose_linearization_common
-from .types import NormalEquations
+from ..geometry.erp import project_unified_erp_with_jacobian
+from ..geometry.so3 import axis_angle_to_matrix, skew, so3_right_jacobian
+from ..linearization import Linearization, LinearizationProvenance
+from ..types import NormalEquations
+from .cache import Stage2PoseFastCache
+from .derivatives import build_stage2_pose_linearization_common
 
 
 @dataclass(frozen=True)
@@ -252,7 +251,7 @@ def stage2_pose_batched_rotations_and_jacobians(
     ), dim=1)
     rotations = axis_angle_to_matrix(axis_angles)
     right = so3_right_jacobian(axis_angles[:, :22])
-    basis = _skew(right.transpose(-1, -2))
+    basis = skew(right.transpose(-1, -2))
     blocks = torch.einsum("...ij,...kjl->...ilk", rotations[:, :22], basis)
     derivatives = torch.zeros(
         group_count, 55, 3, 3, 66, dtype=rotations.dtype, device=rotations.device,
@@ -381,7 +380,7 @@ def stage2_pose_batched_projection_from_vertices(
     image_height: int,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     group_count, nmax = vertices.shape[:2]
-    uv, projection = project_cam2_erp_with_jacobian(
+    uv, projection = project_unified_erp_with_jacobian(
         vertices.reshape(-1, 3), image_width, image_height,
     )
     uv = uv.reshape(group_count, nmax, 2)
@@ -551,7 +550,7 @@ def build_stage2_pose_batched_linearization(
     charbonnier_eps: float,
     aggregation_spec: dict | None,
     rep_scale: float,
-) -> dict:
+) -> Linearization:
     """Bind serial weights/reference functions to the production batched NE."""
     common = build_stage2_pose_linearization_common(
         fast_cache, linearisation_point, body_pose_anchors, pose_anchor_scale,
@@ -568,12 +567,15 @@ def build_stage2_pose_batched_linearization(
             body_pose_anchors, pose_anchor_scale,
         )
 
-    return {
-        "surrogate_fn": common.surrogate_fn,
-        "jacobian_fn": common.jacobian_fn,
-        "normal_equations_fn": normal_equations_fn,
-        "weight_stats": common.weight_stats,
-        "spec": common.spec,
-        "jacobian_backend": "analytic_stage2_pose_batched",
-        "linearization_backend": "direct_normal_equations_batched_full_group",
-    }
+    return Linearization(
+        surrogate=common.surrogate_fn,
+        jacobian=common.jacobian_fn,
+        normal_equations=normal_equations_fn,
+        weight_stats=common.weight_stats,
+        aggregation_spec=common.spec,
+        provenance=LinearizationProvenance(
+            jacobian_backend="analytic_stage2_pose_batched",
+            linearization_backend="direct_normal_equations_batched_full_group",
+            linear_solver_backend="dense",
+        ),
+    )

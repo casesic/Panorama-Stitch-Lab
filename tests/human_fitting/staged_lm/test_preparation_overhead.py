@@ -25,15 +25,13 @@ from lib_pano.human_fitting.staged_lm.irls import (  # noqa: E402
 from lib_pano.human_fitting.staged_lm.output import (  # noqa: E402
     compute_objective_breakdown,
 )
-from lib_pano.human_fitting.staged_lm.stage2_joint_fast import (  # noqa: E402
+from lib_pano.human_fitting.staged_lm.joint import (  # noqa: E402
     joint_fast_raw_groups,
     stage2_joint_fast_objective_terms,
     stage2_joint_fast_true_objective,
 )
-from lib_pano.human_fitting.staged_lm.stages import (  # noqa: E402
-    check_pose_to_joint_state,
-    run_stage,
-)
+from lib_pano.human_fitting.staged_lm.stage_handoff import check_pose_to_joint_state  # noqa: E402
+from lib_pano.human_fitting.staged_lm.stage_runtime import run_stage  # noqa: E402
 from lib_pano.human_fitting.staged_lm.types import (  # noqa: E402
     LMResult,
     LMSolverCounters,
@@ -116,9 +114,9 @@ def test_run_stage_does_not_call_raw_groups() -> None:
         solver_config=SimpleNamespace(lm_max_trials=1),
     )
     with patch(
-        "lib_pano.human_fitting.staged_lm.stages.validate_stage_initial_parameters"
+        "lib_pano.human_fitting.staged_lm.stage_runtime.validate_stage_initial_parameters"
     ), patch(
-        "lib_pano.human_fitting.staged_lm.stages.run_lm_optimization",
+        "lib_pano.human_fitting.staged_lm.stage_runtime.run_lm_optimization",
         return_value=_fake_result(parameters),
     ):
         outcome = run_stage(definition, context)

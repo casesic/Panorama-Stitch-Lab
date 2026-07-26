@@ -9,13 +9,13 @@ import torch
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
-from lib_pano.human_fitting.staged_lm.lm_solver import run_lm_optimization
-from lib_pano.human_fitting.staged_lm.stages import (
-    build_stage1_definition, build_pose_stage_definition,
-    build_joint_stage_definition, run_stage,
-)
+from lib_pano.human_fitting.staged_lm.lm.runner import run_lm_optimization
+from lib_pano.human_fitting.staged_lm.stage_definitions.joint import build_joint_stage_definition
+from lib_pano.human_fitting.staged_lm.stage_definitions.pose import build_pose_stage_definition
+from lib_pano.human_fitting.staged_lm.stage_definitions.rigid import build_stage1_definition
+from lib_pano.human_fitting.staged_lm.stage_runtime import run_stage
 from lib_pano.human_fitting.staged_lm.stage2_shared_cache import build_stage2_shared_geometry_cache
-from lib_pano.human_fitting.staged_lm.stage2_joint_fast import physical_beta_from_latent
+from lib_pano.human_fitting.staged_lm.joint import physical_beta_from_latent
 from lib_pano.human_fitting.staged_lm.types import StageOutcome
 from script.benchmark.staged_lm.batch_common import environment_record
 from script.benchmark.staged_lm.stage1_batch_candidates import (

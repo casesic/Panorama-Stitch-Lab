@@ -14,8 +14,9 @@ except ImportError:
     from _bootstrap import ensure_test_paths
 ensure_test_paths(__file__)
 
-from lib_pano.human_fitting.staged_lm import config, stages
-from lib_pano.human_fitting.staged_lm.stage2_joint_jacobian import (
+from lib_pano.human_fitting.staged_lm import config, pipeline, stage_handoff
+from lib_pano.human_fitting.staged_lm.stage_definitions import joint, pose, rigid
+from lib_pano.human_fitting.staged_lm.joint import (
     build_stage2_joint_analytic_linearization,
     compute_joint_fk_with_combined_jacobian,
 )
@@ -31,11 +32,19 @@ PRODUCTION_MODULES = [
         f"lib_pano.human_fitting.staged_lm.{name}"
         for name in (
             "config", "types", "device", "data_loading", "parameter_layout",
-            "residuals", "irls", "lm_solver", "arrowhead_schur",
-            "analytic_stage1", "stage2_pose_fast", "stage2_pose_jacobian",
-            "stage2_shared_cache",
-            "stage2_joint_fast", "stage2_joint_beta_jacobian",
-            "stage2_joint_jacobian", "stages", "output",
+            "residuals", "irls", "linearization",
+            "lm", "lm.equations", "lm.trial", "lm.convergence", "lm.runner",
+            "geometry", "geometry.so3", "geometry.erp", "arrowhead_schur",
+            "analytic_stage1", "stage2_shared_cache",
+            "pose", "pose.cache", "pose.forward", "pose.derivatives",
+            "pose.objective", "pose.batched",
+            "joint", "joint.cache", "joint.shape", "joint.forward",
+            "joint.beta_derivatives", "joint.derivatives", "joint.objective",
+            "joint.arrowhead", "joint.batched",
+            "stage_runtime", "stage_handoff", "stage_timing", "pipeline",
+            "stage_definitions", "stage_definitions.common",
+            "stage_definitions.rigid", "stage_definitions.pose",
+            "stage_definitions.joint", "output",
         )
     ],
 ]
@@ -51,7 +60,7 @@ REMOVED_OPTIONS = {
 
 
 def _production_root() -> Path:
-    return Path(stages.__file__).resolve().parent
+    return Path(pipeline.__file__).resolve().parent
 
 
 def test_production_and_benchmark_import_locations() -> None:
@@ -69,7 +78,7 @@ def test_production_and_benchmark_import_locations() -> None:
 
 def test_production_has_no_script_or_benchmark_dependency() -> None:
     violations = []
-    for path in _production_root().glob("*.py"):
+    for path in _production_root().rglob("*.py"):
         tree = ast.parse(path.read_text(), filename=str(path))
         for node in ast.walk(tree):
             modules = []
@@ -109,9 +118,9 @@ def test_cli_has_no_implementation_selector() -> None:
 
 def test_production_builder_signatures_and_labels() -> None:
     for function in (
-        stages.build_stage1_definition,
-        stages.build_pose_stage_definition,
-        stages.build_joint_stage_definition,
+        rigid.build_stage1_definition,
+        pose.build_pose_stage_definition,
+        joint.build_joint_stage_definition,
     ):
         assert not any("backend" in name for name in inspect.signature(function).parameters)
     assert config.PRODUCTION_STAGE1_LINEARIZATION == "analytic_stage1"
@@ -132,9 +141,11 @@ def test_production_builder_signatures_and_labels() -> None:
 
 
 def test_production_has_no_reference_selector() -> None:
-    stage_source = inspect.getsource(stages)
+    stage_source = "\n".join(
+        inspect.getsource(module) for module in (rigid, pose, joint, pipeline)
+    )
     joint_module = importlib.import_module(
-        "lib_pano.human_fitting.staged_lm.stage2_joint_jacobian"
+        "lib_pano.human_fitting.staged_lm.joint.derivatives"
     )
     joint_source = inspect.getsource(joint_module)
     assert "context.args.jacobian_backend" not in stage_source
@@ -144,7 +155,9 @@ def test_production_has_no_reference_selector() -> None:
 
 
 def test_production_preparation_has_no_full_forward_fallback() -> None:
-    stage_source = Path(stages.__file__).read_text()
+    stage_source = "\n".join(
+        inspect.getsource(module) for module in (rigid, pose, joint, pipeline)
+    )
     app_module = importlib.import_module("script.human_fitting.staged_lm.app")
     output_module = importlib.import_module(
         "lib_pano.human_fitting.staged_lm.output"
@@ -152,7 +165,7 @@ def test_production_preparation_has_no_full_forward_fallback() -> None:
     assert "_make_full_true_objective" not in stage_source
     assert "sample_groups =" not in stage_source
     assert "build_primary_aggregation_spec(" not in stage_source
-    handoff_source = inspect.getsource(stages.check_pose_to_joint_state)
+    handoff_source = inspect.getsource(stage_handoff.check_pose_to_joint_state)
     assert "raw_groups_fn" not in handoff_source
     assert "make_raw_reproj_groups" not in handoff_source
     assert "true_objective" not in handoff_source
@@ -164,7 +177,7 @@ def test_production_preparation_has_no_full_forward_fallback() -> None:
 
 def test_joint_production_linearization_is_structured() -> None:
     from lib_pano.human_fitting.staged_lm.irls import build_primary_aggregation_spec
-    from lib_pano.human_fitting.staged_lm.stage2_joint_fast import joint_fast_raw_groups
+    from lib_pano.human_fitting.staged_lm.joint import joint_fast_raw_groups
 
     cache, parameters = _cache(), _parameters()
     groups = joint_fast_raw_groups(cache, parameters, 3.0)
@@ -174,10 +187,10 @@ def test_joint_production_linearization_is_structured() -> None:
         is_irls=True, charbonnier_eps=1.0,
         aggregation_spec=build_primary_aggregation_spec(groups), rep_scale=0.02,
     )
-    equations = linearization["normal_equations_fn"](parameters)
+    equations = linearization.normal_equations(parameters)
     assert equations.hessian is None
     assert equations.structured_system is not None
-    assert linearization["linear_solver_backend"] == "arrowhead_schur"
+    assert linearization.provenance.linear_solver_backend == "arrowhead_schur"
 
 
 def test_reference_capabilities_are_importable() -> None:

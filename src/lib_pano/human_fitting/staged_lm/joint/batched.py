@@ -2,6 +2,11 @@
 
 Serial IRLS weights, true objective, metrics, LM and Arrowhead Schur remain
 on their existing production paths.
+
+This is the production equivalent of ``forward + derivatives + arrowhead``:
+static padding, dynamic shape, combined depth-wise FK, selected LBS, ERP
+Jacobian, and production-order FP64 A/B/C/g accumulation. It never calls the
+serial group loop. Schur math remains in :mod:`..arrowhead_schur`.
 """
 
 from __future__ import annotations
@@ -12,14 +17,15 @@ from typing import Any
 
 import torch
 
-from .analytic_stage1 import project_cam2_erp_with_jacobian
-from .arrowhead_schur import ArrowheadNormalEquationSystem
-from .stage2_joint_fast import (
-    Stage2JointFastCache, Stage2JointShapeState, evaluate_joint_shape_state,
-    physical_beta_from_latent,
+from ..arrowhead_schur import ArrowheadNormalEquationSystem
+from ..geometry.erp import project_unified_erp_with_jacobian
+from ..linearization import Linearization, LinearizationProvenance
+from .cache import Stage2JointFastCache
+from .shape import (
+    Stage2JointShapeState, evaluate_joint_shape_state, physical_beta_from_latent,
 )
-from .stage2_pose_batched import stage2_pose_batched_rotations_and_jacobians
-from .types import NormalEquations
+from ..pose.batched import stage2_pose_batched_rotations_and_jacobians
+from ..types import NormalEquations
 
 @dataclass(frozen=True)
 class Stage2JointBatchLayout:
@@ -277,7 +283,7 @@ def stage2_joint_batched_group_analytic(
     vertices = vertices * scale + packed.group_translations[:, None]
     d_vertices = d_vertices * scale[..., None]
     g, n = vertices.shape[:2]
-    uv, projection = project_cam2_erp_with_jacobian(vertices.reshape(g*n, 3), cache.image_width, cache.image_height)
+    uv, projection = project_unified_erp_with_jacobian(vertices.reshape(g*n, 3), cache.image_width, cache.image_height)
     uv = uv.reshape(g, n, 2); projection = projection.reshape(g, n, 2, 3)
     uv_all = torch.einsum("gnab,gnbq->gnaq", projection, d_vertices)
     active = torch.cat((uv_all[..., :3], projection, uv_all[..., 3:66]), -1)
@@ -398,8 +404,8 @@ def build_stage2_joint_batched_linearization(
     pose_anchor_scale: float, shape_anchor_scale: float, *, is_irls: bool,
     charbonnier_eps: float, aggregation_spec: dict[str, Any] | None,
     rep_scale: float,
-) -> dict[str, Any]:
-    from .stage2_joint_jacobian import build_stage2_joint_linearization_common
+) -> Linearization:
+    from .arrowhead import build_stage2_joint_linearization_common
     common = build_stage2_joint_linearization_common(
         fast_cache, linearisation_point, beta_abs_limit, beta_anchor,
         body_pose_anchors, pose_anchor_scale, shape_anchor_scale,
@@ -407,15 +413,18 @@ def build_stage2_joint_batched_linearization(
         aggregation_spec=aggregation_spec, rep_scale=rep_scale,
     )
     padded = pad_stage2_joint_row_scales(batch_cache, common.row_scales_by_group)
-    return {
-        "surrogate_fn": common.surrogate_fn,
-        "jacobian_fn": common.jacobian_fn,
-        "normal_equations_fn": lambda parameters: stage2_joint_batched_normal_equations(
+    return Linearization(
+        surrogate=common.surrogate_fn,
+        jacobian=common.jacobian_fn,
+        normal_equations=lambda parameters: stage2_joint_batched_normal_equations(
             fast_cache, batch_cache, parameters, beta_abs_limit, padded,
             body_pose_anchors, beta_anchor, pose_anchor_scale, shape_anchor_scale,
         ),
-        "weight_stats": common.weight_stats, "spec": common.spec,
-        "jacobian_backend": "analytic_stage2_joint_batched",
-        "linearization_backend": "direct_arrowhead_normal_equations_batched_full_group",
-        "linear_solver_backend": "arrowhead_schur",
-    }
+        weight_stats=common.weight_stats,
+        aggregation_spec=common.spec,
+        provenance=LinearizationProvenance(
+            jacobian_backend="analytic_stage2_joint_batched",
+            linearization_backend="direct_arrowhead_normal_equations_batched_full_group",
+            linear_solver_backend="arrowhead_schur",
+        ),
+    )

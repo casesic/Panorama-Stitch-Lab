@@ -1,4 +1,4 @@
-"""Data structures for two-stage LM fitting.
+"""Data structures for staged rigid / pose / joint LM fitting.
 
 Stage 1 performs dual-camera rigid orient/transl alignment. Stage 2 performs
 pose warmup followed by pose/shape joint refinement.
@@ -13,11 +13,14 @@ outputs depend on.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Callable, Literal
+from typing import TYPE_CHECKING, Any, Callable, Literal
 
 import torch
 
 from .config import ObjectiveConfig, ScalingConstants, SolverConfig
+
+if TYPE_CHECKING:
+    from .linearization import Linearization
 
 
 @dataclass
@@ -313,7 +316,10 @@ class StageDefinition:
     raw_metrics_fn: Callable[[torch.Tensor], dict[str, float]]
     lm_max_accepted_steps: int
     analytic_cache: Any = None
-    linearization_builder: Callable[[torch.Tensor, dict[str, Any] | None], dict[str, Any]] | None = None
+    linearization_builder: Callable[
+        [torch.Tensor, dict[str, Any] | None],
+        "Linearization",
+    ] | None = None
     lm_true_objective_fn: Callable[[torch.Tensor], torch.Tensor] | None = None
     # The following labels are output/profile provenance, not runtime selectors.
     eval_backend: str = "full_forward"

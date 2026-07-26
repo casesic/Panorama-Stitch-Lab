@@ -11,12 +11,12 @@ from typing import Any
 import torch
 
 from lib_pano.human_fitting.staged_lm.irls import compute_irls_point_weights
-from lib_pano.human_fitting.staged_lm.stage2_pose_fast import fast_raw_groups
-from lib_pano.human_fitting.staged_lm.stage2_pose_jacobian import (
+from lib_pano.human_fitting.staged_lm.pose.forward import fast_raw_groups
+from lib_pano.human_fitting.staged_lm.pose.derivatives import (
     stage2_pose_normal_equations,
     stage2_pose_group_raw_residual_and_jacobian,
 )
-from lib_pano.human_fitting.staged_lm.stage2_pose_batched import (
+from lib_pano.human_fitting.staged_lm.pose.batched import (
     pad_stage2_pose_row_scales,
     stage2_pose_batched_normal_equations,
 )

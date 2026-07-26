@@ -5,7 +5,7 @@ import sys
 sys.path.insert(0,str(Path(__file__).resolve().parents[3]/"src"));sys.path.insert(0,str(Path(__file__).resolve().parent))
 import torch
 from helpers import synthetic_joint_cache,synthetic_joint_parameters
-from lib_pano.human_fitting.staged_lm.stage2_joint_fast import evaluate_joint_shape_state
+from lib_pano.human_fitting.staged_lm.joint import evaluate_joint_shape_state
 from script.benchmark.staged_lm.joint_batch_candidates import JointNEMode,build_joint_batch_cache,gather_joint_batch_parameters,joint_batched_dynamic_shape,joint_batched_group_analytic,evaluate_joint_normal_equations
 from script.benchmark.staged_lm.joint_shadow_common import arrowhead_errors,build_schur_diagnostics,schur_errors
 

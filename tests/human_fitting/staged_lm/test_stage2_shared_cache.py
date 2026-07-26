@@ -17,20 +17,18 @@ except ImportError:
 ensure_test_paths(__file__)
 
 from tests.human_fitting.staged_lm.helpers import synthetic_stage2_context  # noqa: E402
-from lib_pano.human_fitting.staged_lm.stage2_joint_fast import (  # noqa: E402
+from lib_pano.human_fitting.staged_lm.joint import (  # noqa: E402
     build_stage2_joint_fast_cache,
     joint_fast_raw_groups,
 )
-from lib_pano.human_fitting.staged_lm.stage2_pose_fast import (  # noqa: E402
-    build_stage2_pose_fast_cache,
-    fast_raw_groups,
-)
+from lib_pano.human_fitting.staged_lm.pose.cache import build_stage2_pose_fast_cache  # noqa: E402
+from lib_pano.human_fitting.staged_lm.pose.forward import fast_raw_groups  # noqa: E402
 from lib_pano.human_fitting.staged_lm.stage2_shared_cache import (  # noqa: E402
     Stage2SharedGeometryCache,
     Stage2SharedModelLayout,
     build_stage2_shared_geometry_cache,
 )
-from lib_pano.human_fitting.staged_lm.stages import run_stage2  # noqa: E402
+from lib_pano.human_fitting.staged_lm.pipeline import run_stage2  # noqa: E402
 from lib_pano.human_fitting.staged_lm.types import StagePreparationTiming  # noqa: E402
 
 
@@ -186,8 +184,8 @@ def test_persistent_bytes_are_deduplicated() -> None:
 def test_no_redundant_selected_row_clone_in_production() -> None:
     root = Path(__file__).resolve().parents[3] / "src/lib_pano/human_fitting/staged_lm"
     shared_source = (root / "stage2_shared_cache.py").read_text()
-    pose_source = (root / "stage2_pose_fast.py").read_text()
-    joint_source = (root / "stage2_joint_fast.py").read_text()
+    pose_source = (root / "pose/cache.py").read_text()
+    joint_source = (root / "joint/cache.py").read_text()
     assert "index_select(1, item[3]).detach().clone()" not in shared_source
     assert "index_select(0, item[3]).detach().clone()" not in shared_source
     assert "selected_posedirs=posedirs" not in pose_source + joint_source
@@ -204,11 +202,23 @@ def test_stop_stage_lifecycle_build_counts() -> None:
     shared = Stage2SharedGeometryCache(
         layout, [], 1, 1, 1, 2.0, 0.5, 1.0, 0.4, 2, 2,
     )
+    pose_cache = SimpleNamespace(
+        setup_ms=0.2, batch_cache_setup_ms=0.0,
+        batch_padding_ratio=0.0, batch_persistent_bytes=0,
+        batch_group_count=0, batch_nmax=0,
+    )
+    joint_cache = SimpleNamespace(
+        setup_ms=0.3, batch_cache_setup_ms=0.0,
+        batch_padding_ratio=0.0, batch_persistent_bytes=0,
+        batch_group_count=0, batch_nmax=0,
+    )
     pose_definition = SimpleNamespace(
         preparation_timing=StagePreparationTiming(0.1, 0.2, 0.3),
+        analytic_cache=pose_cache,
     )
     joint_definition = SimpleNamespace(
         preparation_timing=StagePreparationTiming(0.2, 0.3, 0.4),
+        analytic_cache=joint_cache,
     )
     pose_outcome = SimpleNamespace(
         lm_result=SimpleNamespace(wall_time_ms=1.0),
@@ -237,16 +247,16 @@ def test_stop_stage_lifecycle_build_counts() -> None:
         outcomes = [pose_outcome] + ([joint_outcome] if expected_joint_builds else [])
         timing = {}
         with patch(
-            "lib_pano.human_fitting.staged_lm.stages.build_stage2_shared_geometry_cache",
+            "lib_pano.human_fitting.staged_lm.pipeline.build_stage2_shared_geometry_cache",
             shared_builder,
         ), patch(
-            "lib_pano.human_fitting.staged_lm.stages.build_pose_stage_definition",
+            "lib_pano.human_fitting.staged_lm.pipeline.build_pose_stage_definition",
             pose_builder,
         ), patch(
-            "lib_pano.human_fitting.staged_lm.stages.build_joint_stage_definition",
+            "lib_pano.human_fitting.staged_lm.pipeline.build_joint_stage_definition",
             joint_builder,
         ), patch(
-            "lib_pano.human_fitting.staged_lm.stages.run_stage",
+            "lib_pano.human_fitting.staged_lm.pipeline.run_stage",
             side_effect=outcomes,
         ):
             run_stage2(context, SimpleNamespace(), timing)

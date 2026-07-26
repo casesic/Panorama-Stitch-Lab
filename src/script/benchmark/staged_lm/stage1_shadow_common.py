@@ -15,7 +15,7 @@ from lib_pano.human_fitting.staged_lm.analytic_stage1 import (
 )
 from lib_pano.human_fitting.staged_lm.irls import compute_irls_point_weights
 from lib_pano.human_fitting.staged_lm.types import NormalEquations
-from lib_pano.human_fitting.staged_lm.lm_solver import (
+from lib_pano.human_fitting.staged_lm.lm.equations import (
     compute_scaled_gradient, normal_equations_max_diagonal,
     normal_equations_quadratic_form, solve_normal_equations,
 )

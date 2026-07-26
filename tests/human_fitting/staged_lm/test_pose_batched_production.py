@@ -15,13 +15,12 @@ from helpers import synthetic_joint_parameters, synthetic_stage2_context
 from lib_pano.human_fitting.staged_lm.config import PRODUCTION_POSE_LINEARIZATION
 from lib_pano.human_fitting.staged_lm.irls import build_primary_aggregation_spec
 from lib_pano.human_fitting.staged_lm.stage2_shared_cache import build_stage2_shared_geometry_cache
-from lib_pano.human_fitting.staged_lm.stage2_pose_fast import (
-    build_stage2_pose_fast_cache, fast_raw_groups,
-)
-from lib_pano.human_fitting.staged_lm.stage2_pose_jacobian import (
+from lib_pano.human_fitting.staged_lm.pose.cache import build_stage2_pose_fast_cache
+from lib_pano.human_fitting.staged_lm.pose.forward import fast_raw_groups
+from lib_pano.human_fitting.staged_lm.pose.derivatives import (
     build_stage2_pose_analytic_linearization,
 )
-from lib_pano.human_fitting.staged_lm.stage2_pose_batched import (
+from lib_pano.human_fitting.staged_lm.pose.batched import (
     Stage2PoseBatchLayout,
     build_stage2_pose_batch_cache,
     build_stage2_pose_batched_linearization,
@@ -89,19 +88,19 @@ def test_batched_linearization_keeps_serial_reference_functions() -> None:
     production = build_stage2_pose_batched_linearization(
         fast, batch, parameters, anchors, scale, **kwargs,
     )
-    assert production["jacobian_backend"] == "analytic_stage2_pose_batched"
-    assert production["linearization_backend"] == "direct_normal_equations_batched_full_group"
-    assert production["weight_stats"] == serial["weight_stats"]
-    assert production["spec"] == serial["spec"]
+    assert production.provenance.jacobian_backend == "analytic_stage2_pose_batched"
+    assert production.provenance.linearization_backend == "direct_normal_equations_batched_full_group"
+    assert production.weight_stats == serial.weight_stats
+    assert production.aggregation_spec == serial.aggregation_spec
     torch.testing.assert_close(
-        production["surrogate_fn"](parameters), serial["surrogate_fn"](parameters),
+        production.surrogate(parameters), serial.surrogate(parameters),
         rtol=0, atol=0,
     )
     torch.testing.assert_close(
-        production["jacobian_fn"](parameters), serial["jacobian_fn"](parameters),
+        production.jacobian(parameters), serial.jacobian(parameters),
         rtol=0, atol=0,
     )
-    equations = production["normal_equations_fn"](parameters)
+    equations = production.normal_equations(parameters)
     assert equations.hessian.dtype == equations.gradient.dtype == torch.float64
     assert equations.hessian.shape == (150, 150)
     assert fast.batched_normal_equations_calls == 1
@@ -109,7 +108,10 @@ def test_batched_linearization_keeps_serial_reference_functions() -> None:
 
 
 def test_architecture_and_provenance() -> None:
-    production = Path(__file__).parents[3] / "src/lib_pano/human_fitting/staged_lm/stage2_pose_batched.py"
+    production = (
+        Path(__file__).parents[3]
+        / "src/lib_pano/human_fitting/staged_lm/pose/batched.py"
+    )
     text = production.read_text()
     assert "script.benchmark" not in text
     assert "script.validation" not in text

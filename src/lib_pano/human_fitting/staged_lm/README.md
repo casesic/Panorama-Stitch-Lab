@@ -34,24 +34,103 @@ Production 只保留一条受支持的执行路径。应用、正确性验证和
 - `residuals.py`：重投影残差展开和原始像素 metrics。
 - `irls.py`：由 observation 元数据构建静态聚合规格、Charbonnier IRLS 和冻结权重的
   surrogate 构建。
-- `lm_solver.py`：通用 LM 流程，以及 dense/structured 法向方程求解分派。
+- `linearization.py`：Stage 与 solver 之间唯一正式、不可变且可类型检查的
+  `Linearization` 合同。
+- `geometry/so3.py`：Stage1/Pose/Joint 共用的 Rodrigues、SO(3) right Jacobian
+  和旋转点 Jacobian。
+- `geometry/erp.py`：统一 cam2 三维坐标约定下的 ERP 投影和解析投影 Jacobian。
+- `lm/equations.py`：Jacobian、H/g，以及 dense/structured 求解分派。
+- `lm/trial.py`：predicted/actual reduction、rho 和 trial record。
+- `lm/convergence.py`：damping 更新、收敛判断和 legacy no-accepted 状态。
+- `lm/runner.py`：使用显式局部变量实现通用 LM 主状态机。
 - `analytic_stage1.py`：Stage 1 快速前向、解析 Jacobian 和 direct H/g。
-- `stage2_pose_fast.py`：beta 固定时的 selected-vertex pose 前向和 objective。
-- `stage2_pose_batched.py`：Pose FULL_BATCH 几何、解析 Jacobian，以及 FP64 batched
-  H/g 和 production-order frame reduction。
+- `pose/cache.py`：Pose 模型、观测 selected rows、serial/batch cache 与布局。
+- `pose/forward.py`：beta 固定时 rotations → pose blend → FK → selected LBS →
+  ERP residual 的无导数阅读链。
+- `pose/derivatives.py`：Pose serial/reference 解析链及 dense H/g。
+- `pose/objective.py`：Pose true objective、raw metrics 和对应 timing/counters。
+- `pose/batched.py`：Pose FULL_BATCH 几何、解析 Jacobian，以及 FP64 batched H/g
+  和 production-order frame reduction。
 - `stage2_shared_cache.py`：Pose/Joint 共用的不可变 observation、posedirs rows、
   LBS weights rows 和模型布局。
-- `stage2_pose_jacobian.py`：Stage 2 pose 解析 Jacobian 和 direct H/g。
-- `stage2_joint_fast.py`：动态 beta selected-vertex 前向和 objective。
-- `stage2_joint_beta_jacobian.py`：physical beta 与 beta latent 的解析导数。
-- `stage2_joint_jacobian.py`：合并 pose/beta 解析 Jacobian 和 direct arrowhead
-  H/g 累计。
-- `stage2_joint_batched.py`：正式 Joint FULL_BATCH geometry/Jacobian 与 FP64
-  Arrowhead normal equations；不提供运行时 backend 选择。
+- `joint/cache.py`：Joint 模型、selected rows、serial cache 与 timing counters。
+- `joint/shape.py`：beta latent → physical beta → dynamic joints。
+- `joint/forward.py`：dynamic shape → rotations/FK/LBS → ERP residual value链。
+- `joint/beta_derivatives.py`：独立 beta-only 解析 reference链。
+- `joint/derivatives.py`：combined frame/beta 解析 Jacobian链。
+- `joint/objective.py`：Joint objective、anchors、terms 与 metrics。
+- `joint/arrowhead.py`：serial Arrowhead A/B/C/g 与 Linearization绑定。
+- `joint/batched.py`：production FULL_BATCH geometry/Jacobian 与 FP64 Arrowhead H/g。
 - `arrowhead_schur.py`：shared-beta arrowhead 系统和带 LM damping 的 Schur 求解。
-- `stages.py`：固定的正式 Stage 构建、轻量 state-only handoff 和执行流程。
+- `stage_runtime.py`：通用单 Stage 执行与 LM 调用。
+- `stage_definitions/rigid.py`：Stage 1 刚体 definition 构建。
+- `stage_definitions/pose.py`：Pose warmup definition 构建。
+- `stage_definitions/joint.py`：Joint pose/beta definition 构建。
+- `stage_handoff.py`：参数状态传递与 state-only handoff 检查。
+- `stage_timing.py`：preparation/cache timing 写入。
+- `pipeline.py`：Stage 2 Pose/Joint 编排。
 - `data_loading.py`：输入数据读取和 StageContext 构建。
 - `output.py`：正式结果数组、objective breakdown，以及 JSON/NPZ 序列化。
+
+## Code map 与 reading guide
+
+推荐按以下顺序阅读：
+
+1. `pipeline.py`：Stage 2 编排；
+2. `stage_runtime.py`：通用单 Stage 执行；
+3. `stage_definitions/rigid.py`；
+4. `stage_definitions/pose.py`；
+5. `pose/cache.py` → `pose/forward.py` → `pose/derivatives.py`；
+6. `pose/objective.py` → `pose/batched.py`；
+5. `stage_definitions/joint.py`；
+6. `stage_handoff.py`；
+7. `stage_timing.py`；
+8. `linearization.py`；
+9. `lm/equations.py`；
+10. `lm/trial.py`；
+11. `lm/convergence.py`；
+12. `lm/runner.py`；
+13. `stage_runtime.py`；
+9. `linearization.py`；
+10. `geometry/so3.py`、`geometry/erp.py`；
+11. Stage kernels；
+12. `arrowhead_schur.py`。
+
+## Stage construction map
+
+代码按职责从 `stage_runtime`、`stage_definitions.*`、`stage_handoff`
+和 `pipeline` 导入。仓库不再支持重构前的 `stage2_pose_*`、
+`stage2_joint_*`、`lm_solver` 或 `stages` import 路径。
+
+数学公式与具体函数的一一对应见
+`docs/Architecture/staged_lm/math_to_code.md`，总体数据流见
+`docs/Architecture/staged_lm/overview.md`。
+
+## Mathematical kernels
+
+公共 SO(3) 和 ERP 数学只在 `geometry/` 中实现。`analytic_stage1.py` 仅保留旧名称
+的兼容 re-export，production Stage2 直接使用 `skew`、
+`project_unified_erp` 和 `project_unified_erp_with_jacobian` 等 canonical API。
+
+## Linearization contract
+
+`Linearization` 是 solver 与 Stage 之间唯一正式合同，包含：
+
+- `surrogate`；
+- 可选 `jacobian`；
+- 可选 `normal_equations`；
+- `weight_stats` 和 `aggregation_spec`；
+- 不改变输出值的 backend provenance。
+
+求解器优先使用 direct normal equations；没有 direct H/g 时使用 analytic
+Jacobian；两者都没有时通过 `torch.func.jacfwd` 对 surrogate 求 Jacobian。
+`Linearization` 不实现 `dict`、`get` 或字符串索引接口。
+
+Within one LM solve, the current true-objective Python scalar is carried
+across accepted states. Candidate objectives are still evaluated exactly
+once, while accepted rechecks, the next outer iteration and the final result
+reuse that exact value. This is local state transition bookkeeping, not
+general parameter memoization.
 
 正式 application 和 argparse 层位于：
 

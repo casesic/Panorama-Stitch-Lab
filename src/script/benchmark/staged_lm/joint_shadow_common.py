@@ -9,8 +9,8 @@ from typing import Any
 import torch
 
 from lib_pano.human_fitting.staged_lm.irls import compute_irls_point_weights
-from lib_pano.human_fitting.staged_lm.stage2_joint_fast import joint_fast_raw_groups,evaluate_joint_shape_state
-from lib_pano.human_fitting.staged_lm.stage2_joint_jacobian import (
+from lib_pano.human_fitting.staged_lm.joint import joint_fast_raw_groups,evaluate_joint_shape_state
+from lib_pano.human_fitting.staged_lm.joint import (
     build_stage2_joint_analytic_linearization,joint_group_raw_residual_and_jacobians,
 )
 from lib_pano.human_fitting.staged_lm.types import NormalEquations, StageDefinition

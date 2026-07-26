@@ -1,4 +1,11 @@
-"""Dynamic-beta selected-vertex forward for Stage 2 joint diagnostics."""
+"""Static and observation-dependent cache construction for Stage 2 Joint.
+
+Purpose: own model/cache dataclasses, selected immutable rows, layout
+validation, timing counters, and serial cache preparation.
+Mathematical scope stops before latent-beta mapping and dynamic shape.
+This module does not implement FK, LBS, ERP, Jacobians, objectives, H/g, or
+Schur solving. Read :mod:`.shape` next.
+"""
 
 from __future__ import annotations
 
@@ -7,20 +14,11 @@ from dataclasses import dataclass
 from typing import Any
 
 import torch
-from smplx.lbs import batch_rigid_transform, blend_shapes, vertices2joints
+from smplx.lbs import blend_shapes, vertices2joints
 
-from .analytic_stage1 import project_cam2_erp
-from .config import STAGE1_PER_FRAME_DIM
-from .irls import compute_primary_charbonnier_tensor
-from .parameter_layout import unpack_frame_parameters
-from .residuals import flatten_reprojection_groups, raw_reproj_metrics
-from .stage2_pose_fast import (
-    assemble_full_pose_rotations,
-    compute_selected_lbs,
-    compute_selected_pose_offsets,
-)
-from .stage2_shared_cache import Stage2SharedGeometryCache
-from .types import ReprojectionGroup, StageContext
+from ..config import STAGE1_PER_FRAME_DIM
+from ..stage2_shared_cache import Stage2SharedGeometryCache
+from ..types import StageContext
 
 
 @dataclass
@@ -53,15 +51,6 @@ class Stage2JointFrameCameraCache:
     selected_beta_shapedirs: torch.Tensor
     selected_posedirs: torch.Tensor
     selected_lbs_weights: torch.Tensor
-
-
-@dataclass
-class Stage2JointShapeState:
-    beta: torch.Tensor
-    d_beta_d_latent: torch.Tensor
-    joints: torch.Tensor
-    d_joints_d_beta: torch.Tensor
-    d_joints_d_latent: torch.Tensor
 
 
 @dataclass
@@ -171,6 +160,7 @@ class Stage2JointFastCache:
                        pose_anchor_scale: float, shape_anchor_scale: float,
                        objective_mode: str, charbonnier_eps: float, rep_scale: float,
                        aggregation_spec: dict[str, Any] | None) -> torch.Tensor:
+        from .objective import stage2_joint_fast_true_objective
         return stage2_joint_fast_true_objective(
             self, parameters, beta_abs_limit, beta_anchor, body_pose_anchors,
             pose_anchor_scale, shape_anchor_scale, objective_mode,
@@ -178,6 +168,7 @@ class Stage2JointFastCache:
         )
 
     def raw_metrics(self, parameters: torch.Tensor, beta_abs_limit: float) -> dict[str, float]:
+        from .objective import stage2_joint_fast_raw_metrics
         return stage2_joint_fast_raw_metrics(self, parameters, beta_abs_limit)
 
 
@@ -249,212 +240,3 @@ def build_stage2_joint_fast_cache(
         (time.perf_counter() - start) * 1000.0, context.args.profile_timing,
     )
 
-
-def physical_beta_from_latent(
-    beta_latent: torch.Tensor, beta_abs_limit: float,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    latent = beta_latent.reshape(-1)
-    tanh = torch.tanh(latent)
-    beta = beta_abs_limit * tanh
-    derivative = beta_abs_limit * (1 - tanh.square())
-    if not torch.isfinite(beta).all() or not torch.isfinite(derivative).all():
-        raise RuntimeError("NONFINITE_STAGE2_JOINT_BETA_MAPPING")
-    return beta, derivative
-
-
-def evaluate_joint_shape_state(
-    cache: Stage2JointFastCache, beta_latent: torch.Tensor, beta_abs_limit: float,
-) -> Stage2JointShapeState:
-    if beta_latent.numel() != cache.model.beta_dim:
-        raise ValueError("Stage 2 joint beta latent dimension mismatch")
-    _sync(cache, beta_latent); start = time.perf_counter()
-    beta, derivative = physical_beta_from_latent(beta_latent, beta_abs_limit)
-    d_joints = cache.model.d_joints_d_beta.to(beta_latent)
-    joints = cache.model.base_joints.to(beta_latent) + torch.einsum("jcb,b->jc", d_joints, beta)
-    result = Stage2JointShapeState(
-        beta, derivative, joints, d_joints,
-        d_joints * derivative.reshape(1, 1, -1),
-    )
-    _sync(cache, beta_latent)
-    cache.shape_state_ms += (time.perf_counter() - start) * 1000.0
-    cache.shape_state_calls += 1
-    return result
-
-
-def evaluate_joint_group_state(
-    cache: Stage2JointFastCache,
-    camera_cache: Stage2JointFrameCameraCache,
-    shape_state: Stage2JointShapeState,
-    global_orient: torch.Tensor,
-    translation: torch.Tensor,
-    body_pose: torch.Tensor,
-) -> dict[str, torch.Tensor]:
-    rotations = assemble_full_pose_rotations(
-        global_orient, body_pose, camera_cache.left_hand_pose.to(global_orient),
-        camera_cache.right_hand_pose.to(global_orient), cache.model,
-    )
-    pose_offsets, pose_feature = compute_selected_pose_offsets(
-        rotations, camera_cache.selected_posedirs.to(global_orient),
-    )
-    selected_v_shaped = camera_cache.selected_base_v_shaped.to(global_orient) + torch.einsum(
-        "ncb,b->nc", camera_cache.selected_beta_shapedirs.to(global_orient), shape_state.beta,
-    )
-    selected_v_posed = selected_v_shaped + pose_offsets
-    posed_joints, relative_transforms = batch_rigid_transform(
-        rotations.unsqueeze(0), shape_state.joints.unsqueeze(0),
-        cache.model.parents.to(global_orient.device), dtype=global_orient.dtype,
-    )
-    skinned, selected_transforms = compute_selected_lbs(
-        selected_v_posed, camera_cache.selected_lbs_weights.to(global_orient),
-        relative_transforms[0],
-    )
-    final = skinned * camera_cache.scale.to(global_orient).reshape(1, 1) + translation.reshape(1, 3)
-    return {
-        "physical_beta": shape_state.beta,
-        "selected_v_shaped": selected_v_shaped, "joints": shape_state.joints,
-        "rotations": rotations, "pose_feature": pose_feature,
-        "selected_pose_offsets": pose_offsets, "selected_v_posed": selected_v_posed,
-        "relative_transforms": relative_transforms[0], "posed_joints": posed_joints[0],
-        "selected_transforms": selected_transforms,
-        "selected_skinned_vertices": skinned, "final_selected_vertices": final,
-    }
-
-
-def joint_fast_selected_vertices(
-    cache: Stage2JointFastCache, camera_cache: Stage2JointFrameCameraCache,
-    shape_state: Stage2JointShapeState, global_orient: torch.Tensor,
-    translation: torch.Tensor, body_pose: torch.Tensor, *, return_intermediates: bool = False,
-):
-    state = evaluate_joint_group_state(
-        cache, camera_cache, shape_state, global_orient, translation, body_pose,
-    )
-    return (state["final_selected_vertices"], state) if return_intermediates else state["final_selected_vertices"]
-
-
-def joint_fast_raw_groups(
-    cache: Stage2JointFastCache, parameters: torch.Tensor, beta_abs_limit: float,
-) -> list[ReprojectionGroup]:
-    per_frame_dim, _ = validate_stage2_joint_layout(cache, parameters)
-    shape_state = evaluate_joint_shape_state(cache, parameters[-cache.model.beta_dim:], beta_abs_limit)
-    groups = []
-    for camera_cache in cache.groups:
-        frame = unpack_frame_parameters(parameters, camera_cache.frame_position, per_frame_dim, True)
-        orient = frame.cam2_orient if camera_cache.camera == "cam2" else frame.cam4_orient
-        translation = frame.cam2_transl if camera_cache.camera == "cam2" else frame.cam4_transl
-        vertices = joint_fast_selected_vertices(
-            cache, camera_cache, shape_state, orient.reshape(3), translation.reshape(3),
-            frame.body_pose.reshape(-1),
-        )
-        uv = project_cam2_erp(vertices, cache.image_width, cache.image_height)
-        groups.append(ReprojectionGroup(
-            camera_cache.frame_index, camera_cache.camera,
-            uv - camera_cache.targets.to(parameters),
-        ))
-    return groups
-
-
-def joint_fast_raw_residual(
-    cache: Stage2JointFastCache, parameters: torch.Tensor, beta_abs_limit: float,
-) -> torch.Tensor:
-    _sync(cache, parameters); start = time.perf_counter()
-    result = torch.cat([
-        group.residual_2d.reshape(-1)
-        for group in joint_fast_raw_groups(cache, parameters, beta_abs_limit)
-    ])
-    _sync(cache, parameters)
-    cache.residual_ms += (time.perf_counter() - start) * 1000.0
-    cache.residual_calls += 1
-    return result
-
-
-def _joint_anchor_residuals(
-    cache: Stage2JointFastCache, parameters: torch.Tensor, beta_abs_limit: float,
-    beta_anchor: torch.Tensor, body_pose_anchors: list[torch.Tensor],
-    pose_anchor_scale: float, shape_anchor_scale: float,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    per_frame_dim, _ = validate_stage2_joint_layout(cache, parameters)
-    pose = torch.cat([
-        (parameters[f * per_frame_dim + STAGE1_PER_FRAME_DIM:(f + 1) * per_frame_dim]
-         - body_pose_anchors[f].to(parameters)) * pose_anchor_scale
-        for f in range(cache.frame_count)
-    ])
-    beta, _ = physical_beta_from_latent(parameters[-cache.model.beta_dim:], beta_abs_limit)
-    shape = (beta - beta_anchor.to(parameters)) * shape_anchor_scale
-    return pose, shape
-
-
-def stage2_joint_fast_true_objective(
-    cache: Stage2JointFastCache, parameters: torch.Tensor, beta_abs_limit: float,
-    beta_anchor: torch.Tensor, body_pose_anchors: list[torch.Tensor],
-    pose_anchor_scale: float, shape_anchor_scale: float,
-    objective_mode: str, charbonnier_eps: float, rep_scale: float,
-    aggregation_spec: dict[str, Any] | None,
-) -> torch.Tensor:
-    return _stage2_joint_fast_objective_terms(
-        cache, parameters, beta_abs_limit, beta_anchor, body_pose_anchors,
-        pose_anchor_scale, shape_anchor_scale, objective_mode,
-        charbonnier_eps, rep_scale, aggregation_spec, record_timing=True,
-    )["total"]
-
-
-def stage2_joint_fast_objective_terms(
-    cache: Stage2JointFastCache, parameters: torch.Tensor, beta_abs_limit: float,
-    beta_anchor: torch.Tensor, body_pose_anchors: list[torch.Tensor],
-    pose_anchor_scale: float, shape_anchor_scale: float,
-    objective_mode: str, charbonnier_eps: float, rep_scale: float,
-    aggregation_spec: dict[str, Any] | None,
-) -> dict[str, torch.Tensor]:
-    """Evaluate all joint objective terms with one dynamic selected forward."""
-    return _stage2_joint_fast_objective_terms(
-        cache, parameters, beta_abs_limit, beta_anchor, body_pose_anchors,
-        pose_anchor_scale, shape_anchor_scale, objective_mode,
-        charbonnier_eps, rep_scale, aggregation_spec, record_timing=False,
-    )
-
-
-def _stage2_joint_fast_objective_terms(
-    cache: Stage2JointFastCache, parameters: torch.Tensor, beta_abs_limit: float,
-    beta_anchor: torch.Tensor, body_pose_anchors: list[torch.Tensor],
-    pose_anchor_scale: float, shape_anchor_scale: float,
-    objective_mode: str, charbonnier_eps: float, rep_scale: float,
-    aggregation_spec: dict[str, Any] | None,
-    *, record_timing: bool,
-) -> dict[str, torch.Tensor]:
-    if record_timing:
-        _sync(cache, parameters)
-    start = time.perf_counter()
-    groups = joint_fast_raw_groups(cache, parameters, beta_abs_limit)
-    if objective_mode == "charbonnier_irls":
-        if aggregation_spec is None: raise ValueError("aggregation spec required")
-        primary = compute_primary_charbonnier_tensor(groups, charbonnier_eps, aggregation_spec)
-    elif objective_mode == "raw_l2":
-        raw = flatten_reprojection_groups(groups) * rep_scale
-        primary = .5 * torch.sum(raw.square())
-    else: raise ValueError(objective_mode)
-    pose, shape = _joint_anchor_residuals(
-        cache, parameters, beta_abs_limit, beta_anchor, body_pose_anchors,
-        pose_anchor_scale, shape_anchor_scale,
-    )
-    pose_anchor = .5 * torch.sum(pose.square())
-    shape_anchor = .5 * torch.sum(shape.square())
-    result = {
-        "primary": primary,
-        "pose_anchor": pose_anchor,
-        "shape_anchor": shape_anchor,
-        "total": primary + pose_anchor + shape_anchor,
-    }
-    if record_timing:
-        _sync(cache, parameters)
-        cache.objective_ms += (time.perf_counter()-start)*1000
-        cache.objective_calls += 1
-    return result
-
-
-def stage2_joint_fast_raw_metrics(
-    cache: Stage2JointFastCache, parameters: torch.Tensor, beta_abs_limit: float,
-) -> dict[str, float]:
-    _sync(cache, parameters); start=time.perf_counter()
-    result=raw_reproj_metrics(flatten_reprojection_groups(
-        joint_fast_raw_groups(cache,parameters,beta_abs_limit)).detach())
-    _sync(cache, parameters); cache.metrics_ms+=(time.perf_counter()-start)*1000; cache.metrics_calls+=1
-    return result

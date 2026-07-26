@@ -7,7 +7,10 @@ from typing import Any
 import numpy as np
 import torch
 if __package__ in (None,""):sys.path.insert(0,str(Path(__file__).resolve().parents[3]))
-from lib_pano.human_fitting.staged_lm.stages import build_stage1_definition,build_pose_stage_definition,build_joint_stage_definition,run_stage
+from lib_pano.human_fitting.staged_lm.stage_definitions.joint import build_joint_stage_definition
+from lib_pano.human_fitting.staged_lm.stage_definitions.pose import build_pose_stage_definition
+from lib_pano.human_fitting.staged_lm.stage_definitions.rigid import build_stage1_definition
+from lib_pano.human_fitting.staged_lm.stage_runtime import run_stage
 from lib_pano.human_fitting.staged_lm.stage2_shared_cache import build_stage2_shared_geometry_cache
 from script.human_fitting.staged_lm.app import build_context
 from script.human_fitting.staged_lm.cli import build_argument_parser

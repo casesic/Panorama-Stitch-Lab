@@ -11,7 +11,7 @@ import torch
 
 from helpers import synthetic_joint_parameters, synthetic_stage2_context
 from lib_pano.human_fitting.staged_lm.stage2_shared_cache import build_stage2_shared_geometry_cache
-from lib_pano.human_fitting.staged_lm.stage2_pose_fast import build_stage2_pose_fast_cache
+from lib_pano.human_fitting.staged_lm.pose.cache import build_stage2_pose_fast_cache
 from script.benchmark.staged_lm.pose_batch_candidates import (
     batched_pose_group_analytic, batched_pose_hg, batched_pose_objective,
     build_pose_group_batch, gather_pose_batch_parameters,
@@ -105,4 +105,3 @@ if __name__=="__main__":
     test_g1_cam2_cam4_and_g2_mapping();test_rotation_branch_and_internal_diagnostics();test_frame_body_pose_required()
     test_float32_ulp_signed_zero_and_nonfinite();test_classification_and_gates_are_independent()
     print("[PASS] Pose operator ablation")
-

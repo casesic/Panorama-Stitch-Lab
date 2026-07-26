@@ -6,7 +6,7 @@ from enum import Enum
 
 import torch
 
-from lib_pano.human_fitting.staged_lm.stage2_joint_batched import (
+from lib_pano.human_fitting.staged_lm.joint.batched import (
     Stage2JointBatchAnalyticResult as JointBatchAnalyticResult,
     Stage2JointBatchCache as JointBatchCache,
     Stage2JointBatchLayout as JointBatchLayout,
@@ -19,13 +19,13 @@ from lib_pano.human_fitting.staged_lm.stage2_joint_batched import (
     stage2_joint_batched_group_analytic,
     stage2_joint_batched_normal_equations,
 )
-from lib_pano.human_fitting.staged_lm.stage2_joint_fast import (
+from lib_pano.human_fitting.staged_lm.joint import (
     Stage2JointFastCache,
     evaluate_joint_shape_state,
     physical_beta_from_latent,
 )
 from lib_pano.human_fitting.staged_lm.arrowhead_schur import ArrowheadNormalEquationSystem
-from lib_pano.human_fitting.staged_lm.stage2_joint_jacobian import (
+from lib_pano.human_fitting.staged_lm.joint import (
     joint_group_raw_residual_and_jacobians,
     stage2_joint_arrowhead_normal_equations,
 )

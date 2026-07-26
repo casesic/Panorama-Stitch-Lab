@@ -8,8 +8,13 @@ from typing import Any
 import torch
 
 from lib_pano.human_fitting.staged_lm.analytic_stage1 import (
-    Stage1AnalyticCache, _skew, axis_angle_to_matrix,
-    project_cam2_erp_with_jacobian, so3_right_jacobian,
+    Stage1AnalyticCache,
+)
+from lib_pano.human_fitting.staged_lm.geometry.erp import (
+    project_unified_erp_with_jacobian,
+)
+from lib_pano.human_fitting.staged_lm.geometry.so3 import (
+    axis_angle_to_matrix, skew, so3_right_jacobian,
 )
 from lib_pano.human_fitting.staged_lm.irls import compute_primary_charbonnier_tensor
 from lib_pano.human_fitting.staged_lm.types import ReprojectionGroup
@@ -126,10 +131,10 @@ def stage1_batched_group_analytic(
     points = points + batch.rotation_centers[:, None] + packed.group_translations[:, None]
     right = so3_right_jacobian(packed.group_orientations)
     rotated = -torch.einsum(
-        "gij,gnjk,gkl->gnil", rotations, _skew(batch.local_vertices), right,
+        "gij,gnjk,gkl->gnil", rotations, skew(batch.local_vertices), right,
     )
     g, n = points.shape[:2]
-    uv, projection = project_cam2_erp_with_jacobian(
+    uv, projection = project_unified_erp_with_jacobian(
         points.reshape(g * n, 3), image_width, image_height,
     )
     uv = uv.reshape(g, n, 2)
@@ -225,9 +230,9 @@ def profile_stage1_group_production(cache, group, parameters):
     orient,translation=timed("A_parameter_unpack",lambda:(parameters[offset:offset+3],parameters[offset+3:offset+6]))
     rotation=timed("B_rotation_value",lambda:axis_angle_to_matrix(orient))
     right=timed("C_right_jacobian",lambda:so3_right_jacobian(orient))
-    rotated=timed("D_rotated_point_jacobian",lambda:-torch.einsum("ij,njk,kl->nil",rotation,_skew(group.local_vertices),right))
+    rotated=timed("D_rotated_point_jacobian",lambda:-torch.einsum("ij,njk,kl->nil",rotation,skew(group.local_vertices),right))
     points=timed("E_vertex_transform",lambda:group.local_vertices@rotation.T+group.rotation_center+translation)
-    uv,projection=timed("F_G_erp_projection_value_jacobian",lambda:project_cam2_erp_with_jacobian(points,cache.image_width,cache.image_height))
+    uv,projection=timed("F_G_erp_projection_value_jacobian",lambda:project_unified_erp_with_jacobian(points,cache.image_width,cache.image_height))
     local=timed("H_local_jacobian_assembly",lambda:torch.cat((torch.einsum("nij,njk->nik",projection,rotated),projection),-1))
     residual=(uv-group.targets).reshape(-1);j=local.reshape(-1,6)
     timed("J_group_hessian_gradient",lambda:(j.to(torch.float64).T@j.to(torch.float64),j.to(torch.float64).T@residual.to(torch.float64)))

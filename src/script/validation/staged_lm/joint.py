@@ -15,19 +15,21 @@ from smplx.lbs import batch_rigid_transform, blend_shapes, vertices2joints
 from script.human_fitting.staged_lm.app import build_context
 from lib_pano.human_fitting.staged_lm.irls import build_primary_aggregation_spec, compute_primary_charbonnier_tensor
 from lib_pano.human_fitting.staged_lm.residuals import flatten_reprojection_groups
-from lib_pano.human_fitting.staged_lm.stage2_joint_fast import build_stage2_joint_fast_cache, evaluate_joint_shape_state, joint_fast_raw_groups, joint_fast_selected_vertices, physical_beta_from_latent
-from lib_pano.human_fitting.staged_lm.stage2_joint_beta_jacobian import joint_fast_selected_vertices_with_beta_jacobian, joint_group_raw_residual_and_beta_jacobian, joint_surrogate_residual_and_beta_jacobian
-from lib_pano.human_fitting.staged_lm.stage2_pose_fast import assemble_full_pose_rotations
-from lib_pano.human_fitting.staged_lm.stages import build_pose_stage_definition, build_stage1_definition, run_stage
+from lib_pano.human_fitting.staged_lm.joint import build_stage2_joint_fast_cache, evaluate_joint_shape_state, joint_fast_raw_groups, joint_fast_selected_vertices, physical_beta_from_latent
+from lib_pano.human_fitting.staged_lm.joint.beta_derivatives import joint_fast_selected_vertices_with_beta_jacobian, joint_group_raw_residual_and_beta_jacobian, joint_surrogate_residual_and_beta_jacobian
+from lib_pano.human_fitting.staged_lm.pose.forward import assemble_full_pose_rotations
+from lib_pano.human_fitting.staged_lm.stage_definitions.pose import build_pose_stage_definition
+from lib_pano.human_fitting.staged_lm.stage_definitions.rigid import build_stage1_definition
+from lib_pano.human_fitting.staged_lm.stage_runtime import run_stage
 from lib_pano.human_fitting.smplx_sequence import forward_smplx_tensor_batch
 import argparse, time
 from lib_pano.human_fitting.staged_lm.types import ReprojectionGroup
-from lib_pano.human_fitting.staged_lm.stage2_joint_fast import build_stage2_joint_fast_cache, joint_fast_raw_groups, joint_fast_raw_residual
-from lib_pano.human_fitting.staged_lm.stage2_joint_beta_jacobian import joint_explicit_raw_beta_jacobian
-from lib_pano.human_fitting.staged_lm.stage2_joint_jacobian import joint_explicit_raw_global_jacobian, joint_group_raw_residual_and_jacobians, joint_surrogate_residual_and_jacobian
-from lib_pano.human_fitting.staged_lm.stage2_pose_fast import build_stage2_pose_fast_cache
+from lib_pano.human_fitting.staged_lm.joint import build_stage2_joint_fast_cache, joint_fast_raw_groups, joint_fast_raw_residual
+from lib_pano.human_fitting.staged_lm.joint.beta_derivatives import joint_explicit_raw_beta_jacobian
+from lib_pano.human_fitting.staged_lm.joint import joint_explicit_raw_global_jacobian, joint_group_raw_residual_and_jacobians, joint_surrogate_residual_and_jacobian
+from lib_pano.human_fitting.staged_lm.pose.cache import build_stage2_pose_fast_cache
 from lib_pano.human_fitting.staged_lm.stage2_shared_cache import build_stage2_shared_geometry_cache
-from lib_pano.human_fitting.staged_lm.stage2_pose_jacobian import stage2_pose_group_raw_residual_and_jacobian
+from lib_pano.human_fitting.staged_lm.pose.derivatives import stage2_pose_group_raw_residual_and_jacobian
 
 
 def joint_beta_context_args(cli):
@@ -430,10 +432,13 @@ def run_all_joint_jacobian_validations(args) -> None:
 def run_joint_production_shadow(args) -> int:
     """Concise serial-Joint versus FULL_BATCH shadow solver gate."""
     import contextlib, io
-    from lib_pano.human_fitting.staged_lm.lm_solver import run_lm_optimization
-    from lib_pano.human_fitting.staged_lm.stage2_joint_jacobian import build_stage2_joint_analytic_linearization
+    from lib_pano.human_fitting.staged_lm.lm.runner import run_lm_optimization
+    from lib_pano.human_fitting.staged_lm.joint import build_stage2_joint_analytic_linearization
     from lib_pano.human_fitting.staged_lm.stage2_shared_cache import build_stage2_shared_geometry_cache
-    from lib_pano.human_fitting.staged_lm.stages import build_stage1_definition, build_pose_stage_definition, build_joint_stage_definition, run_stage
+    from lib_pano.human_fitting.staged_lm.stage_definitions.joint import build_joint_stage_definition
+    from lib_pano.human_fitting.staged_lm.stage_definitions.pose import build_pose_stage_definition
+    from lib_pano.human_fitting.staged_lm.stage_definitions.rigid import build_stage1_definition
+    from lib_pano.human_fitting.staged_lm.stage_runtime import run_stage
     from script.benchmark.staged_lm.joint_batch_candidates import JointNEMode, build_joint_batch_cache
     from script.benchmark.staged_lm.joint_shadow_lm import compare_joint_lm_results, run_joint_lm_independent_batch
     context=build_context(joint_jacobian_context_args(args))

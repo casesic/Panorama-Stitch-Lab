@@ -90,11 +90,11 @@ from lib_pano.human_fitting.staged_lm.output import (
     lm_result_to_json,
     save_experiment_outputs,
 )
-from lib_pano.human_fitting.staged_lm.stages import (
+from lib_pano.human_fitting.staged_lm.pipeline import run_stage2
+from lib_pano.human_fitting.staged_lm.stage_definitions.rigid import (
     build_stage1_definition,
-    run_stage,
-    run_stage2,
 )
+from lib_pano.human_fitting.staged_lm.stage_runtime import run_stage
 from lib_pano.human_fitting.staged_lm.types import StageContext
 
 

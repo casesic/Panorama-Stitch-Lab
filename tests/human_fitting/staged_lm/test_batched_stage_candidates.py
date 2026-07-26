@@ -14,14 +14,15 @@ from lib_pano.human_fitting.staged_lm.analytic_stage1 import (
     _group_raw_residual_and_local_jacobian, stage1_normal_equations,
 )
 from lib_pano.human_fitting.staged_lm.stage2_shared_cache import build_stage2_shared_geometry_cache
-from lib_pano.human_fitting.staged_lm.stage2_pose_fast import (
-    build_stage2_pose_fast_cache, stage2_pose_fast_true_objective,
+from lib_pano.human_fitting.staged_lm.pose.cache import (
+    build_stage2_pose_fast_cache,
 )
-from lib_pano.human_fitting.staged_lm.stage2_pose_jacobian import (
+from lib_pano.human_fitting.staged_lm.pose.objective import stage2_pose_fast_true_objective
+from lib_pano.human_fitting.staged_lm.pose.derivatives import (
     stage2_pose_group_raw_residual_and_jacobian, stage2_pose_normal_equations,
 )
-from lib_pano.human_fitting.staged_lm.stage2_joint_fast import stage2_joint_fast_objective_terms
-from lib_pano.human_fitting.staged_lm.stage2_joint_jacobian import (
+from lib_pano.human_fitting.staged_lm.joint import stage2_joint_fast_objective_terms
+from lib_pano.human_fitting.staged_lm.joint import (
     accumulate_stage2_joint_arrowhead_system, joint_group_raw_residual_and_jacobians,
 )
 from script.benchmark.staged_lm.stage1_batch_candidates import (

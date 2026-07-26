@@ -30,11 +30,11 @@ from lib_pano.human_fitting.staged_lm.device import (  # noqa: E402
     validate_context_device,
     validate_stage_initial_parameters,
 )
-from lib_pano.human_fitting.staged_lm.lm_solver import _validate_normal_equations  # noqa: E402
+from lib_pano.human_fitting.staged_lm.lm.equations import _validate_normal_equations  # noqa: E402
 from lib_pano.human_fitting.staged_lm.parameter_layout import (  # noqa: E402
     build_stage1_initial_parameters,
 )
-from lib_pano.human_fitting.staged_lm.stages import handoff_s1_to_pose  # noqa: E402
+from lib_pano.human_fitting.staged_lm.stage_handoff import handoff_s1_to_pose  # noqa: E402
 from lib_pano.human_fitting.staged_lm.types import (  # noqa: E402
     FrameValidPoints,
     FrozenFrameParameters,

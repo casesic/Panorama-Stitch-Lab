@@ -23,6 +23,7 @@ from typing import Any, Callable
 import torch
 from torch.func import jacfwd
 
+from .linearization import Linearization
 from .residuals import flatten_reprojection_groups
 from .types import ReprojectionGroup
 
@@ -58,7 +59,7 @@ def build_primary_aggregation_spec_from_observations(
     frame_indices: list[int],
     cam2_vertex_ids_by_frame: list[torch.Tensor],
     cam4_vertex_ids_by_frame: list[torch.Tensor],
-) -> dict[str, Any]:
+) -> Linearization:
     """Build the production aggregation spec without evaluating residuals.
 
     The group order and frame-count semantics exactly match
@@ -153,12 +154,8 @@ def make_irls_linearization(
 ) -> dict[str, Any]:
     """Build an IRLS weighted-least-squares surrogate at ``linearisation_point``.
 
-    Returns a dict with:
-
-    * ``surrogate_fn`` — callable returning the weighted residual vector
-      (plus optional anchor residual) for any ``x``.
-    * ``weight_stats`` — summary statistics of the IRLS weights.
-    * ``spec`` — the aggregation spec, passed through for later reference.
+    The returned contract carries the surrogate, weight statistics and
+    aggregation specification used at this frozen-weight point.
     """
     groups_lin = raw_groups_fn(linearisation_point)
     weights = compute_irls_point_weights(groups_lin, eps, spec)
@@ -184,7 +181,11 @@ def make_irls_linearization(
             parts.append(anchor_residual_fn(x))
         return torch.cat(parts)
 
-    return {"surrogate_fn": surrogate_fn, "weight_stats": weight_stats, "spec": spec}
+    return Linearization(
+        surrogate=surrogate_fn,
+        weight_stats=weight_stats,
+        aggregation_spec=spec,
+    )
 
 
 def validate_first_order(

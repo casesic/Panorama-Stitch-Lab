@@ -7,11 +7,16 @@ from typing import Any
 
 import torch
 
-from lib_pano.human_fitting.staged_lm.lm_solver import (
+from lib_pano.human_fitting.staged_lm.lm.equations import (
     normal_equations_max_diagonal, normal_equations_quadratic_form,
-    run_lm_optimization, solve_normal_equations,
+    solve_normal_equations,
 )
-from lib_pano.human_fitting.staged_lm.stage2_joint_fast import physical_beta_from_latent
+from lib_pano.human_fitting.staged_lm.lm.runner import run_lm_optimization
+from lib_pano.human_fitting.staged_lm.linearization import (
+    Linearization,
+    LinearizationProvenance,
+)
+from lib_pano.human_fitting.staged_lm.joint import physical_beta_from_latent
 from lib_pano.human_fitting.staged_lm.types import LMResult, StageDefinition
 from script.benchmark.staged_lm.joint_batch_candidates import JointBatchCache, JointNEMode
 from script.benchmark.staged_lm.joint_shadow_common import (
@@ -59,14 +64,21 @@ class JointLockstepResult:
 def make_batched_joint_linearization(
     stage: StageDefinition, batch: JointBatchCache, context: Any,
     point: torch.Tensor, mode: JointNEMode,
-) -> dict[str,Any]:
+) -> Linearization:
     common=build_joint_shadow_linearization_common(stage,batch,context,point)
-    return {"normal_equations_fn":lambda x:evaluate_joint_equations(
-                mode,stage,batch,x,common["row_scales_by_group"],context),
-            "surrogate_fn":lambda x:x.new_empty(0),"weight_stats":common["weight_stats"],
-            "spec":common["spec"],"jacobian_backend":"analytic_stage2_joint_batched_shadow",
-            "linearization_backend":"direct_arrowhead_normal_equations_batched_shadow",
-            "linear_solver_backend":"arrowhead_schur"}
+    return Linearization(
+        surrogate=lambda x: x.new_empty(0),
+        normal_equations=lambda x: evaluate_joint_equations(
+            mode, stage, batch, x, common["row_scales_by_group"], context,
+        ),
+        weight_stats=common["weight_stats"],
+        aggregation_spec=common["spec"],
+        provenance=LinearizationProvenance(
+            jacobian_backend="analytic_stage2_joint_batched_shadow",
+            linearization_backend="direct_arrowhead_normal_equations_batched_shadow",
+            linear_solver_backend="arrowhead_schur",
+        ),
+    )
 
 
 def run_joint_lm_independent_batch(

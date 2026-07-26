@@ -1,7 +1,7 @@
 """Benchmark wrappers around the production Stage 2 Pose FULL_BATCH kernel.
 
 The stable batch geometry/Jacobian/Hg implementation lives exclusively in
-``lib_pano.human_fitting.staged_lm.stage2_pose_batched``.  This module retains
+``lib_pano.human_fitting.staged_lm.pose.batched``.  This module retains
 only objective candidates, profiling helpers, and compatibility wrappers used
 by shadow/ablation experiments.
 """
@@ -14,12 +14,13 @@ from dataclasses import replace
 
 import torch
 
-from lib_pano.human_fitting.staged_lm.analytic_stage1 import (
-    axis_angle_to_matrix, project_cam2_erp_with_jacobian,
+from lib_pano.human_fitting.staged_lm.geometry.erp import (
+    project_unified_erp_with_jacobian,
 )
+from lib_pano.human_fitting.staged_lm.geometry.so3 import axis_angle_to_matrix
 from lib_pano.human_fitting.staged_lm.irls import compute_primary_charbonnier_tensor
 from lib_pano.human_fitting.staged_lm.parameter_layout import unpack_frame_parameters
-from lib_pano.human_fitting.staged_lm.stage2_pose_batched import (
+from lib_pano.human_fitting.staged_lm.pose.batched import (
     Stage2PoseBatchCache as PoseGroupBatch,
     Stage2PoseBatchParameters as PoseBatchParameters,
     build_stage2_pose_batch_cache,
@@ -31,8 +32,8 @@ from lib_pano.human_fitting.staged_lm.stage2_pose_batched import (
     stage2_pose_batched_projection_from_vertices as batched_pose_projection_from_vertices,
     stage2_pose_batched_rotations_and_jacobians as batched_pose_rotations_and_jacobians,
 )
-from lib_pano.human_fitting.staged_lm.stage2_pose_fast import Stage2PoseFastCache
-from lib_pano.human_fitting.staged_lm.stage2_pose_jacobian import (
+from lib_pano.human_fitting.staged_lm.pose.cache import Stage2PoseFastCache
+from lib_pano.human_fitting.staged_lm.pose.derivatives import (
     assemble_full_pose_rotation_jacobians,
     compute_fk_with_jacobian,
     compute_selected_lbs_with_jacobian,
@@ -166,7 +167,7 @@ def batched_pose_residual_only(
 ) -> torch.Tensor:
     vertices = _batched_pose_values(batch, orientations, translations, body_poses)
     group_count, nmax = vertices.shape[:2]
-    uv, _ = project_cam2_erp_with_jacobian(
+    uv, _ = project_unified_erp_with_jacobian(
         vertices.reshape(-1, 3), image_width, image_height,
     )
     return (
@@ -269,7 +270,7 @@ def profile_pose_group_production(
         ),
     )
     vertices = skinned * group.scale.reshape(1, 1) + translation
-    timed("O_P_ERP_projection_value_jacobian", lambda: project_cam2_erp_with_jacobian(
+    timed("O_P_ERP_projection_value_jacobian", lambda: project_unified_erp_with_jacobian(
         vertices, cache.image_width, cache.image_height,
     ))
     sections.setdefault("Q_local_reprojection_J", 0.0)

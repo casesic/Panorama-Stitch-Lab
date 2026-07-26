@@ -9,9 +9,10 @@ from typing import Any, Iterable
 import torch
 
 from lib_pano.human_fitting.staged_lm.analytic_stage1 import (
-    Stage1AnalyticCache, _group_transform, axis_angle_to_matrix,
-    project_cam2_erp,
+    Stage1AnalyticCache, _group_transform,
 )
+from lib_pano.human_fitting.staged_lm.geometry.erp import project_unified_erp
+from lib_pano.human_fitting.staged_lm.geometry.so3 import axis_angle_to_matrix
 from script.benchmark.staged_lm.stage1_shadow_common import (
     Stage1NEMode, build_stage1_shadow_linearization_common,
     evaluate_stage1_equations,
@@ -137,8 +138,8 @@ def geometry_audit(cache: Stage1AnalyticCache, serial, candidate):
                       "translation_l2":float(td.norm())})
         ps,_=_group_transform(serial,group);pc,_=_group_transform(candidate,group)
         stats,_,_= _point_audit(ps,pc)
-        us=project_cam2_erp(ps,cache.image_width,cache.image_height)
-        uc=project_cam2_erp(pc,cache.image_width,cache.image_height)
+        us=project_unified_erp(ps,cache.image_width,cache.image_height)
+        uc=project_unified_erp(pc,cache.image_width,cache.image_height)
         raw,wrapped,changed=_uv_delta(us,uc,cache.image_width);uvnorm=wrapped.norm(dim=-1)
         target=group.targets.to(us);rs=us-target;rc=uc-target;res_delta=(rc-rs).to(torch.float64)
         uvstats=_distribution(uvnorm);worst=int(uvnorm.argmax())

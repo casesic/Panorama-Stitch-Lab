@@ -157,12 +157,12 @@ def test_irls_and_raw_l2_scaling() -> None:
     )
     raw = stage1_raw_residual(cache, parameters)
     raw_jacobian = stage1_raw_jacobian(cache, parameters)
-    irls_residual = irls["surrogate_fn"](parameters)
+    irls_residual = irls.surrogate(parameters)
     ratios = irls_residual / raw
     assert torch.allclose(ratios[0::2], ratios[1::2])
-    assert torch.allclose(irls["jacobian_fn"](parameters), raw_jacobian * ratios.unsqueeze(1))
-    equations = irls["normal_equations_fn"](parameters)
-    weighted_jacobian = irls["jacobian_fn"](parameters).to(torch.float64)
+    assert torch.allclose(irls.jacobian(parameters), raw_jacobian * ratios.unsqueeze(1))
+    equations = irls.normal_equations(parameters)
+    weighted_jacobian = irls.jacobian(parameters).to(torch.float64)
     weighted_residual = irls_residual.to(torch.float64)
     torch.testing.assert_close(
         equations.hessian, weighted_jacobian.T @ weighted_jacobian, rtol=1e-6, atol=1e-6,
@@ -175,9 +175,9 @@ def test_irls_and_raw_l2_scaling() -> None:
         cache, parameters, is_irls=False, charbonnier_eps=1.0,
         aggregation_spec=None, rep_scale=0.2,
     )
-    assert torch.allclose(l2["surrogate_fn"](parameters), raw * 0.2)
-    assert torch.allclose(l2["jacobian_fn"](parameters), raw_jacobian * 0.2)
-    l2_equations = l2["normal_equations_fn"](parameters)
+    assert torch.allclose(l2.surrogate(parameters), raw * 0.2)
+    assert torch.allclose(l2.jacobian(parameters), raw_jacobian * 0.2)
+    l2_equations = l2.normal_equations(parameters)
     l2_jacobian = (raw_jacobian * 0.2).to(torch.float64)
     l2_residual = (raw * 0.2).to(torch.float64)
     torch.testing.assert_close(l2_equations.hessian, l2_jacobian.T @ l2_jacobian, rtol=1e-6, atol=1e-6)
@@ -236,7 +236,7 @@ def test_timing_reset_and_cuda_solve() -> None:
     assert second_run["analytic_cache_setup_ms"] == 7.0
     assert second_run["analytic_normal_equations_calls"] == 1
     if torch.cuda.is_available():
-        from lib_pano.human_fitting.staged_lm.lm_solver import solve_damped_normal_equations
+        from lib_pano.human_fitting.staged_lm.lm.equations import solve_damped_normal_equations
         hessian = torch.eye(3, dtype=torch.float64, device="cuda")
         gradient = torch.ones(3, dtype=torch.float64, device="cuda")
         result = solve_damped_normal_equations(hessian, gradient, 1e-3)

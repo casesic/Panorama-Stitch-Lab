@@ -15,17 +15,25 @@ from torch.func import jvp
 from smplx.lbs import batch_rigid_transform, blend_shapes, vertices2joints
 from script.human_fitting.staged_lm.app import build_context
 from lib_pano.human_fitting.staged_lm.config import STAGE1_PER_FRAME_DIM
+from lib_pano.human_fitting.staged_lm.geometry.erp import project_unified_erp
 from lib_pano.human_fitting.staged_lm.parameter_layout import unpack_frame_parameters
-from lib_pano.human_fitting.staged_lm.stage2_pose_fast import build_stage2_pose_fast_cache, assemble_full_pose_rotations, fast_selected_vertices, project_cam2_erp
+from lib_pano.human_fitting.staged_lm.pose.cache import (
+    Stage2PoseFastCache,
+    build_stage2_pose_fast_cache,
+)
+from lib_pano.human_fitting.staged_lm.pose.forward import assemble_full_pose_rotations, fast_selected_vertices
 from lib_pano.human_fitting.staged_lm.stage2_shared_cache import build_stage2_shared_geometry_cache
-from lib_pano.human_fitting.staged_lm.stages import build_joint_stage_definition, build_pose_stage_definition, build_stage1_definition, handoff_s1_to_pose, run_stage
-from lib_pano.human_fitting.staged_lm.stage2_pose_jacobian import build_stage2_pose_analytic_linearization
+from lib_pano.human_fitting.staged_lm.stage_definitions.joint import build_joint_stage_definition
+from lib_pano.human_fitting.staged_lm.stage_definitions.pose import build_pose_stage_definition
+from lib_pano.human_fitting.staged_lm.stage_definitions.rigid import build_stage1_definition
+from lib_pano.human_fitting.staged_lm.stage_handoff import handoff_s1_to_pose
+from lib_pano.human_fitting.staged_lm.stage_runtime import run_stage
+from lib_pano.human_fitting.staged_lm.pose.derivatives import build_stage2_pose_analytic_linearization
 from lib_pano.human_fitting.smplx_sequence import forward_smplx_tensor_batch
 import dataclasses
 from torch.func import jacfwd, jvp
 from smplx.lbs import batch_rigid_transform
-from lib_pano.human_fitting.staged_lm.stage2_pose_fast import Stage2PoseFastCache, assemble_full_pose_rotations, build_stage2_pose_fast_cache, fast_selected_vertices, project_cam2_erp
-from lib_pano.human_fitting.staged_lm.stage2_pose_jacobian import POSE_PER_FRAME_DIM, assemble_full_pose_rotation_jacobians, compute_fk_with_jacobian, compute_pose_feature_with_jacobian, compute_selected_lbs_with_jacobian, compute_selected_pose_offsets_with_jacobian, fast_selected_vertices_with_jacobian, rotation_matrix_jacobian_additive, stage2_pose_anchor_residual_and_jacobian, stage2_pose_group_raw_residual_and_jacobian, stage2_pose_surrogate_residual_and_jacobian
+from lib_pano.human_fitting.staged_lm.pose.derivatives import POSE_PER_FRAME_DIM, assemble_full_pose_rotation_jacobians, compute_fk_with_jacobian, compute_pose_feature_with_jacobian, compute_selected_lbs_with_jacobian, compute_selected_pose_offsets_with_jacobian, fast_selected_vertices_with_jacobian, rotation_matrix_jacobian_additive, stage2_pose_anchor_residual_and_jacobian, stage2_pose_group_raw_residual_and_jacobian, stage2_pose_surrogate_residual_and_jacobian
 from lib_dynamic_hvip.smpl.smpl_lib import _aa_to_rotmat
 import statistics
 from dataclasses import dataclass
@@ -152,7 +160,7 @@ def check_points(context, cache, points, check_intermediates):
             if vertex_error["max_abs"] > 1e-5 or vertex_error["rel_l2"] > 1e-6:
                 raise RuntimeError(f"STAGE2_POSE_FAST_VERTEX_MISMATCH: {label}/{group.camera} {vertex_error}")
             full_uv = context.fitter._project_cam2(full, context.image_width, context.image_height)
-            fast_uv = project_cam2_erp(fast, context.image_width, context.image_height)
+            fast_uv = project_unified_erp(fast, context.image_width, context.image_height)
             uv_error = error(fast_uv, full_uv)
             torch.testing.assert_close(fast_uv, full_uv, rtol=1e-6, atol=1e-3)
             full_residual = full_uv - group.targets.to(full_uv)
@@ -227,9 +235,9 @@ def pose_forward_profile(context, cache, parameters):
         return projected.index_select(0, group.vertex_ids.to(projected.device))
     def fast_forward_call(): return fast_selected_vertices(cache, group, orient, translation, body_pose)
     fast_vertices = fast_forward_call()
-    def fast_projection_call(): return project_cam2_erp(fast_vertices, context.image_width, context.image_height)
+    def fast_projection_call(): return project_unified_erp(fast_vertices, context.image_width, context.image_height)
     def full_call(): return full_projection_call() if full_forward_call() is not None else None
-    def fast_call(): return project_cam2_erp(fast_forward_call(), context.image_width, context.image_height)
+    def fast_call(): return project_unified_erp(fast_forward_call(), context.image_width, context.image_height)
     for _ in range(10): full_call(); fast_call()
     repeats = 50
     def measure(function):

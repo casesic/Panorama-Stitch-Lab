@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import torch
 
-from lib_pano.human_fitting.staged_lm.stage2_joint_fast import (
+from lib_pano.human_fitting.staged_lm.joint import (
     Stage2JointFastCache,
     Stage2JointFrameCameraCache,
     Stage2JointModelCache,

@@ -15,20 +15,24 @@ except ImportError:
     from _bootstrap import ensure_test_paths
 ensure_test_paths(__file__)
 
-from lib_pano.human_fitting.staged_lm.stage2_pose_fast import (  # noqa: E402
+from lib_pano.human_fitting.staged_lm.pose.cache import (  # noqa: E402
     Stage2PoseFastCache,
     Stage2PoseFrameCameraCache,
     Stage2PoseModelCache,
+)
+from lib_pano.human_fitting.staged_lm.pose.forward import (  # noqa: E402
     _aa_to_rotmat,
     fast_raw_groups,
     fast_raw_residual,
     fast_selected_vertices,
+)
+from lib_pano.human_fitting.staged_lm.pose.objective import (  # noqa: E402
     stage2_pose_fast_raw_metrics,
     stage2_pose_fast_true_objective,
 )
 from lib_pano.human_fitting.staged_lm.irls import build_primary_aggregation_spec, compute_primary_charbonnier_tensor  # noqa: E402
 from lib_pano.human_fitting.staged_lm.residuals import flatten_reprojection_groups, raw_reproj_metrics  # noqa: E402
-from lib_pano.human_fitting.staged_lm.stage2_pose_jacobian import (  # noqa: E402
+from lib_pano.human_fitting.staged_lm.pose.derivatives import (  # noqa: E402
     POSE_PER_FRAME_DIM,
     build_stage2_pose_analytic_linearization,
     assemble_full_pose_rotation_jacobians,
@@ -260,10 +264,10 @@ def test_residual_only_direct_normal_equations_and_fast_eval() -> None:
             charbonnier_eps=1., aggregation_spec=spec if is_irls else None,
             rep_scale=.02,
         )
-        explicit_residual = linearization["surrogate_fn"](parameters)
-        explicit_jacobian = linearization["jacobian_fn"](parameters)
+        explicit_residual = linearization.surrogate(parameters)
+        explicit_jacobian = linearization.jacobian(parameters)
         cache.group_analytic_calls = 0
-        equations = linearization["normal_equations_fn"](parameters)
+        equations = linearization.normal_equations(parameters)
         assert cache.group_analytic_calls == len(cache.groups)
         torch.testing.assert_close(equations.residual, explicit_residual, rtol=1e-10, atol=1e-10)
         reference_j = explicit_jacobian.to(torch.float64)
