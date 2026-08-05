@@ -161,7 +161,8 @@ src/script/validation/staged_lm/references/
 - debug117、debug118、debug120 使用的 reference Stage builders。
 
 这些实现继续用于导数验证、H/g 对比、solver 回归和 LM/L-BFGS 对齐检查，但不能通过
-正式拟合命令选择。
+正式拟合命令选择。Production 的 StageOutcome、JSON、NPZ、handoff 和可视化仅保留
+LM；L-BFGS 的结果类型与迭代参数由 validation 自己维护。
 
 ## 已从 production 移除的开关
 
@@ -237,21 +238,16 @@ reduction、serial fast objective/metrics，以及原 dense LM solve。FP32 batc
 的首个差异来自 rotation value；FP64 单算子诊断将误差降至约 `1e-16`，完整 LM
 trajectory 和最终结果通过 production gate。旧 microkernel gate 继续作为诊断指标。
 
-Pipeline timing 当前使用 schema v5，明确区分：
+默认 `pipeline_timing` 只记录七个汇总值：`stage1_prepare`、
+`stage1_run_ms`、`stage2_prepare`、`stage2_pose_run_ms`、
+`stage2_joints_run_ms`、`fitting_total_ms` 和 `command_total_ms`（数值单位均为
+毫秒）。`fitting_total_ms` 包含前五项及少量编排开销；`command_total_ms` 还包含
+context 构建、结果整理和首次 JSON/NPZ 保存。
 
-- `*_prepare_total_ms`；
-- `*_handoff_ms`；
-- `*_cache_setup_ms`；
-- `*_definition_bind_ms`；
-- `*_run_ms` 和 `*_run_overhead_ms`；
-- `stage2_shared_*`、Pose/Joint derived cache 和 `stage2_total_cache_setup_ms`；
-- `stage2_pose_fast_cache_setup_ms`、`stage2_pose_batch_cache_setup_ms` 和 batch
-  padding/persistent-memory metadata；
-- Joint fast/batch cache setup、batch padding/persistent metadata，以及 batched NE、
-  shape-state、full-analytic 调用计数；
-- `objective_breakdown_ms`。
-
-必要的 Stage cache 预计算仍计入 fitting total，不会被隐藏到 solver 内。
+开启 `--profile_timing` 后，`pipeline_timing.profile` 才增加 context、Stage prepare
+和 fitting 后处理的分层明细；每个 Stage 的 `lm.profile_timing` 只保留 normal
+equations、true objective、linear solve、final metrics 和未归类 runner 开销，避免
+重复展开 cache 内部计时。Stage 内部的 `lm.wall_time_ms` 也只在该模式下输出。
 
 ## 五层代码布局
 
@@ -277,7 +273,7 @@ python src/script/human_fitting/staged_lm/run.py \
   --sam3d_dense_dir SAM3D_DIR \
   --bbox_dir BBOX_DIR \
   --output_dir OUTPUT_DIR \
-  --device cuda:0 \
+  --device cuda \
   --reproj_objective charbonnier_irls \
   --profile_timing
 ```
@@ -307,7 +303,7 @@ python src/script/benchmark/staged_lm/profile_end_to_end.py \
   --sam3d_dense_dir SAM3D_DIR \
   --bbox_dir BBOX_DIR \
   --output_dir OUTPUT_DIR \
-  --device cuda:0 \
+  --device cuda \
   --benchmark_warmup_runs 1 \
   --benchmark_repeats 5 \
   --audit_full_forward_calls

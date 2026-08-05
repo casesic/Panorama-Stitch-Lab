@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import time
+from typing import Any
 
 import torch
 
@@ -23,7 +24,7 @@ from .types import Stage2Outcome, StageContext, StageOutcome
 def run_stage2(
     context: StageContext,
     stage1_outcome: StageOutcome,
-    pipeline_timing: dict[str, float] | None = None,
+    pipeline_timing: dict[str, Any] | None = None,
     profiler_ranges: bool = False,
 ) -> Stage2Outcome:
     """Run fixed production pose warmup followed by joint refinement."""
@@ -33,8 +34,6 @@ def run_stage2(
     )
     with range_fn("stage2_shared_cache"):
         shared_cache = build_stage2_shared_geometry_cache(context)
-    if pipeline_timing is not None:
-        pipeline_timing.update(shared_cache.timing_dict())
     with range_fn("stage2_pose_definition"):
         pose_definition, pose_handoff = build_pose_stage_definition(
             context, stage1_outcome, shared_cache,
@@ -52,14 +51,11 @@ def run_stage2(
         pose_outcome = run_stage(pose_definition, context)
     synchronize_context_device(context)
     if pipeline_timing is not None:
-        run_ms = (time.perf_counter() - start) * 1000.0
-        pipeline_timing["stage2_pose_run_ms"] = run_ms
-        pipeline_timing["stage2_pose_run_overhead_ms"] = max(
-            0.0, run_ms - pose_outcome.lm_result.wall_time_ms,
-        )
+        pipeline_timing["stage2_pose_run_ms"] = (
+            time.perf_counter() - start
+        ) * 1000.0
     handoffs = {
         "stage1_to_stage2_pose_lm": pose_handoff["lm"],
-        "stage1_to_stage2_pose_lbfgs": None,
     }
     if context.args.stop_after_stage == "stage2_pose":
         record_stage2_cache_totals(
@@ -84,7 +80,6 @@ def run_stage2(
     )
     handoffs.update({
         "stage2_pose_to_joint_lm": joint_handoff["lm"],
-        "stage2_pose_to_joint_lbfgs": None,
     })
 
     synchronize_context_device(context)
@@ -93,11 +88,9 @@ def run_stage2(
         joint_outcome = run_stage(joint_definition, context)
     synchronize_context_device(context)
     if pipeline_timing is not None:
-        run_ms = (time.perf_counter() - start) * 1000.0
-        pipeline_timing["stage2_joint_run_ms"] = run_ms
-        pipeline_timing["stage2_joint_run_overhead_ms"] = max(
-            0.0, run_ms - joint_outcome.lm_result.wall_time_ms,
-        )
+        pipeline_timing["stage2_joints_run_ms"] = (
+            time.perf_counter() - start
+        ) * 1000.0
     return Stage2Outcome(
         pose_warmup=pose_outcome,
         joint_refinement=joint_outcome,

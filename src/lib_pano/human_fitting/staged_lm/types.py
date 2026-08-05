@@ -211,7 +211,6 @@ class LMResult:
             "accepted_steps": self.counters.accepted_steps,
             "rejected_trials": self.counters.rejected_trials,
             "final_lambda": self.final_lambda,
-            "wall_time_ms": self.wall_time_ms,
             "rms": self.rms_metrics,
             "w_history": self.weight_history,
             "first_order_checks": self.first_order_checks,
@@ -227,28 +226,9 @@ class LMResult:
             "normal_equation_count": self.counters.normal_equation_count,
         }
         if self.profile_timing is not None:
+            result["wall_time_ms"] = self.wall_time_ms
             result["profile_timing"] = self.profile_timing
         return result
-
-
-@dataclass
-class LBFGSResult:
-    """Outcome of a single L-BFGS oracle run."""
-
-    label: str
-    parameters: torch.Tensor
-    objective: float
-    closure_calls: int
-    wall_time_ms: float
-
-    def to_json_dict(self) -> dict[str, Any]:
-        """Return the JSON-serialisable view (without the parameter tensor)."""
-        return {
-            "label": self.label,
-            "obj": self.objective,
-            "clos": self.closure_calls,
-            "wall_time_ms": self.wall_time_ms,
-        }
 
 
 @dataclass
@@ -335,11 +315,9 @@ class StageDefinition:
 
 @dataclass
 class StageOutcome:
-    """Results of running a single stage (LM + optional L-BFGS + verdict)."""
+    """Result of running a single production LM stage."""
 
     lm_result: LMResult
-    lbfgs_result: LBFGSResult | None
-    verdict: str | None
     true_objective_fn: Callable[[torch.Tensor], torch.Tensor]
     definition: StageDefinition | None = None
 

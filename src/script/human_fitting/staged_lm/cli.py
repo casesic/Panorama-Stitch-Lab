@@ -15,7 +15,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--image_width", type=int, default=5760)
     parser.add_argument("--image_height", type=int, default=2880)
     parser.add_argument("--output_dir", type=str, required=True)
-    parser.add_argument("--device", type=str, default="auto")
+    parser.add_argument("--device", type=str, choices=("cpu", "cuda"), default="cpu")
     parser.add_argument("--validate_device_contract", action="store_true", default=False)
     parser.add_argument(
         "--reproj_objective",

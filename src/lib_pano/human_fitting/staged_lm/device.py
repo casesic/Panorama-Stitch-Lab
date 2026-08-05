@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from dataclasses import fields, is_dataclass
 from typing import Any, Iterable
 
@@ -18,26 +17,13 @@ _SMPLX_TENSOR_ATTRIBUTES = (
 
 
 def resolve_execution_device(requested: str) -> torch.device:
-    """解析设备，支持 auto/cpu/cuda/cuda:N"""
+    """Resolve a CPU or CUDA execution device."""
     requested = str(requested).strip().lower()
-    if requested == "auto":
-        return torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    if requested == "cpu":
-        return torch.device("cpu")
-    if requested == "cuda" or requested.startswith("cuda:"):
-        if not torch.cuda.is_available():
-            raise RuntimeError("CUDA_REQUESTED_BUT_UNAVAILABLE")
-        try:
-            device = torch.device("cuda:0" if requested == "cuda" else requested)
-        except (RuntimeError, ValueError) as exc:
-            raise RuntimeError(f"INVALID_EXECUTION_DEVICE: {requested}") from exc
-        if device.index is None or device.index < 0 or device.index >= torch.cuda.device_count():
-            raise RuntimeError(
-                f"CUDA_DEVICE_INDEX_OUT_OF_RANGE: requested={requested} "
-                f"count={torch.cuda.device_count()}"
-            )
-        return device
-    raise RuntimeError(f"INVALID_EXECUTION_DEVICE: {requested}")
+    if requested not in {"cpu", "cuda"}:
+        raise RuntimeError(f"INVALID_EXECUTION_DEVICE: {requested}")
+    if requested == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError("CUDA_REQUESTED_BUT_UNAVAILABLE")
+    return torch.device("cuda:0" if requested == "cuda" else "cpu")
 
 
 def _move_float_tensor(
@@ -174,13 +160,10 @@ def validate_stage_initial_parameters(
     stage: Any, context: Any, *, include_cache: bool = False,
 ) -> None:
     """Validate FP32 optimisation vectors and optionally analytic cache tensors."""
-    for label, parameters in (
-        ("lm", stage.initial_lm_parameters),
-        ("lbfgs", getattr(stage, "initial_lbfgs_parameters", None)),
-    ):
-        if parameters is not None:
-            _check_tensor(f"{stage.name}.{label}_initial", parameters, context.device,
-                          dtype=torch.float32)
+    _check_tensor(
+        f"{stage.name}.lm_initial", stage.initial_lm_parameters,
+        context.device, dtype=torch.float32,
+    )
     if include_cache and stage.analytic_cache is not None:
         for name, tensor in iter_named_tensors(stage.analytic_cache):
             _check_tensor(f"{stage.name}.cache.{name}", tensor, context.device)

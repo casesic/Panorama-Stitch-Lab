@@ -21,11 +21,15 @@ import torch
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
-from script.human_fitting.staged_lm.app import _stage_json, build_context
+from script.human_fitting.staged_lm.app import build_context
+from lib_pano.human_fitting.staged_lm.output import stage_outcome_to_json
 from script.human_fitting.staged_lm.cli import build_argument_parser
 from lib_pano.human_fitting.staged_lm.output import (
     build_output_directory, collect_stage2_arrays,
-    compute_objective_breakdown, save_experiment_outputs,
+    save_experiment_outputs,
+)
+from script.validation.staged_lm.objective_breakdown import (
+    compute_objective_breakdown,
 )
 from lib_pano.human_fitting.staged_lm.pipeline import run_stage2
 from lib_pano.human_fitting.staged_lm.residuals import (
@@ -189,9 +193,9 @@ def audit_full_forward_calls(context) -> dict[str, int]:
         with audit.phase("solver_run"):
             joint = run_stage(joint_definition, context)
         with audit.phase("stage_json_build"):
-            _stage_json(stage1)
-            _stage_json(pose)
-            _stage_json(joint)
+            stage_outcome_to_json(stage1)
+            stage_outcome_to_json(pose)
+            stage_outcome_to_json(joint)
         with audit.phase("objective_breakdown"):
             if joint_definition.objective_terms_fn is None:
                 raise RuntimeError("MISSING_JOINT_OBJECTIVE_TERMS_FN")
@@ -209,9 +213,8 @@ def audit_full_forward_calls(context) -> dict[str, int]:
                 pose_definition.initial_lm_parameters,
                 joint_definition.initial_lm_parameters,
                 stage1, pose, joint, context.beta_anchor, context.beta_latent0,
-                beta, None, stage1_definition.raw_groups_fn,
+                beta, stage1_definition.raw_groups_fn,
                 pose_definition.raw_groups_fn, joint_definition.raw_groups_fn,
-                None, None,
             )
     return audit.counts
 
@@ -361,9 +364,8 @@ def _save_benchmark_output(args, context, run, summary) -> dict[str, float]:
         arrays = collect_stage2_arrays(
             s1_def.initial_lm_parameters, pose_def.initial_lm_parameters,
             joint_def.initial_lm_parameters, s1, pose, joint,
-            context.beta_anchor, context.beta_latent0, run["physical_beta"], None,
+            context.beta_anchor, context.beta_latent0, run["physical_beta"],
             s1_def.raw_groups_fn, pose_def.raw_groups_fn, joint_def.raw_groups_fn,
-            None, None,
         )
     build_ms = (time.perf_counter()-build_start)*1000.0
     directory = build_output_directory(Path(args.output_dir), context.frame_indices)

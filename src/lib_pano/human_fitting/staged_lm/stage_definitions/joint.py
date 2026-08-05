@@ -173,7 +173,7 @@ def build_joint_stage_definition(
         cache_setup_ms=cache_setup_ms,
         definition_bind_ms=(time.perf_counter() - bind_start) * 1000.0,
     )
-    return stage, {"lm": handoff, "lbfgs": None}
+    return stage, {"lm": handoff}
 
 
 def run_joint_stage(

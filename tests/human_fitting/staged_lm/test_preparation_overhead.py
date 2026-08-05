@@ -22,7 +22,8 @@ from lib_pano.human_fitting.staged_lm.irls import (  # noqa: E402
     build_primary_aggregation_spec,
     build_primary_aggregation_spec_from_observations,
 )
-from lib_pano.human_fitting.staged_lm.output import (  # noqa: E402
+from lib_pano.human_fitting.staged_lm.output import stage_outcome_to_json  # noqa: E402
+from script.validation.staged_lm.objective_breakdown import (  # noqa: E402
     compute_objective_breakdown,
 )
 from lib_pano.human_fitting.staged_lm.joint import (  # noqa: E402
@@ -41,7 +42,6 @@ from lib_pano.human_fitting.staged_lm.types import (  # noqa: E402
     StageOutcome,
     StagePreparationTiming,
 )
-from script.human_fitting.staged_lm.app import _stage_json  # noqa: E402
 
 
 def _groups(frame_indices, cam2_counts, cam4_counts):
@@ -131,9 +131,9 @@ def test_stage_json_does_not_call_raw_groups() -> None:
         input_summary=StageInputSummary(1, 2, 2, 5, 10, 0, 10),
     )
     outcome = StageOutcome(
-        _fake_result(parameters), None, None, lambda x: x.sum(), definition,
+        _fake_result(parameters), lambda x: x.sum(), definition,
     )
-    result = _stage_json(outcome)
+    result = stage_outcome_to_json(outcome)
     assert result["input_summary"] == {
         "T": 1, "param_dim": 2, "n_groups": 2,
         "total_valid_points": 5,

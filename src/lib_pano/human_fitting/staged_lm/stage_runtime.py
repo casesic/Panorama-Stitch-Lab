@@ -59,18 +59,38 @@ def run_stage(stage: StageDefinition, context: StageContext) -> StageOutcome:
         true_objective_fn=true_objective,
     )
     result.eval_backend = stage.eval_backend
-    if context.args.profile_timing and stage.analytic_cache is not None:
-        if result.profile_timing is not None:
-            result.profile_timing.update(stage.analytic_cache.timing_dict())
     if result.profile_timing is not None:
+        raw = result.profile_timing
+        accounted_ms = (
+            raw["solver_jacobian_ms"]
+            + raw["objective_eval_ms"]
+            + raw["linear_solve_ms"]
+            + raw["final_metrics_ms"]
+        )
+        result.profile_timing = {
+            "units": "ms",
+            "normal_equations_ms": raw["solver_jacobian_ms"],
+            "true_objective_ms": raw["objective_eval_ms"],
+            "linear_solve_ms": raw["linear_solve_ms"],
+            "final_metrics_ms": raw["final_metrics_ms"],
+            "other_runner_ms": max(0.0, result.wall_time_ms - accounted_ms),
+            "accounting": {
+                "approximately_sums_to": "wall_time_ms",
+                "exclusive_buckets": [
+                    "normal_equations_ms", "true_objective_ms",
+                    "linear_solve_ms", "final_metrics_ms", "other_runner_ms",
+                ],
+                "other_runner_includes": [
+                    "linearization_construction", "python_overhead",
+                ],
+            },
+        }
         result.profile_timing["eval_backend"] = stage.eval_backend
         result.profile_timing["linearization_backend"] = stage.linearization_backend
         result.profile_timing["linear_solver_backend"] = stage.linear_solver_backend
 
     return StageOutcome(
         lm_result=result,
-        lbfgs_result=None,
-        verdict=None,
         true_objective_fn=true_objective,
         definition=stage,
     )

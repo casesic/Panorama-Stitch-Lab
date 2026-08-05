@@ -158,7 +158,6 @@ def test_production_preparation_has_no_full_forward_fallback() -> None:
     stage_source = "\n".join(
         inspect.getsource(module) for module in (rigid, pose, joint, pipeline)
     )
-    app_module = importlib.import_module("script.human_fitting.staged_lm.app")
     output_module = importlib.import_module(
         "lib_pano.human_fitting.staged_lm.output"
     )
@@ -169,8 +168,11 @@ def test_production_preparation_has_no_full_forward_fallback() -> None:
     assert "raw_groups_fn" not in handoff_source
     assert "make_raw_reproj_groups" not in handoff_source
     assert "true_objective" not in handoff_source
-    assert "raw_groups_fn" not in inspect.getsource(app_module._stage_json)
-    breakdown_source = inspect.getsource(output_module.compute_objective_breakdown)
+    assert "raw_groups_fn" not in inspect.getsource(output_module.stage_outcome_to_json)
+    breakdown_module = importlib.import_module(
+        "script.validation.staged_lm.objective_breakdown"
+    )
+    breakdown_source = inspect.getsource(breakdown_module.compute_objective_breakdown)
     assert "raw_groups_fn" not in breakdown_source
     assert "true_objective_fn" not in breakdown_source
 

@@ -16,6 +16,9 @@ from script.validation.staged_lm.joint import (
     run_joint_beta_validation,
     run_joint_production_shadow,
 )
+from script.validation.staged_lm.objective_breakdown import (
+    run_objective_breakdown_validation,
+)
 from script.validation.staged_lm.pose import (
     run_all_pose_validations,
     run_pose_forward_validation,
@@ -39,7 +42,7 @@ def _parser() -> argparse.ArgumentParser:
     commands = (
         "stage1", "stage1-batch-shadow", "pose-forward", "pose-jacobian", "pose-solver", "pose-production",
         "joint-beta", "joint-jacobian", "joint-production-shadow", "joint-solver", "joint-schur",
-        "joint-fk", "handoff", "all",
+        "joint-fk", "handoff", "objective-breakdown", "all",
     )
     for command in commands:
         current = subparsers.add_parser(command)
@@ -76,6 +79,7 @@ def main() -> int:
         "joint-schur": run_dense_schur_regression,
         "joint-fk": run_combined_fk_regression,
         "handoff": run_full_handoff_validation,
+        "objective-breakdown": run_objective_breakdown_validation,
     }
     if args.command == "all":
         run_all_stage1_validations(args)

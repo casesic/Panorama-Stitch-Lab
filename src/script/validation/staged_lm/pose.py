@@ -710,15 +710,12 @@ def profile_summary(results: list[ModeResult]) -> None:
         timing = lm.profile_timing or {}
         print(
             f"[TIMING {result.label}] wall={lm.wall_time_ms:.3f} "
-            f"solver_jacobian={timing.get('solver_jacobian_ms', 0.):.3f} "
-            f"objective_eval={timing.get('objective_eval_ms', 0.):.3f} "
+            f"normal_equations={timing.get('normal_equations_ms', 0.):.3f} "
+            f"true_objective={timing.get('true_objective_ms', 0.):.3f} "
             f"final_metrics={timing.get('final_metrics_ms', 0.):.3f} "
             f"linear_solve={timing.get('linear_solve_ms', 0.):.3f} "
             f"normal_eq={lm.counters.normal_equation_count} "
-            f"fast_residual={timing.get('stage2_pose_residual_ms', 0.):.3f} "
-            f"direct_hg={timing.get('stage2_pose_normal_equations_ms', 0.):.3f} "
-            f"fast_objective={timing.get('stage2_pose_objective_ms', 0.):.3f} "
-            f"fast_metrics={timing.get('stage2_pose_metrics_ms', 0.):.3f}"
+            f"other={timing.get('other_runner_ms', 0.):.3f}"
         )
 
 
@@ -750,8 +747,8 @@ def run_pose_solver_regression(cli=None) -> int:
             print(
                 f"[MEDIAN {label}] "
                 f"wall_ms={statistics.median(v.outcome.lm_result.wall_time_ms for v in values):.3f} "
-                f"solver_jacobian_ms={median_timing('solver_jacobian_ms'):.3f} "
-                f"objective_eval_ms={median_timing('objective_eval_ms'):.3f} "
+                f"normal_equations_ms={median_timing('normal_equations_ms'):.3f} "
+                f"true_objective_ms={median_timing('true_objective_ms'):.3f} "
                 f"final_metrics_ms={median_timing('final_metrics_ms'):.3f} "
                 f"linear_solve_ms={median_timing('linear_solve_ms'):.3f}"
             )

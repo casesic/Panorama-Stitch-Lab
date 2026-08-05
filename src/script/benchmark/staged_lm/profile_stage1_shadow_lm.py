@@ -119,7 +119,7 @@ def _downstream(context,stage,serial,candidate):
     shared=build_stage2_shared_geometry_cache(context)
     outcomes=[]
     for label,result in (("serial",serial),("candidate",candidate)):
-        s1=StageOutcome(result,None,None,stage.lm_true_objective_fn,stage)
+        s1=StageOutcome(result,stage.lm_true_objective_fn,stage)
         pose_def,_=build_pose_stage_definition(context,s1,shared);pose=run_stage(pose_def,context)
         joint_def,_=build_joint_stage_definition(context,pose,shared);joint=run_stage(joint_def,context)
         outcomes.append((pose,joint))

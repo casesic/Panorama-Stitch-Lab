@@ -5,8 +5,8 @@ recover HMR-derived frozen hand poses/scales, pose/beta anchors, and model
 metadata. LM and L-BFGS are never invoked by this script.
 
 All visualization modes write directly into the same ``--output_dir``. File
-name prefixes distinguish normal, stage-comparison, and solver-comparison
-outputs; the script does not create a separate subdirectory for each mode.
+name prefixes distinguish normal and stage-comparison outputs; the script does
+not create a separate subdirectory for each mode.
 """
 
 from __future__ import annotations
@@ -43,22 +43,15 @@ from lib_pano.human_vis.dual_erp_vis import project_points_erp
 
 
 STAGES = ("stage1", "pose_warmup", "joint_refinement")
-SOLVERS = ("lm", "lbfgs")
 PARAMETER_KEYS = {
-    ("stage1", "lm"): "x_s1_lm",
-    ("stage1", "lbfgs"): "x_s1_lbfgs",
-    ("pose_warmup", "lm"): "x_stage2_pose_lm",
-    ("pose_warmup", "lbfgs"): "x_stage2_pose_lbfgs",
-    ("joint_refinement", "lm"): "x_stage2_joint_lm",
-    ("joint_refinement", "lbfgs"): "x_stage2_joint_lbfgs",
+    "stage1": "x_s1_lm",
+    "pose_warmup": "x_stage2_pose_lm",
+    "joint_refinement": "x_stage2_joint_lm",
 }
 BETA_KEYS = {
-    ("stage1", "lm"): "beta_anchor",
-    ("stage1", "lbfgs"): "beta_anchor",
-    ("pose_warmup", "lm"): "beta_anchor",
-    ("pose_warmup", "lbfgs"): "beta_anchor",
-    ("joint_refinement", "lm"): "beta_lm",
-    ("joint_refinement", "lbfgs"): "beta_lbfgs",
+    "stage1": "beta_anchor",
+    "pose_warmup": "beta_anchor",
+    "joint_refinement": "beta_lm",
 }
 
 
@@ -67,7 +60,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--result_dir", type=Path, required=True)
     parser.add_argument("--image_dir", type=Path, required=True)
     parser.add_argument("--stage", choices=STAGES, default="joint_refinement")
-    parser.add_argument("--solver", choices=SOLVERS, default="lm")
     parser.add_argument(
         "--output_dir",
         type=Path,
@@ -82,12 +74,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--rtm_dir", type=Path, default=None)
     parser.add_argument("--conf_thresh", type=float, default=0.1)
     parser.add_argument("--compare_stages", action="store_true")
-    parser.add_argument("--compare_solvers", action="store_true")
     parser.add_argument("--draw_sam3d_dense", action="store_true")
     parser.add_argument("--dense_draw_stride", type=int, default=20)
     args = parser.parse_args()
-    if args.compare_stages and args.compare_solvers:
-        parser.error("--compare_stages and --compare_solvers are mutually exclusive")
     if args.scale <= 0:
         parser.error("--scale must be positive")
     if args.dense_draw_stride <= 0:
@@ -160,21 +149,16 @@ def validate_parameter_dimension(context: StageContext, parameters: np.ndarray, 
 
 
 def require_result_arrays(
-    arrays: dict[str, np.ndarray], stage: str, solver: str,
+    arrays: dict[str, np.ndarray], stage: str,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Return the parameter vector and already-physical beta for a result."""
-    parameter_key = PARAMETER_KEYS[(stage, solver)]
+    parameter_key = PARAMETER_KEYS[stage]
     if parameter_key not in arrays:
-        if solver == "lbfgs":
-            raise KeyError(
-                f"Requested L-BFGS visualization, but {parameter_key} is absent. "
-                "Run the joint-fk validation with --run_lbfgs_oracle."
-            )
         raise KeyError(f"Requested visualization result is absent: {parameter_key}")
-    beta_key = BETA_KEYS[(stage, solver)]
+    beta_key = BETA_KEYS[stage]
     if beta_key not in arrays:
         raise KeyError(f"Required physical beta array is absent: {beta_key}")
-    # beta_lm/beta_lbfgs are exported physical beta values. Never tanh them here.
+    # beta_lm is already a physical beta value. Never tanh it here.
     return arrays[parameter_key], arrays[beta_key]
 
 
@@ -330,19 +314,19 @@ def _resize_output(image: np.ndarray, scale: float) -> np.ndarray:
 
 
 def _available_stage_params(
-    arrays: dict[str, np.ndarray], context: StageContext, solver: str,
+    arrays: dict[str, np.ndarray], context: StageContext,
 ) -> list[tuple[str, list[Any], list[Any]]]:
     available = []
     for stage in STAGES:
-        key = PARAMETER_KEYS[(stage, solver)]
-        beta_key = BETA_KEYS[(stage, solver)]
+        key = PARAMETER_KEYS[stage]
+        beta_key = BETA_KEYS[stage]
         if key not in arrays or beta_key not in arrays:
             print(f"[warn] Skipping {stage}: required NPZ key {key if key not in arrays else beta_key} is absent")
             continue
         cam2, cam4 = build_visualization_params(context, arrays[key], arrays[beta_key], stage)
         available.append((stage, cam2, cam4))
     if not available:
-        raise RuntimeError(f"No visualizable stage results are available for solver={solver}")
+        raise RuntimeError("No visualizable stage results are available")
     return available
 
 
@@ -350,12 +334,12 @@ def _render_normal(
     context: StageContext, arrays: dict[str, np.ndarray], forwarder: SMPLXForwarder,
     args: argparse.Namespace, position: int, images: tuple[np.ndarray, np.ndarray],
 ) -> np.ndarray:
-    parameters, beta = require_result_arrays(arrays, args.stage, args.solver)
+    parameters, beta = require_result_arrays(arrays, args.stage)
     cam2_params, cam4_params = build_visualization_params(context, parameters, beta, args.stage)
     frame_index = context.frame_indices[position]
     cam2 = _render_camera(images[0], cam2_params[position], "cam2", position, context, forwarder, args)
     cam4 = _render_camera(images[1], cam4_params[position], "cam4", position, context, forwarder, args)
-    title = f"Frame {frame_index} | {args.stage} | {args.solver.upper()}"
+    title = f"Frame {frame_index} | {args.stage} | LM"
     return _add_title(np.concatenate([cam2, cam4], axis=0), title)
 
 
@@ -364,30 +348,13 @@ def _render_stage_comparison(
     args: argparse.Namespace, position: int, images: tuple[np.ndarray, np.ndarray],
 ) -> np.ndarray:
     columns = []
-    for stage, cam2_params, cam4_params in _available_stage_params(arrays, context, args.solver):
+    for stage, cam2_params, cam4_params in _available_stage_params(arrays, context):
         cam2 = _render_camera(images[0], cam2_params[position], "cam2", position, context, forwarder, args)
         cam4 = _render_camera(images[1], cam4_params[position], "cam4", position, context, forwarder, args)
         columns.append((_add_title(cam2, stage), _add_title(cam4, stage)))
     return np.concatenate([
         np.concatenate([column[0] for column in columns], axis=1),
         np.concatenate([column[1] for column in columns], axis=1),
-    ], axis=0)
-
-
-def _render_solver_comparison(
-    context: StageContext, arrays: dict[str, np.ndarray], forwarder: SMPLXForwarder,
-    args: argparse.Namespace, position: int, images: tuple[np.ndarray, np.ndarray],
-) -> np.ndarray:
-    solver_columns = []
-    for solver in SOLVERS:
-        parameters, beta = require_result_arrays(arrays, args.stage, solver)
-        cam2_params, cam4_params = build_visualization_params(context, parameters, beta, args.stage)
-        cam2 = _render_camera(images[0], cam2_params[position], "cam2", position, context, forwarder, args)
-        cam4 = _render_camera(images[1], cam4_params[position], "cam4", position, context, forwarder, args)
-        solver_columns.append((_add_title(cam2, solver.upper()), _add_title(cam4, solver.upper())))
-    return np.concatenate([
-        np.concatenate([column[0] for column in solver_columns], axis=1),
-        np.concatenate([column[1] for column in solver_columns], axis=1),
     ], axis=0)
 
 
@@ -408,16 +375,12 @@ def main() -> int:
         images = _read_images(args.image_dir, frame_index)
         if args.compare_stages:
             visualized = _render_stage_comparison(context, arrays, forwarder, args, position, images)
-            filename = f"compare_stages_{args.solver}_{frame_index:05d}.jpg"
-            video_name = f"compare_stages_{args.solver}.mp4"
-        elif args.compare_solvers:
-            visualized = _render_solver_comparison(context, arrays, forwarder, args, position, images)
-            filename = f"compare_solvers_{args.stage}_{frame_index:05d}.jpg"
-            video_name = f"compare_solvers_{args.stage}.mp4"
+            filename = f"compare_stages_{frame_index:05d}.jpg"
+            video_name = "compare_stages.mp4"
         else:
             visualized = _render_normal(context, arrays, forwarder, args, position, images)
-            filename = f"vis_{args.stage}_{args.solver}_{frame_index:05d}.jpg"
-            video_name = f"vis_{args.stage}_{args.solver}.mp4"
+            filename = f"vis_{args.stage}_{frame_index:05d}.jpg"
+            video_name = f"vis_{args.stage}.mp4"
         visualized = _resize_output(visualized, args.scale)
         if not args.video_only:
             output_path = args.output_dir / filename
@@ -448,7 +411,6 @@ python src/script/human_fitting/staged_lm/visualize.py \
     --image_dir data_process/Output/20260311_riding/image/equirect_rotate \
     --output_dir data_process/Vis/staged_lm_render \
     --stage joint_refinement \
-    --solver lm \
     --mesh \
     --scale 0.5
 '''

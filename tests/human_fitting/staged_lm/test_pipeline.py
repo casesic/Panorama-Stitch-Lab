@@ -125,10 +125,10 @@ def test_beta_atanh_tanh_reversibility() -> None:
     print("test_beta_atanh_tanh_reversibility: PASS")
 
 
-def test_output_keys_stage1_no_lbfgs() -> None:
-    """Stage 1 early-exit NPZ keys match legacy when L-BFGS is not run."""
+def test_output_keys_stage1() -> None:
+    """Stage 1 early-exit NPZ contains only production LM arrays."""
     from lib_pano.human_fitting.staged_lm.output import collect_stage1_arrays
-    from lib_pano.human_fitting.staged_lm.types import LBFGSResult, LMResult, LMSolverCounters, StageOutcome
+    from lib_pano.human_fitting.staged_lm.types import LMResult, LMSolverCounters, StageOutcome
 
     frame_count = 2
     s1_dim = frame_count * 12
@@ -139,7 +139,7 @@ def test_output_keys_stage1_no_lbfgs() -> None:
         final_lambda=0.1, wall_time_ms=10.0, rms_metrics={"rms": 1.0, "median": 1.0, "p95": 1.0},
         weight_history=[], first_order_checks={}, spec={},
     )
-    outcome = StageOutcome(lm_result=lm_result, lbfgs_result=None, verdict=None, true_objective_fn=lambda x: x.sum())
+    outcome = StageOutcome(lm_result=lm_result, true_objective_fn=lambda x: x.sum())
     beta_anchor = torch.randn(10)
     beta_latent0 = torch.randn(10)
 
@@ -152,7 +152,7 @@ def test_output_keys_stage1_no_lbfgs() -> None:
     )
     expected_keys = {"x0_s1", "x_s1_lm", "beta_anchor", "beta_latent0", "raw_reproj_s1_lm"}
     assert set(arrays.keys()) == expected_keys, f"Unexpected keys: {set(arrays.keys())}"
-    print("test_output_keys_stage1_no_lbfgs: PASS")
+    print("test_output_keys_stage1: PASS")
 
 
 def test_lm_result_json_has_distinct_solver_counters() -> None:
@@ -182,10 +182,10 @@ def test_lm_result_json_has_distinct_solver_counters() -> None:
     assert "full_forward_oracle_validation_ms" not in result
 
 
-def test_output_keys_stage2_with_lbfgs() -> None:
-    """Full Stage 2 NPZ keys use pose/joint naming with L-BFGS."""
+def test_output_keys_stage2_lm_only() -> None:
+    """Full Stage 2 NPZ contains only production LM arrays."""
     from lib_pano.human_fitting.staged_lm.output import collect_stage2_arrays
-    from lib_pano.human_fitting.staged_lm.types import LBFGSResult, LMResult, LMSolverCounters, StageOutcome
+    from lib_pano.human_fitting.staged_lm.types import LMResult, LMSolverCounters, StageOutcome
 
     frame_count = 2
     s1_dim = frame_count * 12
@@ -199,8 +199,7 @@ def test_output_keys_stage2_with_lbfgs() -> None:
             final_lambda=0.1, wall_time_ms=10.0, rms_metrics={"rms": 1.0, "median": 1.0, "p95": 1.0},
             weight_history=[], first_order_checks={}, spec={},
         )
-        bf = LBFGSResult(label=f"{name}_LBFGS", parameters=torch.randn(dim), objective=0.9, closure_calls=10, wall_time_ms=5.0)
-        return StageOutcome(lm_result=lm, lbfgs_result=bf, verdict="LM_MATCHES_LBFGS", true_objective_fn=lambda x: x.sum())
+        return StageOutcome(lm_result=lm, true_objective_fn=lambda x: x.sum())
 
     s1_outcome = make_outcome(s1_dim, "S1")
     s2_pose_outcome = make_outcome(s2_pose_dim, "STAGE2_POSE")
@@ -211,30 +210,27 @@ def test_output_keys_stage2_with_lbfgs() -> None:
     arrays = collect_stage2_arrays(
         torch.randn(s1_dim), torch.randn(s2_pose_dim), torch.randn(s2b_dim),
         s1_outcome, s2_pose_outcome, s2b_outcome,
-        torch.randn(10), torch.randn(10),
-        torch.randn(10), torch.randn(10),
+        torch.randn(10), torch.randn(10), torch.randn(10),
         lambda x: mock_groups, lambda x: mock_groups, lambda x: mock_groups,
-        torch.randn(s2_pose_dim), torch.randn(s2b_dim),
     )
     expected_keys = {
         "x0_s1", "x0_stage2_pose_lm", "x0_stage2_joint_lm",
         "x_s1_lm", "x_stage2_pose_lm", "x_stage2_joint_lm",
         "beta_anchor", "beta_latent0", "beta_lm",
         "raw_reproj_s1_lm", "raw_reproj_stage2_pose_lm", "raw_reproj_stage2_joint_lm",
-        "x_s1_lbfgs", "raw_reproj_s1_lbfgs",
-        "x0_stage2_pose_lbfgs", "x_stage2_pose_lbfgs", "raw_reproj_stage2_pose_lbfgs",
-        "x0_stage2_joint_lbfgs", "x_stage2_joint_lbfgs", "beta_lbfgs", "raw_reproj_stage2_joint_lbfgs",
     }
     assert set(arrays.keys()) == expected_keys, f"Missing/extra keys: {set(arrays.keys()) - expected_keys} / {expected_keys - set(arrays.keys())}"
     assert not any("final" in key for key in arrays)
     results = {"stage2": {"pose_warmup": {}, "joint_refinement": {}, "beta": {}}}
     assert "joint_refinement" in results["stage2"] and "final" not in results["stage2"]
-    print("test_output_keys_stage2_with_lbfgs: PASS")
+    print("test_output_keys_stage2_lm_only: PASS")
 
 
 def test_objective_breakdown_modes() -> None:
     """Charbonnier and raw-L2 breakdowns must reconstruct their true objective."""
-    from lib_pano.human_fitting.staged_lm.output import compute_objective_breakdown
+    from script.validation.staged_lm.objective_breakdown import (
+        compute_objective_breakdown,
+    )
 
     parameters = torch.tensor([0.2, -0.3], dtype=torch.float64)
     for is_irls in (True, False):
@@ -298,9 +294,9 @@ if __name__ == "__main__":
     test_unpack_frame_parameters_shapes()
     test_handoff_s1_to_pose_preserves_state()
     test_beta_atanh_tanh_reversibility()
-    test_output_keys_stage1_no_lbfgs()
+    test_output_keys_stage1()
     test_lm_result_json_has_distinct_solver_counters()
-    test_output_keys_stage2_with_lbfgs()
+    test_output_keys_stage2_lm_only()
     test_objective_breakdown_modes()
     test_gate_c_three_states()
     test_stage2_outcome_optional_joint_refinement()

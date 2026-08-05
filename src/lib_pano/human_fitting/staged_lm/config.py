@@ -69,15 +69,10 @@ class SolverConfig:
     stage1_lm_max_acc: int = 20
     stage2_pose_warmup_lm_max_acc: int = 5
     stage2_joint_lm_max_acc: int = 1
-    stage1_bf_outer: int = 15
-    stage2_pose_warmup_bf_outer: int = 20
-    stage2_joint_bf_outer: int = 20
     lm_max_trials: int = 8
     rel_obj_tol: float = 1e-7
     scaled_grad_tol: float = 1e-5
     step_tol: float = 1e-5
-    lbfgs_max_iter: int = 10
-    lbfgs_lr: float = 0.3
     irls_gradient_rel_tol: float = 5e-4
 
 

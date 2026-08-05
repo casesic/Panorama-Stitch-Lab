@@ -6,7 +6,8 @@ from typing import Any, Callable
 
 import torch
 
-from lib_pano.human_fitting.staged_lm.types import LBFGSResult, LMResult
+from lib_pano.human_fitting.staged_lm.types import LMResult
+from .types import LBFGSResult
 
 
 def stage_verdict(

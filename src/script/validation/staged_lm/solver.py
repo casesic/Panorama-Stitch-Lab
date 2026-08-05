@@ -58,7 +58,7 @@ def run_joint_backend_regression(cli=None):
     for label,values in runs.items():
         def med(key):return statistics.median((v[1].lm_result.profile_timing or {}).get(key,0.) for v in values)
         lm=values[0][1].lm_result
-        print(f"[TIMING {label}] wall={statistics.median(v[1].lm_result.wall_time_ms for v in values):.3f} jac={med('solver_jacobian_ms'):.3f} obj={med('objective_eval_ms'):.3f} metrics={med('final_metrics_ms'):.3f} solve={med('linear_solve_ms'):.3f} normal_eq={lm.counters.normal_equation_count} acc/rej={lm.counters.accepted_steps}/{lm.counters.rejected_trials} shape={med('stage2_joint_shape_state_ms'):.3f} direct={med('stage2_joint_normal_equations_ms'):.3f} fast_obj={med('stage2_joint_objective_ms'):.3f} fast_metrics={med('stage2_joint_metrics_ms'):.3f}")
+        print(f"[TIMING {label}] wall={statistics.median(v[1].lm_result.wall_time_ms for v in values):.3f} normal_eq={med('normal_equations_ms'):.3f} obj={med('true_objective_ms'):.3f} metrics={med('final_metrics_ms'):.3f} solve={med('linear_solve_ms'):.3f} other={med('other_runner_ms'):.3f} NE={lm.counters.normal_equation_count} acc/rej={lm.counters.accepted_steps}/{lm.counters.rejected_trials}")
     print("[PASS] Stage 2 joint A/B/C solver regression");return 0
 
 
@@ -308,12 +308,10 @@ def run_combined_fk_regression(cli=None) -> int:
         result = values[0][0].lm_result
         print(
             f"[TIMING {backend.upper()}] wall={statistics.median(v[0].lm_result.wall_time_ms for v in values):.3f} "
-            f"solver_jacobian={median_profile('solver_jacobian_ms'):.3f} "
-            f"normal_eq={median_profile('stage2_joint_normal_equations_ms'):.3f} "
-            f"objective={median_profile('objective_eval_ms'):.3f} "
-            f"schur={median_profile('stage2_joint_schur_solve_ms'):.3f} "
-            f"fk_combined_calls={median_profile('stage2_joint_fk_combined_calls'):.0f} "
-            f"fk_separate_calls={median_profile('stage2_joint_fk_separate_calls'):.0f} "
+            f"normal_eq={median_profile('normal_equations_ms'):.3f} "
+            f"objective={median_profile('true_objective_ms'):.3f} "
+            f"solve={median_profile('linear_solve_ms'):.3f} "
+            f"other={median_profile('other_runner_ms'):.3f} "
             f"verdict={values[0][0].verdict} status={result.status}"
         )
     if cli.run_lbfgs_oracle and runs["combined"][0][0].verdict != "LM_MATCHES_LBFGS":

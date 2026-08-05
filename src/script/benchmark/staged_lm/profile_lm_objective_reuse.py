@@ -125,7 +125,7 @@ def _legacy_stage(definition, context) -> StageOutcome:
     )
     trace.result.eval_backend = definition.eval_backend
     return StageOutcome(
-        trace.result, None, None, definition.lm_true_objective_fn, definition,
+        trace.result, definition.lm_true_objective_fn, definition,
     )
 
 

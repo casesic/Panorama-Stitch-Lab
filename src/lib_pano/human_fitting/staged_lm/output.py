@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import time
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -17,9 +18,18 @@ import torch
 from lib_pano.fitting_io.fitting_result_io import save_segment_result
 from lib_pano.human_fitting.smplx_sequence import SMPLX_Seq_Forward_Module
 
+from .config import (
+    PRODUCTION_JOINT_EVALUATION,
+    PRODUCTION_JOINT_FK,
+    PRODUCTION_JOINT_LINEARIZATION,
+    PRODUCTION_POSE_EVALUATION,
+    PRODUCTION_POSE_LINEARIZATION,
+    PRODUCTION_STAGE1_EVALUATION,
+    PRODUCTION_STAGE1_LINEARIZATION,
+)
 from .parameter_layout import unpack_frame_parameters
 from .residuals import flatten_reprojection_groups
-from .types import LBFGSResult, LMResult, StageOutcome
+from .types import LMResult, StageContext, StageOutcome
 
 
 _COMPAT_RESULT_KEYS = {
@@ -27,6 +37,80 @@ _COMPAT_RESULT_KEYS = {
     "pose_warmup": ("x_stage2_pose_lm", "beta_anchor", True),
     "joint_refinement": ("x_stage2_joint_lm", "beta_lm", True),
 }
+
+
+def stage_outcome_to_json(outcome: StageOutcome) -> dict[str, Any]:
+    """Serialize one Stage outcome without evaluating its residual function."""
+    definition = outcome.definition
+    summary = definition.input_summary if definition is not None else None
+    if summary is None:
+        raise RuntimeError("MISSING_STAGE_INPUT_SUMMARY_FOR_OUTPUT")
+    return {
+        "lm": lm_result_to_json(outcome.lm_result),
+        "input_summary": {
+            "T": summary.frame_count,
+            "param_dim": summary.parameter_dimension,
+            "n_groups": summary.group_count,
+            "total_valid_points": summary.total_valid_points,
+        },
+    }
+
+
+def build_saved_config(args: Any, context: StageContext) -> dict[str, Any]:
+    """Build the stable production configuration stored in result JSON."""
+    return {
+        **vars(args),
+        "jacobian_backend": PRODUCTION_STAGE1_LINEARIZATION,
+        "stage1_eval_backend": PRODUCTION_STAGE1_EVALUATION,
+        "stage2_pose_linearization_backend": PRODUCTION_POSE_LINEARIZATION,
+        "stage2_pose_eval_backend": PRODUCTION_POSE_EVALUATION,
+        "stage2_joint_linearization_backend": PRODUCTION_JOINT_LINEARIZATION,
+        "stage2_joint_eval_backend": PRODUCTION_JOINT_EVALUATION,
+        "stage2_joint_linear_solver": "schur",
+        "stage2_joint_fk_jacobian_backend": PRODUCTION_JOINT_FK,
+        "validate_stage1_fast_eval": False,
+        "validate_stage2_pose_fast_eval": False,
+        "validate_stage2_joint_fast_eval": False,
+        "validate_irls_first_order": False,
+        "solver_config": asdict(context.solver_config),
+        "objective_config": asdict(context.objective_config),
+    }
+
+
+def build_initial_results(
+    args: Any,
+    context: StageContext,
+    pipeline_timing: dict[str, Any],
+    stage1_outcome: StageOutcome,
+) -> dict[str, Any]:
+    """Build the result JSON root after Stage 1 has completed."""
+    return {
+        "config": build_saved_config(args, context),
+        "execution": {
+            "requested_device": getattr(args, "device", "cpu"),
+            "resolved_device": str(context.device),
+            "dtype": str(context.dtype).replace("torch.", ""),
+            "environment": context.device_environment,
+        },
+        "pipeline_timing": pipeline_timing,
+        "stage1": stage_outcome_to_json(stage1_outcome),
+    }
+
+
+def build_beta_metrics(
+    beta: torch.Tensor,
+    beta_anchor: torch.Tensor,
+    beta_abs_limit: float,
+) -> dict[str, Any]:
+    """Build the compact Joint-stage beta summary."""
+    beta_max = float(beta.abs().max())
+    return {
+        "lm": {
+            "max": beta_max,
+            "sat": beta_max / beta_abs_limit,
+            "delta": float(torch.norm(beta - beta_anchor)),
+        },
+    }
 
 
 def _flat_cpu_tensor(value: Any, name: str, expected_size: int) -> torch.Tensor:
@@ -159,7 +243,7 @@ def save_experiment_outputs(
     results: dict[str, Any],
     arrays: dict[str, np.ndarray],
     *,
-    pipeline_timing: dict[str, float] | None = None,
+    pipeline_timing: dict[str, Any] | None = None,
     command_start: float | None = None,
 ) -> None:
     """Write ``staged_stage2b_beta.json`` and ``staged_stage2b_beta.npz``."""
@@ -169,13 +253,18 @@ def save_experiment_outputs(
         json.dump(results, f, ensure_ascii=False, indent=2, default=str)
     np.savez_compressed(str(output_directory / "staged_stage2b_beta.npz"), **arrays)
     if pipeline_timing is not None:
-        pipeline_timing["output_save_ms"] = (time.perf_counter() - start) * 1000.0
+        output_save_ms = (time.perf_counter() - start) * 1000.0
+        profile = pipeline_timing.get("profile")
+        if isinstance(profile, dict):
+            profile.setdefault("after_fitting", {})["output_save_ms"] = output_save_ms
+            pipeline_timing.pop("profile")
         if command_start is not None:
             pipeline_timing["command_total_ms"] = (time.perf_counter() - command_start) * 1000.0
+        if isinstance(profile, dict):
+            pipeline_timing["profile"] = profile
         results["pipeline_timing"] = pipeline_timing
         # Rewrite only the small JSON metadata so it contains the measured
-        # first complete save. This rewrite is intentionally not folded back
-        # into output_save_ms to avoid a self-referential timing value.
+        # first complete save. The JSON rewrite itself is intentionally excluded.
         with json_path.open("w") as f:
             json.dump(results, f, ensure_ascii=False, indent=2, default=str)
     print(f"[SAVE] {output_directory}")
@@ -184,13 +273,6 @@ def save_experiment_outputs(
 def lm_result_to_json(lm_result: LMResult) -> dict[str, Any]:
     """Convert an LM result to its JSON view (excluding the parameter tensor)."""
     return lm_result.to_json_dict()
-
-
-def lbfgs_result_to_json(lbfgs_result: LBFGSResult | None) -> dict[str, Any] | None:
-    """Convert an L-BFGS result to its JSON view, or ``None`` if not run."""
-    if lbfgs_result is None:
-        return None
-    return lbfgs_result.to_json_dict()
 
 
 def collect_stage1_arrays(
@@ -210,15 +292,12 @@ def collect_stage1_arrays(
             stage1_raw_groups_fn(stage1_outcome.lm_result.parameters)
         ).detach().cpu().numpy(),
     }
-    if stage1_outcome.lbfgs_result is not None:
-        arrays["x_s1_lbfgs"] = stage1_outcome.lbfgs_result.parameters.cpu().numpy()
     return arrays
 
 
 def collect_stage2_pose_arrays(
     stage1_initial: torch.Tensor,
     stage2_pose_initial_lm: torch.Tensor,
-    stage2_pose_initial_lbfgs: torch.Tensor | None,
     stage1_outcome: StageOutcome,
     stage2_pose_outcome: StageOutcome,
     beta_anchor: torch.Tensor,
@@ -243,11 +322,6 @@ def collect_stage2_pose_arrays(
         "raw_reproj_s1_lm": raw_s1,
         "raw_reproj_stage2_pose_lm": raw_pose,
     }
-    if stage1_outcome.lbfgs_result is not None:
-        arrays["x_s1_lbfgs"] = stage1_outcome.lbfgs_result.parameters.cpu().numpy()
-    if stage2_pose_outcome.lbfgs_result is not None and stage2_pose_initial_lbfgs is not None:
-        arrays["x_stage2_pose_lbfgs"] = stage2_pose_outcome.lbfgs_result.parameters.cpu().numpy()
-        arrays["x0_stage2_pose_lbfgs"] = stage2_pose_initial_lbfgs.cpu().numpy()
     return arrays
 
 
@@ -261,12 +335,9 @@ def collect_stage2_arrays(
     beta_anchor: torch.Tensor,
     beta_latent0: torch.Tensor,
     beta_lm: torch.Tensor,
-    beta_lbfgs: torch.Tensor | None,
     stage1_raw_groups_fn: Any,
     stage2_pose_raw_groups_fn: Any,
     stage2_joint_raw_groups_fn: Any,
-    stage2_pose_initial_lbfgs: torch.Tensor | None,
-    stage2_joint_initial_lbfgs: torch.Tensor | None,
 ) -> dict[str, np.ndarray]:
     """Collect NPZ arrays for the full Stage 2 joint refinement path."""
     raw_s1_lm = flatten_reprojection_groups(
@@ -294,49 +365,4 @@ def collect_stage2_arrays(
         "raw_reproj_stage2_joint_lm": raw_joint_lm,
     }
 
-    if stage1_outcome.lbfgs_result is not None:
-        arrays["x_s1_lbfgs"] = stage1_outcome.lbfgs_result.parameters.cpu().numpy()
-        arrays["raw_reproj_s1_lbfgs"] = flatten_reprojection_groups(
-            stage1_raw_groups_fn(stage1_outcome.lbfgs_result.parameters)
-        ).detach().cpu().numpy()
-    if stage2_pose_outcome.lbfgs_result is not None:
-        arrays["x0_stage2_pose_lbfgs"] = stage2_pose_initial_lbfgs.cpu().numpy()
-        arrays["x_stage2_pose_lbfgs"] = stage2_pose_outcome.lbfgs_result.parameters.cpu().numpy()
-        arrays["raw_reproj_stage2_pose_lbfgs"] = flatten_reprojection_groups(
-            stage2_pose_raw_groups_fn(stage2_pose_outcome.lbfgs_result.parameters)
-        ).detach().cpu().numpy()
-    if stage2_joint_outcome.lbfgs_result is not None:
-        arrays["x0_stage2_joint_lbfgs"] = stage2_joint_initial_lbfgs.cpu().numpy()
-        arrays["x_stage2_joint_lbfgs"] = stage2_joint_outcome.lbfgs_result.parameters.cpu().numpy()
-        arrays["beta_lbfgs"] = beta_lbfgs.cpu().numpy()
-        arrays["raw_reproj_stage2_joint_lbfgs"] = flatten_reprojection_groups(
-            stage2_joint_raw_groups_fn(stage2_joint_outcome.lbfgs_result.parameters)
-        ).detach().cpu().numpy()
-
     return arrays
-
-
-def compute_objective_breakdown(
-    objective_terms_fn: Any,
-    parameters: torch.Tensor,
-    *,
-    expected_true_objective: float,
-) -> dict[str, float]:
-    """Decompose the final joint objective with one fast objective evaluation."""
-    terms = objective_terms_fn(parameters)
-    primary = float(terms["primary"].detach().item())
-    pose_anchor = float(terms["pose_anchor"].detach().item())
-    shape_anchor = float(terms["shape_anchor"].detach().item())
-    total = float(terms["total"].detach().item())
-    true_total = float(expected_true_objective)
-    relative_error = abs(total - true_total) / max(abs(true_total), 1e-16)
-    if relative_error > 1e-6:
-        raise RuntimeError("OBJECTIVE_BREAKDOWN_MISMATCH")
-    return {
-        "primary": primary,
-        "pose_anchor": pose_anchor,
-        "shape_anchor": shape_anchor,
-        "total": total,
-        "true_objective": true_total,
-        "relative_error": relative_error,
-    }

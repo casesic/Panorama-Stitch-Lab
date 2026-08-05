@@ -40,7 +40,7 @@ from __future__ import annotations
 
 import math
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -51,13 +51,6 @@ from lib_pano.human_fitting import DualCamERPFitter
 
 from lib_pano.human_fitting.staged_lm.config import (
     BETA_ATANH_EPS,
-    PRODUCTION_JOINT_EVALUATION,
-    PRODUCTION_JOINT_FK,
-    PRODUCTION_JOINT_LINEARIZATION,
-    PRODUCTION_POSE_EVALUATION,
-    PRODUCTION_POSE_LINEARIZATION,
-    PRODUCTION_STAGE1_EVALUATION,
-    PRODUCTION_STAGE1_LINEARIZATION,
     R_CAM4,
     ScalingConstants,
     SolverConfig,
@@ -80,21 +73,22 @@ from lib_pano.human_fitting.staged_lm.device import (
     validate_context_device,
 )
 from lib_pano.human_fitting.staged_lm.output import (
+    build_beta_metrics,
     build_output_directory,
+    build_initial_results,
     collect_stage1_arrays,
     collect_stage2_pose_arrays,
     collect_stage2_arrays,
-    compute_objective_breakdown,
     export_debug029_compatible_result,
-    lbfgs_result_to_json,
-    lm_result_to_json,
     save_experiment_outputs,
+    stage_outcome_to_json,
 )
 from lib_pano.human_fitting.staged_lm.pipeline import run_stage2
 from lib_pano.human_fitting.staged_lm.stage_definitions.rigid import (
     build_stage1_definition,
 )
 from lib_pano.human_fitting.staged_lm.stage_runtime import run_stage
+from lib_pano.human_fitting.staged_lm.stage_timing import build_pipeline_timing
 from lib_pano.human_fitting.staged_lm.types import StageContext
 
 
@@ -112,14 +106,14 @@ class ProductionRunResult:
     results: dict[str, Any]
     arrays: dict[str, Any]
     output_directory: Path
-    pipeline_timing: dict[str, float]
+    pipeline_timing: dict[str, Any]
 
 
 def build_context(args) -> StageContext:
     """Load all data and build the shared :class:`StageContext`."""
     context_start = time.perf_counter()
     context_timing: dict[str, float] = {}
-    requested_device = getattr(args, "device", "auto")
+    requested_device = getattr(args, "device", "cpu")
     start = time.perf_counter()
     device = resolve_execution_device(requested_device)
     dtype = torch.float32
@@ -189,8 +183,6 @@ def build_context(args) -> StageContext:
         [obs[1] for obs in frame_observations],
         (image_width, image_height),
     )
-    move_smplx_param_sequence(cam2_smplx, device, dtype)
-    move_smplx_param_sequence(cam4_smplx, device, dtype)
     shared_beta = shared_beta.detach().to(device=device, dtype=dtype)
     shared_body_pose = shared_body_pose.detach().to(device=device, dtype=dtype)
     if device.type == "cuda":
@@ -276,24 +268,6 @@ def build_context(args) -> StageContext:
     return context
 
 
-def _stage_json(outcome) -> dict:
-    definition = outcome.definition
-    summary = definition.input_summary if definition is not None else None
-    if summary is None:
-        raise RuntimeError("MISSING_STAGE_INPUT_SUMMARY_FOR_OUTPUT")
-    return {
-        "lm": lm_result_to_json(outcome.lm_result),
-        "lbfgs": lbfgs_result_to_json(outcome.lbfgs_result),
-        "input_summary": {
-            "T": summary.frame_count,
-            "param_dim": summary.parameter_dimension,
-            "n_groups": summary.group_count,
-            "total_valid_points": summary.total_valid_points,
-        },
-        "verdict": outcome.verdict,
-    }
-
-
 def run_production_pipeline(
     args: Any,
     *,
@@ -302,66 +276,41 @@ def run_production_pipeline(
     """Run the fixed production path and optionally serialize its outputs."""
     command_start = time.perf_counter()
     context = build_context(args)
-    pipeline_timing = dict(context.context_timing)
-    pipeline_timing["timing_schema_version"] = 5
+    pipeline_timing = build_pipeline_timing(context)
     if context.device.type == "cuda":
         torch.cuda.synchronize(context.device)
     fitting_start = time.perf_counter()
     stage1_definition = build_stage1_definition(context)
     stage1_preparation = stage1_definition.preparation_timing
-    pipeline_timing["stage1_prepare_total_ms"] = stage1_preparation.total_ms
-    pipeline_timing["stage1_cache_setup_ms"] = stage1_preparation.cache_setup_ms
-    pipeline_timing["stage1_definition_bind_ms"] = stage1_preparation.definition_bind_ms
+    pipeline_timing["stage1_prepare"] = stage1_preparation.total_ms
+    profile = pipeline_timing.get("profile")
+    if isinstance(profile, dict):
+        profile["stage1_prepare_breakdown"] = {
+            "total_ms": stage1_preparation.total_ms,
+            "cache_ms": stage1_preparation.cache_setup_ms,
+            "bind_ms": stage1_preparation.definition_bind_ms,
+        }
     start = time.perf_counter()
     stage1_outcome = run_stage(stage1_definition, context)
     if context.device.type == "cuda":
         torch.cuda.synchronize(context.device)
     stage1_run_ms = (time.perf_counter() - start) * 1000.0
     pipeline_timing["stage1_run_ms"] = stage1_run_ms
-    pipeline_timing["stage1_run_overhead_ms"] = max(
-        0.0, stage1_run_ms - stage1_outcome.lm_result.wall_time_ms,
+    results = build_initial_results(
+        args, context, pipeline_timing, stage1_outcome,
     )
-    saved_config = {
-        **vars(args),
-        "jacobian_backend": PRODUCTION_STAGE1_LINEARIZATION,
-        "stage1_eval_backend": PRODUCTION_STAGE1_EVALUATION,
-        "stage2_pose_linearization_backend": PRODUCTION_POSE_LINEARIZATION,
-        "stage2_pose_eval_backend": PRODUCTION_POSE_EVALUATION,
-        "stage2_joint_linearization_backend": PRODUCTION_JOINT_LINEARIZATION,
-        "stage2_joint_eval_backend": PRODUCTION_JOINT_EVALUATION,
-        "stage2_joint_linear_solver": "schur",
-        "stage2_joint_fk_jacobian_backend": PRODUCTION_JOINT_FK,
-        "run_lbfgs_oracle": False,
-        "validate_stage1_fast_eval": False,
-        "validate_stage2_pose_fast_eval": False,
-        "validate_stage2_joint_fast_eval": False,
-        "validate_irls_first_order": False,
-        "solver_config": asdict(context.solver_config),
-        "objective_config": asdict(context.objective_config),
-    }
-    results: dict = {
-        "config": saved_config,
-        "execution": {
-            "requested_device": getattr(args, "device", "auto"),
-            "resolved_device": str(context.device),
-            "dtype": str(context.dtype).replace("torch.", ""),
-            "environment": context.device_environment,
-        },
-        "pipeline_timing": pipeline_timing,
-        "stage1": _stage_json(stage1_outcome),
-    }
     output_directory = build_output_directory(Path(args.output_dir), context.frame_indices)
 
     if args.stop_after_stage == "stage1":
         pipeline_timing["fitting_total_ms"] = (time.perf_counter() - fitting_start) * 1000.0
-        pipeline_timing["fitting_with_oracle_ms"] = pipeline_timing["fitting_total_ms"]
-        pipeline_timing["lbfgs_total_ms"] = 0.0
         start = time.perf_counter()
         arrays = collect_stage1_arrays(
             stage1_definition.initial_lm_parameters, stage1_outcome,
             context.beta_anchor, context.beta_latent0, stage1_definition.raw_groups_fn,
         )
-        pipeline_timing["output_array_build_ms"] = (time.perf_counter() - start) * 1000.0
+        output_array_build_ms = (time.perf_counter() - start) * 1000.0
+        if isinstance(profile, dict):
+            profile.setdefault("after_fitting", {})["output_array_build_ms"] = output_array_build_ms
         if save_outputs:
             save_experiment_outputs(
                 output_directory, results, arrays,
@@ -379,22 +328,21 @@ def run_production_pipeline(
     stage2_outcome = run_stage2(context, stage1_outcome, pipeline_timing)
     pose_outcome = stage2_outcome.pose_warmup
     results["handoffs"] = {key: value for key, value in stage2_outcome.handoffs.items() if value is not None}
-    results["stage2"] = {"pose_warmup": _stage_json(pose_outcome)}
+    results["stage2"] = {"pose_warmup": stage_outcome_to_json(pose_outcome)}
 
     if args.stop_after_stage == "stage2_pose":
         pipeline_timing["fitting_total_ms"] = (time.perf_counter() - fitting_start) * 1000.0
-        pipeline_timing["fitting_with_oracle_ms"] = pipeline_timing["fitting_total_ms"]
-        pipeline_timing["lbfgs_total_ms"] = 0.0
         start = time.perf_counter()
         pose_definition = pose_outcome.definition
         arrays = collect_stage2_pose_arrays(
             stage1_definition.initial_lm_parameters,
             pose_definition.initial_lm_parameters,
-            None,
             stage1_outcome, pose_outcome, context.beta_anchor, context.beta_latent0,
             stage1_definition.raw_groups_fn, pose_definition.raw_groups_fn,
         )
-        pipeline_timing["output_array_build_ms"] = (time.perf_counter() - start) * 1000.0
+        output_array_build_ms = (time.perf_counter() - start) * 1000.0
+        if isinstance(profile, dict):
+            profile.setdefault("after_fitting", {})["output_array_build_ms"] = output_array_build_ms
         if save_outputs:
             save_experiment_outputs(
                 output_directory, results, arrays,
@@ -417,47 +365,28 @@ def run_production_pipeline(
     joint_definition = joint_outcome.definition
     beta_abs_limit = context.objective_config.beta_abs_limit
     beta_lm = beta_abs_limit * torch.tanh(joint_outcome.lm_result.parameters[-context.beta_dim:])
-    beta_metrics = {"lm": {"max": float(beta_lm.abs().max()), "sat": float(beta_lm.abs().max()) / beta_abs_limit,
-                           "delta": float(torch.norm(beta_lm - context.beta_anchor))}}
-    beta_lbfgs = None
-
+    beta_metrics = build_beta_metrics(
+        beta_lm, context.beta_anchor, beta_abs_limit,
+    )
     pipeline_timing["fitting_total_ms"] = (
         time.perf_counter() - fitting_start
     ) * 1000.0
-    if joint_definition.objective_terms_fn is None:
-        raise RuntimeError("MISSING_JOINT_OBJECTIVE_TERMS_FN")
-    start = time.perf_counter()
-    beta_metrics["lm"]["breakdown"] = compute_objective_breakdown(
-        joint_definition.objective_terms_fn,
-        joint_outcome.lm_result.parameters,
-        expected_true_objective=joint_outcome.lm_result.objective,
-    )
-    if context.device.type == "cuda":
-        torch.cuda.synchronize(context.device)
-    pipeline_timing["objective_breakdown_ms"] = (time.perf_counter() - start) * 1000.0
-    results["stage2"]["joint_refinement"] = _stage_json(joint_outcome)
+    results["stage2"]["joint_refinement"] = stage_outcome_to_json(joint_outcome)
     results["stage2"]["beta"] = beta_metrics
 
-    results["gate_c_verdict"] = {
-        "verdict": "GATE_C_NOT_EVALUATED",
-        "oracle_enabled": False,
-        "checks": {},
-    }
-    pipeline_timing["gate_c_ms"] = 0.0
-    pipeline_timing["fitting_with_oracle_ms"] = pipeline_timing["fitting_total_ms"]
-    pipeline_timing["lbfgs_total_ms"] = 0.0
     start = time.perf_counter()
     pose_definition = pose_outcome.definition
     arrays = collect_stage2_arrays(
         stage1_definition.initial_lm_parameters, pose_definition.initial_lm_parameters,
         joint_definition.initial_lm_parameters, stage1_outcome, pose_outcome, joint_outcome,
-        context.beta_anchor, context.beta_latent0, beta_lm, beta_lbfgs,
+        context.beta_anchor, context.beta_latent0, beta_lm,
         stage1_definition.raw_groups_fn, pose_definition.raw_groups_fn, joint_definition.raw_groups_fn,
-        None, None,
     )
     if context.device.type == "cuda":
         torch.cuda.synchronize(context.device)
-    pipeline_timing["output_array_build_ms"] = (time.perf_counter() - start) * 1000.0
+    output_array_build_ms = (time.perf_counter() - start) * 1000.0
+    if isinstance(profile, dict):
+        profile.setdefault("after_fitting", {})["output_array_build_ms"] = output_array_build_ms
     if save_outputs:
         save_experiment_outputs(
             output_directory, results, arrays,

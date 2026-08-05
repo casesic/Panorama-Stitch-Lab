@@ -53,13 +53,18 @@ from lib_pano.human_fitting.staged_lm.config import STAGE1_PER_FRAME_DIM
 from lib_pano.human_fitting.staged_lm.parameter_layout import build_stage1_initial_parameters
 from lib_pano.human_fitting.staged_lm.residuals import flatten_reprojection_groups, make_raw_reproj_groups, raw_reproj_metrics
 from lib_pano.human_fitting.staged_lm.types import (
-    LBFGSResult,
     LMResult,
     StageContext,
-    StageOutcome,
     Stage2Outcome,
 )
-from .types import ReferenceStageDefinition as StageDefinition
+from .types import (
+    JOINT_LBFGS_OUTER_STEPS,
+    POSE_LBFGS_OUTER_STEPS,
+    STAGE1_LBFGS_OUTER_STEPS,
+    LBFGSResult,
+    ReferenceStageDefinition as StageDefinition,
+    ReferenceStageOutcome as StageOutcome,
+)
 from lib_pano.human_fitting.staged_lm.device import validate_stage_initial_parameters
 
 
@@ -264,7 +269,6 @@ def run_stage(stage: StageDefinition, context: StageContext) -> StageOutcome:
             raw_metrics_fn=stage.raw_metrics_fn,
             initial_parameters=stage.initial_lbfgs_parameters,
             outer_steps=stage.lbfgs_outer_steps,
-            solver_config=context.solver_config,
         )
         if stage.fast_eval_validator is not None:
             start = time.perf_counter()
@@ -422,7 +426,7 @@ def build_stage1_definition(context: StageContext) -> StageDefinition:
         anchor_residual_fn=None,
         raw_metrics_fn=selected_metrics_fn,
         lm_max_accepted_steps=context.solver_config.stage1_lm_max_acc,
-        lbfgs_outer_steps=context.solver_config.stage1_bf_outer,
+        lbfgs_outer_steps=STAGE1_LBFGS_OUTER_STEPS,
         analytic_cache=analytic_cache,
         linearization_builder=stage1_linearization_builder,
         lm_true_objective_fn=lm_true_objective_fn,
@@ -594,7 +598,7 @@ def _build_pose_warmup_definition(
         anchor_residual_fn=pose_anchor_residual,
         raw_metrics_fn=selected_metrics_fn,
         lm_max_accepted_steps=context.solver_config.stage2_pose_warmup_lm_max_acc,
-        lbfgs_outer_steps=context.solver_config.stage2_pose_warmup_bf_outer,
+        lbfgs_outer_steps=POSE_LBFGS_OUTER_STEPS,
         analytic_cache=fast_cache,
         linearization_builder=linearization_builder,
         lm_true_objective_fn=lm_true_objective_fn,
@@ -732,7 +736,7 @@ def _build_joint_refinement_definition(
         anchor_residual_fn=all_anchors_residual,
         raw_metrics_fn=selected_metrics_fn,
         lm_max_accepted_steps=context.solver_config.stage2_joint_lm_max_acc,
-        lbfgs_outer_steps=context.solver_config.stage2_joint_bf_outer,
+        lbfgs_outer_steps=JOINT_LBFGS_OUTER_STEPS,
         analytic_cache=joint_fast_cache,linearization_builder=linearization_builder,
         lm_true_objective_fn=lm_true_objective_fn,lbfgs_true_objective_fn=full_joint_objective,
         eval_backend=eval_backend,linearization_backend=linearization_backend,

@@ -105,16 +105,15 @@ def test_cuda_frozen_parameters_are_normalized_to_cpu() -> None:
     print("test_cuda_frozen_parameters_are_normalized_to_cpu: PASS")
 
 
-def test_missing_lbfgs_error() -> None:
+def test_missing_lm_result_error() -> None:
     try:
-        require_result_arrays({"beta_anchor": np.zeros(2)}, "joint_refinement", "lbfgs")
+        require_result_arrays({"beta_anchor": np.zeros(2)}, "joint_refinement")
     except KeyError as exc:
         message = str(exc)
-        assert "x_stage2_joint_lbfgs is absent" in message
-        assert "--run_lbfgs_oracle" in message
+        assert "x_stage2_joint_lm" in message
     else:
-        raise AssertionError("missing L-BFGS result did not fail")
-    print("test_missing_lbfgs_error: PASS")
+        raise AssertionError("missing LM result did not fail")
+    print("test_missing_lm_result_error: PASS")
 
 
 if __name__ == "__main__":
@@ -122,5 +121,5 @@ if __name__ == "__main__":
     test_pose_single_and_two_frame_slicing()
     test_joint_latent_excluded_and_physical_beta_unchanged()
     test_cuda_frozen_parameters_are_normalized_to_cpu()
-    test_missing_lbfgs_error()
+    test_missing_lm_result_error()
     print("\nAll debug110 tests PASSED")

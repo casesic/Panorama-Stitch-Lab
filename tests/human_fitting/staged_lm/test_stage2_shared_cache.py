@@ -263,10 +263,13 @@ def test_stop_stage_lifecycle_build_counts() -> None:
         assert shared_builder.call_count == 1
         assert pose_builder.call_count == 1
         assert joint_builder.call_count == expected_joint_builds
-        assert timing["stage2_shared_cache_setup_ms"] == 2.0
-        assert timing["stage2_total_cache_setup_ms"] == (
-            2.2 if not expected_joint_builds else 2.5
+        assert timing["stage2_prepare"] == (
+            2.6 if not expected_joint_builds else 3.5
         )
+        assert set(timing) == {
+            "stage2_prepare", "stage2_pose_run_ms",
+            *(('stage2_joints_run_ms',) if expected_joint_builds else ()),
+        }
 
 
 if __name__ == "__main__":

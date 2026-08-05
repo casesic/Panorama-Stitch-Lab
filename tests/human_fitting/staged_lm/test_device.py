@@ -55,12 +55,11 @@ def _raises(marker: str, fn) -> None:
 def test_device_resolution() -> None:
     assert resolve_execution_device("cpu") == torch.device("cpu")
     with mock.patch("torch.cuda.is_available", return_value=False):
-        assert resolve_execution_device("auto") == torch.device("cpu")
         _raises("CUDA_REQUESTED_BUT_UNAVAILABLE", lambda: resolve_execution_device("cuda"))
-    with mock.patch("torch.cuda.is_available", return_value=True), \
-         mock.patch("torch.cuda.device_count", return_value=1):
+    with mock.patch("torch.cuda.is_available", return_value=True):
         assert resolve_execution_device("cuda") == torch.device("cuda:0")
-        _raises("CUDA_DEVICE_INDEX_OUT_OF_RANGE", lambda: resolve_execution_device("cuda:1"))
+    _raises("INVALID_EXECUTION_DEVICE", lambda: resolve_execution_device("auto"))
+    _raises("INVALID_EXECUTION_DEVICE", lambda: resolve_execution_device("cuda:0"))
     _raises("INVALID_EXECUTION_DEVICE", lambda: resolve_execution_device("gpu"))
 
 
@@ -139,7 +138,7 @@ def test_context_and_stage_validation() -> None:
     context = _fake_context()
     stage = SimpleNamespace(
         name="TEST", initial_lm_parameters=torch.zeros(3),
-        initial_lbfgs_parameters=torch.zeros(3), analytic_cache=None,
+        analytic_cache=None,
     )
     validate_stage_initial_parameters(stage, context)
     stage.initial_lm_parameters = torch.zeros(3, dtype=torch.float64)
@@ -165,7 +164,7 @@ def test_cuda_branch_when_available() -> None:
     if not torch.cuda.is_available():
         print("test_cuda_branch_when_available: SKIP (CUDA unavailable)")
         return
-    device = resolve_execution_device("cuda:0")
+    device = resolve_execution_device("cuda")
     seq = SMPLX_Seq_Forward_Module.SMPLX_Param_Seq(num_batch=1)
     move_smplx_param_sequence(seq, device)
     assert seq.orient.is_cuda and seq.orient.dtype == torch.float32
