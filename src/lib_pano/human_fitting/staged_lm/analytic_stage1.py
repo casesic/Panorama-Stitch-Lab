@@ -238,6 +238,7 @@ def stage1_raw_residual(cache: Stage1AnalyticCache, parameters: torch.Tensor) ->
 
 
 def stage1_raw_jacobian(cache: Stage1AnalyticCache, parameters: torch.Tensor) -> torch.Tensor:
+    '''get all frames J'''
     _sync(parameters, cache.profile_timing)
     start = time.perf_counter()
     row_count = sum(group.targets.shape[0] * 2 for group in cache.groups)
@@ -293,7 +294,9 @@ def stage1_normal_equations(
     parameters: torch.Tensor,
     row_scales: torch.Tensor,
 ) -> NormalEquations:
-    """Accumulate per-frame 12x12 systems without constructing the global J."""
+    """
+    Get all frames H = J^T@J  g = J^T@r,  
+    Accumulate per-frame 12x12 systems without constructing the global J."""
     _sync(parameters, cache.profile_timing)
     start = time.perf_counter()
     parameter_count = cache.frame_count * STAGE1_PER_FRAME_DIM

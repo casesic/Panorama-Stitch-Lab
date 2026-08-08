@@ -303,17 +303,15 @@ def run_production_pipeline(
 
     if args.stop_after_stage == "stage1":
         pipeline_timing["fitting_total_ms"] = (time.perf_counter() - fitting_start) * 1000.0
-        start = time.perf_counter()
-        arrays = collect_stage1_arrays(
-            stage1_definition.initial_lm_parameters, stage1_outcome,
-            context.beta_anchor, context.beta_latent0, stage1_definition.raw_groups_fn,
-        )
-        output_array_build_ms = (time.perf_counter() - start) * 1000.0
-        if isinstance(profile, dict):
-            profile.setdefault("after_fitting", {})["output_array_build_ms"] = output_array_build_ms
+        arrays: dict[str, Any] = {}
+        if getattr(args, "export_debug029_format", False):
+            arrays = collect_stage1_arrays(
+                stage1_definition.initial_lm_parameters, stage1_outcome,
+                context.beta_anchor, context.beta_latent0, stage1_definition.raw_groups_fn,
+            )
         if save_outputs:
             save_experiment_outputs(
-                output_directory, results, arrays,
+                output_directory, results,
                 pipeline_timing=pipeline_timing, command_start=command_start,
             )
             if getattr(args, "export_debug029_format", False):
@@ -332,20 +330,18 @@ def run_production_pipeline(
 
     if args.stop_after_stage == "stage2_pose":
         pipeline_timing["fitting_total_ms"] = (time.perf_counter() - fitting_start) * 1000.0
-        start = time.perf_counter()
         pose_definition = pose_outcome.definition
-        arrays = collect_stage2_pose_arrays(
-            stage1_definition.initial_lm_parameters,
-            pose_definition.initial_lm_parameters,
-            stage1_outcome, pose_outcome, context.beta_anchor, context.beta_latent0,
-            stage1_definition.raw_groups_fn, pose_definition.raw_groups_fn,
-        )
-        output_array_build_ms = (time.perf_counter() - start) * 1000.0
-        if isinstance(profile, dict):
-            profile.setdefault("after_fitting", {})["output_array_build_ms"] = output_array_build_ms
+        arrays = {}
+        if getattr(args, "export_debug029_format", False):
+            arrays = collect_stage2_pose_arrays(
+                stage1_definition.initial_lm_parameters,
+                pose_definition.initial_lm_parameters,
+                stage1_outcome, pose_outcome, context.beta_anchor, context.beta_latent0,
+                stage1_definition.raw_groups_fn, pose_definition.raw_groups_fn,
+            )
         if save_outputs:
             save_experiment_outputs(
-                output_directory, results, arrays,
+                output_directory, results,
                 pipeline_timing=pipeline_timing, command_start=command_start,
             )
             if getattr(args, "export_debug029_format", False):
@@ -374,22 +370,19 @@ def run_production_pipeline(
     results["stage2"]["joint_refinement"] = stage_outcome_to_json(joint_outcome)
     results["stage2"]["beta"] = beta_metrics
 
-    start = time.perf_counter()
     pose_definition = pose_outcome.definition
-    arrays = collect_stage2_arrays(
-        stage1_definition.initial_lm_parameters, pose_definition.initial_lm_parameters,
-        joint_definition.initial_lm_parameters, stage1_outcome, pose_outcome, joint_outcome,
-        context.beta_anchor, context.beta_latent0, beta_lm,
-        stage1_definition.raw_groups_fn, pose_definition.raw_groups_fn, joint_definition.raw_groups_fn,
-    )
-    if context.device.type == "cuda":
-        torch.cuda.synchronize(context.device)
-    output_array_build_ms = (time.perf_counter() - start) * 1000.0
-    if isinstance(profile, dict):
-        profile.setdefault("after_fitting", {})["output_array_build_ms"] = output_array_build_ms
+    arrays = {}
+    if getattr(args, "export_debug029_format", False):
+        arrays = collect_stage2_arrays(
+            stage1_definition.initial_lm_parameters, pose_definition.initial_lm_parameters,
+            joint_definition.initial_lm_parameters, stage1_outcome, pose_outcome, joint_outcome,
+            context.beta_anchor, context.beta_latent0, beta_lm,
+            stage1_definition.raw_groups_fn, pose_definition.raw_groups_fn,
+            joint_definition.raw_groups_fn,
+        )
     if save_outputs:
         save_experiment_outputs(
-            output_directory, results, arrays,
+            output_directory, results,
             pipeline_timing=pipeline_timing, command_start=command_start,
         )
         if getattr(args, "export_debug029_format", False):

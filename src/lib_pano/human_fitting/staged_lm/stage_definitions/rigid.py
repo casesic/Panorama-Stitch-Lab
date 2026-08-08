@@ -33,14 +33,6 @@ from .common import (
 )
 
 
-def _build_stage1_initial(context: StageContext) -> torch.Tensor:
-    return build_stage1_initial_parameters(
-        context.cam2_smplx_parameters,
-        context.cam4_smplx_parameters,
-        context.frame_count,
-    )
-
-
 def build_stage1_definition(context: StageContext) -> StageDefinition:
     """Build fixed analytic/fast Stage 1."""
     synchronize_context_device(context)
@@ -51,13 +43,18 @@ def build_stage1_definition(context: StageContext) -> StageDefinition:
 
     synchronize_context_device(context)
     bind_start = time.perf_counter()
-    initial_parameters = _build_stage1_initial(context)
+    initial_parameters = build_stage1_initial_parameters(
+        context.cam2_smplx_parameters,
+        context.cam4_smplx_parameters,
+        context.frame_count,
+    )
     parameter_dimension = context.frame_count * STAGE1_PER_FRAME_DIM
 
     def beta_frozen(_parameters: torch.Tensor) -> torch.Tensor:
         return context.beta_anchor
 
     def raw_groups_fn(parameters: torch.Tensor):
+        # --debug029_format will execute
         return make_raw_reproj_groups(
             parameters, context.frame_indices,
             context.cam2_vertex_ids_by_frame, context.cam2_targets_by_frame,

@@ -9,6 +9,7 @@ import torch
 from .device import validate_stage_initial_parameters
 from .linearization import Linearization
 from .lm.runner import run_lm_optimization
+from .stage_timing import build_stage_run_profile
 from .types import StageContext, StageDefinition, StageOutcome
 
 
@@ -60,34 +61,9 @@ def run_stage(stage: StageDefinition, context: StageContext) -> StageOutcome:
     )
     result.eval_backend = stage.eval_backend
     if result.profile_timing is not None:
-        raw = result.profile_timing
-        accounted_ms = (
-            raw["solver_jacobian_ms"]
-            + raw["objective_eval_ms"]
-            + raw["linear_solve_ms"]
-            + raw["final_metrics_ms"]
+        result.profile_timing = build_stage_run_profile(
+            result.profile_timing, result.wall_time_ms, stage,
         )
-        result.profile_timing = {
-            "units": "ms",
-            "normal_equations_ms": raw["solver_jacobian_ms"],
-            "true_objective_ms": raw["objective_eval_ms"],
-            "linear_solve_ms": raw["linear_solve_ms"],
-            "final_metrics_ms": raw["final_metrics_ms"],
-            "other_runner_ms": max(0.0, result.wall_time_ms - accounted_ms),
-            "accounting": {
-                "approximately_sums_to": "wall_time_ms",
-                "exclusive_buckets": [
-                    "normal_equations_ms", "true_objective_ms",
-                    "linear_solve_ms", "final_metrics_ms", "other_runner_ms",
-                ],
-                "other_runner_includes": [
-                    "linearization_construction", "python_overhead",
-                ],
-            },
-        }
-        result.profile_timing["eval_backend"] = stage.eval_backend
-        result.profile_timing["linearization_backend"] = stage.linearization_backend
-        result.profile_timing["linear_solver_backend"] = stage.linear_solver_backend
 
     return StageOutcome(
         lm_result=result,

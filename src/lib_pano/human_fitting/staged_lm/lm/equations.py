@@ -65,15 +65,24 @@ def _validate_normal_equations(
     equations: NormalEquations,
     parameters: torch.Tensor,
 ) -> None:
-    """Validate representation, device and dtype once after construction."""
+    """Validate the cheap representation, shape, device and dtype contract."""
     dense = equations.hessian is not None
     structured = equations.structured_system is not None
     if dense == structured:
         raise RuntimeError("INVALID_NORMAL_EQUATION_REPRESENTATION")
+    parameter_dimension = parameters.numel()
     if structured:
-        flat = equations.structured_system.flat_gradient()
-        if equations.gradient.shape != flat.shape or not torch.equal(equations.gradient, flat):
+        structured_dimension = equations.structured_system.parameter_dimension
+        if (
+            structured_dimension != parameter_dimension
+            or equations.gradient.shape != (structured_dimension,)
+        ):
             raise RuntimeError("INVALID_NORMAL_EQUATION_REPRESENTATION")
+    elif (
+        equations.hessian.shape != (parameter_dimension, parameter_dimension)
+        or equations.gradient.shape != (parameter_dimension,)
+    ):
+        raise RuntimeError("INVALID_NORMAL_EQUATION_REPRESENTATION")
 
     expected_device = parameters.device
     tensors = [("residual", equations.residual), ("gradient", equations.gradient)]
@@ -190,4 +199,3 @@ def _evaluate_linearization(
     )
     _validate_normal_equations(equations, x)
     return equations, False
-

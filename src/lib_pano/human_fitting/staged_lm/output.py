@@ -241,17 +241,18 @@ def build_output_directory(output_root: Path, frame_indices: list[int]) -> Path:
 def save_experiment_outputs(
     output_directory: Path,
     results: dict[str, Any],
-    arrays: dict[str, np.ndarray],
+    arrays: dict[str, np.ndarray] | None = None,
     *,
     pipeline_timing: dict[str, Any] | None = None,
     command_start: float | None = None,
 ) -> None:
-    """Write ``staged_stage2b_beta.json`` and ``staged_stage2b_beta.npz``."""
+    """Write production JSON and, when explicitly supplied, debug NPZ arrays."""
     start = time.perf_counter()
     json_path = output_directory / "staged_stage2b_beta.json"
     with json_path.open("w") as f:
         json.dump(results, f, ensure_ascii=False, indent=2, default=str)
-    np.savez_compressed(str(output_directory / "staged_stage2b_beta.npz"), **arrays)
+    if arrays is not None:
+        np.savez_compressed(str(output_directory / "staged_stage2b_beta.npz"), **arrays)
     if pipeline_timing is not None:
         output_save_ms = (time.perf_counter() - start) * 1000.0
         profile = pipeline_timing.get("profile")

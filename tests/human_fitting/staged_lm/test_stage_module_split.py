@@ -7,6 +7,7 @@ import importlib
 import importlib.util
 import inspect
 from pathlib import Path
+from types import SimpleNamespace
 
 try:
     from ._bootstrap import ensure_test_paths
@@ -52,11 +53,48 @@ def test_module_responsibilities_and_exports() -> None:
         assert callable(getattr(stage_handoff, name))
     assert callable(stage_timing.record_preparation_timing)
     assert callable(stage_timing.record_stage2_cache_totals)
+    assert callable(stage_timing.build_stage_run_profile)
     top_level_pipeline_functions = [
         node.name for node in _tree(pipeline).body
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
     ]
     assert top_level_pipeline_functions == ["run_stage2"]
+
+
+def test_stage_run_profile_serialization() -> None:
+    raw = {
+        "solver_jacobian_ms": 2.0,
+        "objective_eval_ms": 3.0,
+        "linear_solve_ms": 5.0,
+        "final_metrics_ms": 7.0,
+    }
+    stage = SimpleNamespace(
+        eval_backend="analytic",
+        linearization_backend="direct_normal_equations",
+        linear_solver_backend="dense",
+    )
+    result = stage_timing.build_stage_run_profile(raw, 20.0, stage)
+    assert result == {
+        "units": "ms",
+        "normal_equations_ms": 2.0,
+        "true_objective_ms": 3.0,
+        "linear_solve_ms": 5.0,
+        "final_metrics_ms": 7.0,
+        "other_runner_ms": 3.0,
+        "accounting": {
+            "approximately_sums_to": "wall_time_ms",
+            "exclusive_buckets": [
+                "normal_equations_ms", "true_objective_ms",
+                "linear_solve_ms", "final_metrics_ms", "other_runner_ms",
+            ],
+            "other_runner_includes": [
+                "linearization_construction", "python_overhead",
+            ],
+        },
+        "eval_backend": "analytic",
+        "linearization_backend": "direct_normal_equations",
+        "linear_solver_backend": "dense",
+    }
 
 
 def test_builder_signatures_and_return_contracts() -> None:

@@ -1,4 +1,4 @@
-"""Compact serialization of stage preparation timing."""
+"""Build and serialize pipeline and per-stage timing summaries."""
 
 from __future__ import annotations
 
@@ -6,6 +6,41 @@ from typing import Any
 
 from .stage2_shared_cache import Stage2SharedGeometryCache
 from .types import StageContext, StageDefinition, StagePreparationTiming
+
+
+def build_stage_run_profile(
+    raw: dict[str, Any],
+    wall_time_ms: float,
+    stage: StageDefinition,
+) -> dict[str, Any]:
+    """Convert raw LM-runner timings into the public per-stage profile."""
+    accounted_ms = (
+        raw["solver_jacobian_ms"]
+        + raw["objective_eval_ms"]
+        + raw["linear_solve_ms"]
+        + raw["final_metrics_ms"]
+    )
+    return {
+        "units": "ms",
+        "normal_equations_ms": raw["solver_jacobian_ms"],
+        "true_objective_ms": raw["objective_eval_ms"],
+        "linear_solve_ms": raw["linear_solve_ms"],
+        "final_metrics_ms": raw["final_metrics_ms"],
+        "other_runner_ms": max(0.0, wall_time_ms - accounted_ms),
+        "accounting": {
+            "approximately_sums_to": "wall_time_ms",
+            "exclusive_buckets": [
+                "normal_equations_ms", "true_objective_ms",
+                "linear_solve_ms", "final_metrics_ms", "other_runner_ms",
+            ],
+            "other_runner_includes": [
+                "linearization_construction", "python_overhead",
+            ],
+        },
+        "eval_backend": stage.eval_backend,
+        "linearization_backend": stage.linearization_backend,
+        "linear_solver_backend": stage.linear_solver_backend,
+    }
 
 
 def build_pipeline_timing(context: StageContext) -> dict[str, Any]:

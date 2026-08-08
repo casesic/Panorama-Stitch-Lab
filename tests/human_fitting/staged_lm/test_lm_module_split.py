@@ -7,6 +7,7 @@ import importlib
 import importlib.util
 import inspect
 from pathlib import Path
+from types import SimpleNamespace
 
 import torch
 
@@ -116,6 +117,30 @@ def test_trial_reduction_and_record_order() -> None:
         "delta_norm", "predicted_reduction", "actual_reduction", "rho",
         "accepted", "used_dense_fallback",
     ]
+
+
+def test_structured_contract_validation_does_not_flatten_gradient() -> None:
+    equations_module = _module("lm.equations")
+    types = _module("types")
+    frame_hessians = torch.eye(2, dtype=torch.float64).reshape(1, 2, 2)
+    system = SimpleNamespace(
+        parameter_dimension=3,
+        frame_hessians=frame_hessians,
+        frame_beta_cross=torch.zeros(1, 2, 1, dtype=torch.float64),
+        beta_hessian=torch.ones(1, 1, dtype=torch.float64),
+        frame_gradients=torch.zeros(1, 2, dtype=torch.float64),
+        beta_gradient=torch.zeros(1, dtype=torch.float64),
+        flat_gradient=lambda: (_ for _ in ()).throw(
+            AssertionError("production validation must not flatten gradients")
+        ),
+    )
+    equations = types.NormalEquations(
+        residual=torch.zeros(2),
+        hessian=None,
+        gradient=torch.zeros(3, dtype=torch.float64),
+        structured_system=system,
+    )
+    equations_module._validate_normal_equations(equations, torch.zeros(3))
 
 
 if __name__ == "__main__":
