@@ -110,12 +110,14 @@ def test_trial_reduction_and_record_order() -> None:
     assert predicted == expected and actual == 1.0
     assert rho == actual / max(predicted, 1e-12) and accepted
     record = trial.build_evaluated_trial_record(
-        1, 2, 3.0, "dense", delta, predicted, actual, rho, accepted, False,
+        1, 2, 3.0, "dense", "cholesky", delta,
+        predicted, actual, rho, accepted, False,
     )
     assert list(record) == [
-        "outer", "trial", "damping", "linear_solver_backend", "solve_success",
+        "outer", "trial", "damping", "configured_solver_backend",
+        "final_solve_backend", "solve_success",
         "delta_norm", "predicted_reduction", "actual_reduction", "rho",
-        "accepted", "used_dense_fallback",
+        "accepted", "schur_primary_failed",
     ]
 
 
@@ -141,6 +143,24 @@ def test_structured_contract_validation_does_not_flatten_gradient() -> None:
         structured_system=system,
     )
     equations_module._validate_normal_equations(equations, torch.zeros(3))
+
+
+def test_linear_solve_counters_have_unambiguous_semantics() -> None:
+    types = _module("types")
+    counters = types.LMSolverCounters()
+    delta = torch.zeros(1, dtype=torch.float64)
+    for result in (
+        types.LinearSolveResult(delta, "cholesky"),
+        types.LinearSolveResult(delta, "dense_solve"),
+        types.LinearSolveResult(delta, "schur"),
+        types.LinearSolveResult(delta, "cholesky", schur_failed=True),
+        types.LinearSolveResult(None, "dense_solve", schur_failed=True),
+    ):
+        counters.record_linear_solve(result)
+
+    assert counters.solve_attempt_count == 5
+    assert counters.solve_success_count == 4
+    assert counters.solve_failure_count == 1
 
 
 if __name__ == "__main__":

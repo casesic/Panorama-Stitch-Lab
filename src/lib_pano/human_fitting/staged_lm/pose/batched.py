@@ -170,7 +170,7 @@ def build_stage2_pose_batch_cache(
     weights_ms = (time.perf_counter() - section) * 1000.0
 
     section = time.perf_counter()
-    left_hand_pose = torch.stack([group.left_hand_pose.reshape(-1) for group in groups])
+    left_hand_pose = torch.stack([group.left_hand_pose.reshape(-1) for group in groups]) # 全部堆叠起来，方便cuda处理
     right_hand_pose = torch.stack([group.right_hand_pose.reshape(-1) for group in groups])
     scale = torch.stack([group.scale.reshape(-1) for group in groups])
     stack_ms = (time.perf_counter() - section) * 1000.0

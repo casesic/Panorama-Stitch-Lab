@@ -29,7 +29,7 @@ def print_handoff(
             "NOT_RUN" if relative_value is None else f"{relative_value:.2e}"
         )
         print(
-            f"[HANDOFF_{tag}_STAGE2_POSE_JOINT] "
+            f"[HANDOFF_{tag}_STAGE2_POSE_SHAPE] "
             f"state={handoff['state_max_diff']:.2e} "
             f"bp={handoff['physical_beta_init_max_diff_to_anchor']:.2e} "
             f"raw={raw_text} "
@@ -86,6 +86,15 @@ def handoff_s1_to_pose(
     body_pose_dim: int,
 ) -> torch.Tensor:
     """Construct the pose-stage initial vector from Stage 1 and anchors."""
+    expected_stage1_dimension = frame_count * STAGE1_PER_FRAME_DIM
+    if stage1_parameters.numel() != expected_stage1_dimension:
+        raise ValueError(
+            "stage1 parameter dimension mismatch: "
+            f"expected {expected_stage1_dimension}, "
+            f"got {stage1_parameters.numel()}"
+        )
+    if len(body_pose_anchors) != frame_count:
+        raise ValueError("body pose anchor frame count mismatch")
     parts: list[torch.Tensor] = []
     for frame in range(frame_count):
         if body_pose_anchors[frame].numel() != body_pose_dim:
@@ -97,21 +106,21 @@ def handoff_s1_to_pose(
     return torch.cat(parts).clone()
 
 
-def check_pose_to_joint_state(
+def check_pose_to_shape_state(
     stage2_pose_parameters: torch.Tensor,
-    stage2_joint_parameters: torch.Tensor,
+    stage2_pose_shape_parameters: torch.Tensor,
     beta_anchor: torch.Tensor,
     beta_abs_limit: float,
     shape_anchor_scale: float,
 ) -> dict[str, Any]:
     """Check pose state and bounded-beta initialization without model forward."""
     pose_dimension = stage2_pose_parameters.shape[0]
-    beta_dimension = stage2_joint_parameters.shape[0] - pose_dimension
+    beta_dimension = stage2_pose_shape_parameters.shape[0] - pose_dimension
     state_max_diff = float((
-        stage2_joint_parameters[:pose_dimension] - stage2_pose_parameters
+        stage2_pose_shape_parameters[:pose_dimension] - stage2_pose_parameters
     ).abs().max())
     beta_initial = beta_abs_limit * torch.tanh(
-        stage2_joint_parameters[-beta_dimension:]
+        stage2_pose_shape_parameters[-beta_dimension:]
     )
     beta_max_diff = float((beta_initial - beta_anchor).abs().max())
     shape_anchor_objective = float(
@@ -134,3 +143,7 @@ def check_pose_to_joint_state(
         "validation_scope": "state_only",
         "ok": ok,
     }
+
+
+# Backward-compatible name retained for validation scripts.
+check_pose_to_shape_state = check_pose_to_shape_state

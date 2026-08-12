@@ -27,8 +27,8 @@ from lib_pano.human_fitting.staged_lm.lm.equations import (
     _evaluate_linearization,
     compute_jacobian,
 )
-from lib_pano.human_fitting.staged_lm.joint import (
-    build_stage2_joint_analytic_linearization,
+from lib_pano.human_fitting.staged_lm.pose_shape import (
+    build_stage2_pose_shape_analytic_linearization,
 )
 from lib_pano.human_fitting.staged_lm.pose.derivatives import (
     build_stage2_pose_analytic_linearization,
@@ -147,11 +147,11 @@ class LinearizationContractTests(unittest.TestCase):
             spec={},
         )
         with patch(
-            "lib_pano.human_fitting.staged_lm.joint.arrowhead."
-            "build_stage2_joint_linearization_common",
+            "lib_pano.human_fitting.staged_lm.pose_shape.arrowhead."
+            "build_stage2_pose_shape_linearization_common",
             return_value=common,
         ):
-            result = build_stage2_joint_analytic_linearization(
+            result = build_stage2_pose_shape_analytic_linearization(
                 object(), torch.zeros(2), 2.5, torch.zeros(1), [], 1.0, 1.0,
                 is_irls=False, charbonnier_eps=1e-3,
                 aggregation_spec=None, rep_scale=1.0,

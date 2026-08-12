@@ -1,0 +1,7 @@
+#include "staged_lm/pose_shape_schur.h"
+#include <algorithm>
+#include <cmath>
+#include <iostream>
+double maxabs(const std::vector<double>&x){double v=0;for(double a:x)v=std::max(v,std::abs(a));return v;}
+staged_lm::SchurSystem system(int t,bool coupled,bool zero_g=false){staged_lm::SchurSystem s;s.frame_count=t;s.frame_dim=3;s.beta_dim=2;s.a.assign(t*9,0);s.b.assign(t*6,0);s.c={5,.2,.2,4};s.g_frame.assign(t*3,0);s.g_beta=zero_g?std::vector<double>(2,0):std::vector<double>{1,-2};for(int f=0;f<t;++f){for(int i=0;i<3;++i)s.a[f*9+i*3+i]=3+f+i;if(coupled)for(int i=0;i<6;++i)s.b[f*6+i]=.01*(1+f+i);if(!zero_g)for(int i=0;i<3;++i)s.g_frame[f*3+i]=.3*(1+f+i);}return s;}
+int main(){for(int t:{1,3})for(bool coupled:{false,true})for(double l:{.01,.1,10.}){auto r=staged_lm::solve_pose_shape_schur(system(t,coupled),l);if(!r.success||r.frames.size()!=size_t(t)||maxabs(r.linear_residual)>1e-10||maxabs(r.schur_residual)>1e-10)return 1;double e=0;for(size_t i=0;i<r.full_delta.size();++i)e=std::max(e,std::abs(r.full_delta[i]-r.dense_delta[i]));if(e>1e-10)return 2;}auto z=staged_lm::solve_pose_shape_schur(system(3,true,true),.1);if(!z.success||maxabs(z.full_delta)!=0)return 3;auto lo=staged_lm::solve_pose_shape_schur(system(3,true),.01),hi=staged_lm::solve_pose_shape_schur(system(3,true),1e6);double nl=0,nh=0;for(double v:lo.full_delta)nl+=v*v;for(double v:hi.full_delta)nh+=v*v;if(!(nh<nl))return 4;std::cout<<"POSE_SHAPE_SCHUR_CPP_SELF_TEST=PASS\n";return 0;}

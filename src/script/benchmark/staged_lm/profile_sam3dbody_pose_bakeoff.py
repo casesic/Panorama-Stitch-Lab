@@ -7,7 +7,7 @@ from typing import Any
 import numpy as np
 import torch
 if __package__ in (None,""):sys.path.insert(0,str(Path(__file__).resolve().parents[3]))
-from lib_pano.human_fitting.staged_lm.stage_definitions.joint import build_joint_stage_definition
+from lib_pano.human_fitting.staged_lm.stage_definitions.pose_shape import build_pose_shape_stage_definition
 from lib_pano.human_fitting.staged_lm.stage_definitions.pose import build_pose_stage_definition
 from lib_pano.human_fitting.staged_lm.stage_definitions.rigid import build_stage1_definition
 from lib_pano.human_fitting.staged_lm.stage_runtime import run_stage
@@ -27,7 +27,7 @@ def parser():
 def _stage(outcome):
  r=outcome.lm_result;c=r.counters;t=r.profile_timing or {}
  return {"status":r.status,"wall_ms":r.wall_time_ms,"accepted_steps":c.accepted_steps,"rejected_trials":c.rejected_trials,
-  "linearization_count":c.linearization_count,"normal_equation_count":c.normal_equation_count,"solve_attempt_count":c.solve_attempt_count,
+  "linearization_count":c.linearization_count,"solve_attempt_count":c.solve_attempt_count,
   "objective_calls":next((int(t[k]) for k in t if k.endswith('objective_calls')),None),"final_lambda":r.final_lambda,
   "objective":r.objective,"metrics":r.rms_metrics,"schur_dense_fallback_calls":t.get('schur_dense_fallback_calls',0),
   "structured_to_dense_calls":t.get('structured_to_dense_calls',0),"profile_timing":t}
@@ -50,11 +50,11 @@ def _run(args,frames,candidate):
  stage1=build_stage1_definition(context);initial_objective=float(stage1.lm_true_objective_fn(stage1.initial_lm_parameters));initial_metrics=stage1.raw_metrics_fn(stage1.initial_lm_parameters)
  started=time.perf_counter();s1=run_stage(stage1,context);shared=build_stage2_shared_geometry_cache(context)
  pose_def,_=build_pose_stage_definition(context,s1,shared);pose=run_stage(pose_def,context)
- joint_def,_=build_joint_stage_definition(context,pose,shared);joint=run_stage(joint_def,context)
+ joint_def,_=build_pose_shape_stage_definition(context,pose,shared);joint=run_stage(joint_def,context)
  if context.device.type=='cuda':torch.cuda.synchronize(context.device)
  wall=(time.perf_counter()-started)*1000
  stages={"stage1":_stage(s1),"pose":_stage(pose),"joint":_stage(joint)}
- total_ne=sum(x['normal_equation_count'] for x in stages.values());total_obj=sum(x['objective_calls'] or 0 for x in stages.values())
+ total_ne=sum(x['linearization_count'] for x in stages.values());total_obj=sum(x['objective_calls'] or 0 for x in stages.values())
  return {"candidate":candidate,"initial":{"objective":initial_objective,"metrics":initial_metrics,"finite":True},"stages":stages,
   "fitting_segment_ms":wall,"ms_per_frame":wall/len(frames),"fps":1000*len(frames)/wall,"total_ne_calls":total_ne,"total_objective_calls":total_obj}
 

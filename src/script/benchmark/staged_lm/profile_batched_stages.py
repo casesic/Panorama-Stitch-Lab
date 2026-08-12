@@ -17,16 +17,16 @@ if __package__ in (None, ""):
 from script.human_fitting.staged_lm.app import build_context
 from script.human_fitting.staged_lm.cli import build_argument_parser
 from lib_pano.human_fitting.staged_lm.irls import compute_irls_point_weights
-from lib_pano.human_fitting.staged_lm.stage_definitions.joint import build_joint_stage_definition
+from lib_pano.human_fitting.staged_lm.stage_definitions.pose_shape import build_pose_shape_stage_definition
 from lib_pano.human_fitting.staged_lm.stage_definitions.pose import build_pose_stage_definition
 from lib_pano.human_fitting.staged_lm.stage_definitions.rigid import build_stage1_definition
 from lib_pano.human_fitting.staged_lm.stage_runtime import run_stage
 from lib_pano.human_fitting.staged_lm.stage2_shared_cache import build_stage2_shared_geometry_cache
 from lib_pano.human_fitting.staged_lm.pose.forward import fast_raw_groups as pose_raw_groups
 from lib_pano.human_fitting.staged_lm.pose.derivatives import stage2_pose_group_raw_residual_and_jacobian
-from lib_pano.human_fitting.staged_lm.joint import joint_fast_raw_groups
-from lib_pano.human_fitting.staged_lm.joint import evaluate_joint_shape_state
-from lib_pano.human_fitting.staged_lm.joint import joint_group_raw_residual_and_jacobians
+from lib_pano.human_fitting.staged_lm.pose_shape import pose_shape_fast_raw_groups
+from lib_pano.human_fitting.staged_lm.pose_shape import evaluate_pose_shape_state
+from lib_pano.human_fitting.staged_lm.pose_shape import pose_shape_group_raw_residual_and_jacobians
 from lib_pano.human_fitting.staged_lm.analytic_stage1 import _group_raw_residual_and_local_jacobian
 from script.benchmark.staged_lm.batch_common import (
     TF32Disabled, benchmark_callable, environment_record, numerical_error,
@@ -39,9 +39,9 @@ from script.benchmark.staged_lm.pose_batch_candidates import (
     build_pose_group_batch, gather_pose_batch_parameters, gather_pose_group_parameters,
     batched_pose_hg, batched_pose_objective, profile_pose_group_production,
 )
-from script.benchmark.staged_lm.joint_kernel_candidates import (
-    build_joint_group_batch, batched_joint_arrowhead_hg, batched_joint_objective,
-    profile_joint_group_production_combined,
+from script.benchmark.staged_lm.pose_shape_kernel_candidates import (
+    build_pose_shape_group_batch, batched_joint_arrowhead_hg, batched_joint_objective,
+    profile_pose_shape_group_production_combined,
 )
 
 
@@ -97,10 +97,10 @@ def _run_one(args, frames: list[str], warmup: int, repeats: int) -> dict[str,Any
         s1_definition=build_stage1_definition(context);s1=run_stage(s1_definition,context)
         shared=build_stage2_shared_geometry_cache(context)
         pose_definition,_=build_pose_stage_definition(context,s1,shared);pose=run_stage(pose_definition,context)
-        joint_definition,_=build_joint_stage_definition(context,pose,shared);joint=run_stage(joint_definition,context)
+        pose_shape_definition,_=build_pose_shape_stage_definition(context,pose,shared);joint=run_stage(pose_shape_definition,context)
     measured_fit = sum(x.lm_result.wall_time_ms for x in (s1, pose, joint)) + (
         s1_definition.preparation_timing.total_ms + shared.setup_ms
-        + pose_definition.preparation_timing.total_ms + joint_definition.preparation_timing.total_ms
+        + pose_definition.preparation_timing.total_ms + pose_shape_definition.preparation_timing.total_ms
     )
     counts=[int(group.targets.shape[0]) for group in s1_definition.analytic_cache.groups]
     output: dict[str,Any]={"T":len(frames),"G":2*len(frames),"stages":{},"call_counts":{},
@@ -179,23 +179,23 @@ def _run_one(args, frames: list[str], warmup: int, repeats: int) -> dict[str,Any
           "sections_ms":profile_pose_group_production(cache,g,parameters,scale_list[i])}
           for i,g in enumerate(cache.groups)]}
     # Joint
-    cache=joint_definition.analytic_cache;parameters=joint.lm_result.parameters
-    batch=build_joint_group_batch(cache.groups);groups=joint_fast_raw_groups(cache,parameters,context.objective_config.beta_abs_limit)
-    scales,scale_list=_padded_scales(groups,joint_definition.aggregation_spec,context,batch.valid_mask.shape[1])
-    serial_linear=joint_definition.linearization_builder(parameters,joint_definition.aggregation_spec)
+    cache=pose_shape_definition.analytic_cache;parameters=joint.lm_result.parameters
+    batch=build_pose_shape_group_batch(cache.groups);groups=pose_shape_fast_raw_groups(cache,parameters,context.objective_config.beta_abs_limit)
+    scales,scale_list=_padded_scales(groups,pose_shape_definition.aggregation_spec,context,batch.valid_mask.shape[1])
+    serial_linear=pose_shape_definition.linearization_builder(parameters,pose_shape_definition.aggregation_spec)
     serial_ne=lambda:serial_linear.normal_equations(parameters)
     batch_ne=lambda:batched_joint_arrowhead_hg(cache,batch,parameters,context.objective_config.beta_abs_limit,
         scales,context.body_pose_anchors,context.beta_anchor,context.scaling.pose_anchor_scale,context.scaling.shape_anchor_scale)
     serial_eq=serial_ne();candidate_values=batch_ne();candidate=candidate_values[0]
-    serial_obj=lambda:joint_definition.lm_true_objective_fn(parameters)
+    serial_obj=lambda:pose_shape_definition.lm_true_objective_fn(parameters)
     batch_obj=lambda:batched_joint_objective(cache,batch,parameters,context.objective_config.beta_abs_limit,
         context.body_pose_anchors,context.beta_anchor,context.scaling.pose_anchor_scale,context.scaling.shape_anchor_scale,
         objective_mode=context.args.reproj_objective,charbonnier_eps=context.charbonnier_eps,
-        rep_scale=context.scaling.rep_scale,aggregation_spec=joint_definition.aggregation_spec)["total"]
-    shape = evaluate_joint_shape_state(cache,parameters[-cache.model.beta_dim:],context.objective_config.beta_abs_limit)
+        rep_scale=context.scaling.rep_scale,aggregation_spec=pose_shape_definition.aggregation_spec)["total"]
+    shape = evaluate_pose_shape_state(cache,parameters[-cache.model.beta_dim:],context.objective_config.beta_abs_limit)
     reference_residual=[];reference_active=[];reference_beta=[]
     for group in cache.groups:
-        value=joint_group_raw_residual_and_jacobians(cache,group,parameters,context.objective_config.beta_abs_limit,shape)
+        value=pose_shape_group_raw_residual_and_jacobians(cache,group,parameters,context.objective_config.beta_abs_limit,shape)
         columns=torch.cat((torch.arange(0,6,device=parameters.device) if group.camera=="cam2" else torch.arange(6,12,device=parameters.device),torch.arange(12,75,device=parameters.device)))
         reference_residual.append(value.raw_residual.reshape(-1,2));reference_active.append(value.local_pose_jacobian[:,columns].reshape(-1,2,69));reference_beta.append(value.shared_beta_jacobian.reshape(-1,2,cache.model.beta_dim))
     damping=1e-3*float(serial_eq.structured_system.max_diagonal());delta_ref=serial_eq.structured_system.solve_damped(damping);delta_c=candidate.solve_damped(damping)
@@ -220,11 +220,11 @@ def _run_one(args, frames: list[str], warmup: int, repeats: int) -> dict[str,Any
                   "delta":numerical_error(delta_c,delta_ref),"predicted_reduction":numerical_error(pred_c.reshape(1),pred_ref.reshape(1)),
                   "objective":numerical_error(batch_obj().reshape(1),serial_obj().reshape(1))},
         "group_profiles":[{"frame":g.frame_position,"camera":g.camera,"N":g.targets.shape[0],
-          "sections_ms":profile_joint_group_production_combined(cache,g,shape,parameters,scale_list[i]).section_ms}
+          "sections_ms":profile_pose_shape_group_production_combined(cache,g,shape,parameters,scale_list[i]).section_ms}
           for i,g in enumerate(cache.groups)]}
-    for name,(definition,outcome) in {"stage1":(s1_definition,s1),"pose":(pose_definition,pose),"joint":(joint_definition,joint)}.items():
+    for name,(definition,outcome) in {"stage1":(s1_definition,s1),"pose":(pose_definition,pose),"joint":(pose_shape_definition,joint)}.items():
         profile=outcome.lm_result.profile_timing or {};stage=output["stages"][name]
-        ne_calls=int(outcome.lm_result.counters.normal_equation_count);objective_calls=int(profile.get(
+        ne_calls=int(outcome.lm_result.counters.linearization_count);objective_calls=int(profile.get(
             "analytic_objective_calls" if name=="stage1" else f"stage2_{name}_objective_calls",0))
         metrics_calls=int(profile.get("analytic_metrics_calls" if name=="stage1" else f"stage2_{name}_metrics_calls",0))
         output["call_counts"][name]={"normal_equations":ne_calls,"objective":objective_calls,"metrics":metrics_calls,

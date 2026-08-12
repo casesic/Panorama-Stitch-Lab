@@ -76,7 +76,7 @@ def test_joint_latent_excluded_and_physical_beta_unchanged() -> None:
     latent = np.array([9.0, -9.0], dtype=np.float32)
     physical_beta = np.array([1.5, -1.25], dtype=np.float32)
     cam2, _ = build_visualization_params(
-        context, np.concatenate([frame_region, latent]), physical_beta, "joint_refinement",
+        context, np.concatenate([frame_region, latent]), physical_beta, "pose_shape_refinement",
     )
     np.testing.assert_array_equal(cam2[-1].body_pose.numpy(), frame_region[-context.body_pose_dim:])
     np.testing.assert_array_equal(cam2[-1].beta.numpy(), physical_beta)
@@ -107,10 +107,10 @@ def test_cuda_frozen_parameters_are_normalized_to_cpu() -> None:
 
 def test_missing_lm_result_error() -> None:
     try:
-        require_result_arrays({"beta_anchor": np.zeros(2)}, "joint_refinement")
+        require_result_arrays({"beta_anchor": np.zeros(2)}, "pose_shape_refinement")
     except KeyError as exc:
         message = str(exc)
-        assert "x_stage2_joint_lm" in message
+        assert "x_stage2_pose_shape_lm" in message
     else:
         raise AssertionError("missing LM result did not fail")
     print("test_missing_lm_result_error: PASS")

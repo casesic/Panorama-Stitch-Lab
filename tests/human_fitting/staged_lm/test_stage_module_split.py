@@ -22,8 +22,8 @@ from lib_pano.human_fitting.staged_lm import (  # noqa: E402
     stage_timing,
 )
 from lib_pano.human_fitting.staged_lm.stage_definitions import (  # noqa: E402
-    joint,
     pose,
+    pose_shape,
     rigid,
 )
 ROOT = Path(stage_runtime.__file__).resolve().parent
@@ -46,9 +46,9 @@ def test_module_responsibilities_and_exports() -> None:
     assert callable(stage_runtime.run_stage)
     assert callable(rigid.build_stage1_definition)
     assert callable(pose.build_pose_stage_definition)
-    assert callable(joint.build_joint_stage_definition)
+    assert callable(pose_shape.build_pose_shape_stage_definition)
     for name in (
-        "check_s1_to_pose", "handoff_s1_to_pose", "check_pose_to_joint_state",
+        "check_s1_to_pose", "handoff_s1_to_pose", "check_pose_to_shape_state",
     ):
         assert callable(getattr(stage_handoff, name))
     assert callable(stage_timing.record_preparation_timing)
@@ -63,7 +63,7 @@ def test_module_responsibilities_and_exports() -> None:
 
 def test_stage_run_profile_serialization() -> None:
     raw = {
-        "solver_jacobian_ms": 2.0,
+        "normal_equations_ms": 2.0,
         "objective_eval_ms": 3.0,
         "linear_solve_ms": 5.0,
         "final_metrics_ms": 7.0,
@@ -101,7 +101,7 @@ def test_builder_signatures_and_return_contracts() -> None:
     builders = (
         rigid.build_stage1_definition,
         pose.build_pose_stage_definition,
-        joint.build_joint_stage_definition,
+        pose_shape.build_pose_shape_stage_definition,
     )
     for builder in builders:
         assert not any(
@@ -110,13 +110,13 @@ def test_builder_signatures_and_return_contracts() -> None:
     assert str(inspect.signature(
         rigid.build_stage1_definition,
     ).return_annotation) == "StageDefinition"
-    for builder in (pose.build_pose_stage_definition, joint.build_joint_stage_definition):
+    for builder in (pose.build_pose_stage_definition, pose_shape.build_pose_shape_stage_definition):
         annotation = inspect.signature(builder).return_annotation
         assert "tuple[StageDefinition, dict[str, Any]]" in str(annotation)
 
 
 def test_inner_linearization_builder_annotations() -> None:
-    for module in (rigid, pose, joint):
+    for module in (rigid, pose, pose_shape):
         matches = [
             node for node in ast.walk(_tree(module))
             if isinstance(node, ast.FunctionDef)
@@ -145,7 +145,7 @@ def test_import_graph_has_no_cycle() -> None:
     names = (
         "stage_runtime", "stage_handoff", "stage_timing", "pipeline",
         "stage_definitions.common", "stage_definitions.rigid",
-        "stage_definitions.pose", "stage_definitions.joint",
+        "stage_definitions.pose", "stage_definitions.pose_shape",
     )
     for name in names:
         importlib.import_module(f"lib_pano.human_fitting.staged_lm.{name}")

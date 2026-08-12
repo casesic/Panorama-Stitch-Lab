@@ -1,7 +1,7 @@
 """Stage orchestration for rigid alignment and pose/shape fitting.
 
 Stage 1 performs dual-camera orient/transl rigid alignment. Stage 2 performs
-pose warmup followed by pose/shape joint refinement.
+pose warmup followed by pose/shape refinement.
 
 Each stage is described by a :class:`StageDefinition` (the optimisation
 problem) and executed by :func:`run_stage` (which wires up the IRLS / raw-L2
@@ -14,7 +14,7 @@ Stage variable layouts
   the HMR anchor; beta is frozen to the shared initial value.
 * **Stage 2 pose warmup** — Stage 1 parameters plus the runtime body-pose vector.
   Beta still frozen; body pose is optimised with a pose-anchor regulariser.
-* **Stage 2 joint refinement** — ``[pose vector | beta_latent(10)]``. Beta is optimised
+* **Stage 2 pose/shape refinement** — ``[pose vector | beta_latent(10)]``. Beta is optimised
   through a bounded ``tanh`` parameterisation with a shape-anchor regulariser.
 """
 
@@ -44,10 +44,10 @@ from .lbfgs import run_lbfgs_oracle
 from lib_pano.human_fitting.staged_lm.pose.cache import build_stage2_pose_fast_cache
 from lib_pano.human_fitting.staged_lm.pose.forward import fast_raw_groups
 from lib_pano.human_fitting.staged_lm.pose.derivatives import build_stage2_pose_analytic_linearization
-from lib_pano.human_fitting.staged_lm.joint import build_stage2_joint_fast_cache, joint_fast_raw_groups
+from lib_pano.human_fitting.staged_lm.pose_shape import build_stage2_pose_shape_fast_cache, pose_shape_fast_raw_groups
 from lib_pano.human_fitting.staged_lm.stage2_shared_cache import build_stage2_shared_geometry_cache
-from .joint_backends import (
-    build_stage2_joint_reference_linearization as build_stage2_joint_analytic_linearization,
+from .pose_shape_backends import (
+    build_stage2_pose_shape_reference_linearization as build_stage2_pose_shape_analytic_linearization,
 )
 from lib_pano.human_fitting.staged_lm.config import STAGE1_PER_FRAME_DIM
 from lib_pano.human_fitting.staged_lm.parameter_layout import build_stage1_initial_parameters
@@ -245,14 +245,6 @@ def run_stage(stage: StageDefinition, context: StageContext) -> StageOutcome:
         profile_timing=context.args.profile_timing,
         true_objective_fn=lm_true_objective,
     )
-
-    if init_check is not None:
-        lm_result.first_order_checks = {
-            "initial": init_check,
-            "worst_abs_max": init_check["abs_max"],
-            "worst_rel_l2": init_check["rel_l2"],
-            "all_pass": init_check["pass"],
-        }
 
     if context.args.profile_timing and init_check is not None and lm_result.profile_timing is not None:
         lm_result.profile_timing["initial_irls_validation_ms"] = init_validation_ms
@@ -612,13 +604,13 @@ def _build_pose_warmup_definition(
     return stage, handoff_info
 
 
-def _build_joint_refinement_definition(
+def _build_pose_shape_refinement_definition(
     context: StageContext,
     stage2_pose_outcome: StageOutcome,
     stage2_pose_true_objective: Callable[[torch.Tensor], torch.Tensor],
     stage2_pose_raw_groups_fn: Callable[[torch.Tensor], Any],
 ) -> tuple[StageDefinition, dict[str, Any]]:
-    """Build the Stage 2 joint refinement definition and STAGE2_POSE->STAGE2_JOINT handoff check.
+    """Build the Stage 2 pose/shape refinement definition and STAGE2_POSE->STAGE2_POSE_SHAPE handoff check.
 
     Optimised variables: Stage 2 pose warmup vector + beta_latent (10).
     Beta is parameterised as ``beta_abs_limit * tanh(beta_latent)`` to keep it
@@ -668,16 +660,16 @@ def _build_joint_refinement_definition(
     def raw_metrics_fn(x: torch.Tensor) -> dict[str, float]:
         return raw_reproj_metrics(flatten_reprojection_groups(raw_groups_fn(x)).detach())
 
-    linearization_backend=getattr(context.args,"stage2_joint_linearization_backend","autograd")
-    requested_linear_solver=getattr(context.args,"stage2_joint_linear_solver","dense")
+    linearization_backend=getattr(context.args,"stage2_pose_shape_linearization_backend","autograd")
+    requested_linear_solver=getattr(context.args,"stage2_pose_shape_linear_solver","dense")
     if requested_linear_solver=="schur" and linearization_backend!="analytic":
-        raise RuntimeError("SCHUR_REQUIRES_ANALYTIC_STAGE2_JOINT")
+        raise RuntimeError("SCHUR_REQUIRES_ANALYTIC_STAGE2_POSE_SHAPE")
     linear_solver_backend="arrowhead_schur" if requested_linear_solver=="schur" else "dense"
-    eval_backend=getattr(context.args,"stage2_joint_eval_backend","full_forward")
-    validate_fast=getattr(context.args,"validate_stage2_joint_fast_eval",False)
+    eval_backend=getattr(context.args,"stage2_pose_shape_eval_backend","full_forward")
+    validate_fast=getattr(context.args,"validate_stage2_pose_shape_fast_eval",False)
     needs_cache=linearization_backend=="analytic" or eval_backend=="fast" or validate_fast
-    joint_fast_cache=(
-        build_stage2_joint_fast_cache(
+    pose_shape_fast_cache=(
+        build_stage2_pose_shape_fast_cache(
             context, build_stage2_shared_geometry_cache(context),
         ) if needs_cache else None
     )
@@ -685,22 +677,22 @@ def _build_joint_refinement_definition(
     linearization_builder=None
     if linearization_backend=="analytic":
         def linearization_builder(x:torch.Tensor,spec:dict[str,Any]|None)->dict[str,Any]:
-            return build_stage2_joint_analytic_linearization(
-                joint_fast_cache,x,beta_abs_limit,context.beta_anchor,context.body_pose_anchors,
+            return build_stage2_pose_shape_analytic_linearization(
+                pose_shape_fast_cache,x,beta_abs_limit,context.beta_anchor,context.body_pose_anchors,
                 pose_anchor_scale,shape_anchor_scale,is_irls=context.is_irls,
                 charbonnier_eps=context.charbonnier_eps,aggregation_spec=spec,rep_scale=context.scaling.rep_scale,
                 linear_solver_backend=linear_solver_backend)
     selected_metrics_fn=raw_metrics_fn;lm_true_objective_fn=None
     if eval_backend=="fast":
         def lm_true_objective_fn(x:torch.Tensor)->torch.Tensor:
-            return joint_fast_cache.true_objective(
+            return pose_shape_fast_cache.true_objective(
                 x,beta_abs_limit,context.beta_anchor,context.body_pose_anchors,pose_anchor_scale,
                 shape_anchor_scale,context.args.reproj_objective,context.charbonnier_eps,
                 context.scaling.rep_scale,aggregation_spec)
         def selected_metrics_fn(x:torch.Tensor)->dict[str,float]:
-            return joint_fast_cache.raw_metrics(x,beta_abs_limit)
+            return pose_shape_fast_cache.raw_metrics(x,beta_abs_limit)
 
-    full_joint_objective=_make_stage2_joint_true_objective_from_functions(context,raw_groups_fn,all_anchors_residual,initial_lm)
+    full_joint_objective=_make_stage2_pose_shape_true_objective_from_functions(context,raw_groups_fn,all_anchors_residual,initial_lm)
     if context.is_irls:
         pose_spec=build_primary_aggregation_spec(stage2_pose_raw_groups_fn(stage2_pose_outcome.lm_result.parameters))
         def full_pose_objective(x):
@@ -713,39 +705,39 @@ def _build_joint_refinement_definition(
     fast_eval_validator=None
     if validate_fast:
         def fast_eval_validator(label:str,x:torch.Tensor)->None:
-            fast_groups=joint_fast_raw_groups(joint_fast_cache,x,beta_abs_limit);full_groups=raw_groups_fn(x)
+            fast_groups=pose_shape_fast_raw_groups(pose_shape_fast_cache,x,beta_abs_limit);full_groups=raw_groups_fn(x)
             fast_raw=flatten_reprojection_groups(fast_groups);full_raw=flatten_reprojection_groups(full_groups)
             try:torch.testing.assert_close(fast_raw,full_raw,rtol=1e-6,atol=1e-3)
-            except AssertionError as exc:raise RuntimeError("STAGE2_JOINT_FAST_EVAL_MISMATCH") from exc
-            fast_obj=joint_fast_cache.true_objective(x,beta_abs_limit,context.beta_anchor,context.body_pose_anchors,
+            except AssertionError as exc:raise RuntimeError("STAGE2_POSE_SHAPE_FAST_EVAL_MISMATCH") from exc
+            fast_obj=pose_shape_fast_cache.true_objective(x,beta_abs_limit,context.beta_anchor,context.body_pose_anchors,
                 pose_anchor_scale,shape_anchor_scale,context.args.reproj_objective,context.charbonnier_eps,
                 context.scaling.rep_scale,aggregation_spec);full_obj=full_joint_objective(x)
             obj_abs=abs(float(fast_obj-full_obj));obj_rel=obj_abs/max(abs(float(full_obj)),1e-16)
             fm=raw_reproj_metrics(fast_raw.detach());om=raw_reproj_metrics(full_raw.detach())
             metrics_ok=all(metric_close_with_absolute_or_relative(fm[n],om[n]) for n in ("rms","median","p95"))
             beta=beta_abs_limit*torch.tanh(x[-context.beta_dim:]);pose_anchor=pose_anchor_residual(x);shape_anchor=shape_anchor_residual(x)
-            print(f"[STAGE2_JOINT_FAST_EVAL_{label}] raw={_fast_eval_error(fast_raw,full_raw)} obj_abs={obj_abs:.3e} obj_rel={obj_rel:.3e} fast_metrics={fm} full_metrics={om} beta_finite={bool(torch.isfinite(beta).all())} pose_anchor_norm={float(pose_anchor.norm()):.3e} shape_anchor_norm={float(shape_anchor.norm()):.3e}")
-            if obj_rel>1e-6 or not metrics_ok:raise RuntimeError("STAGE2_JOINT_FAST_EVAL_MISMATCH")
+            print(f"[STAGE2_POSE_SHAPE_FAST_EVAL_{label}] raw={_fast_eval_error(fast_raw,full_raw)} obj_abs={obj_abs:.3e} obj_rel={obj_rel:.3e} fast_metrics={fm} full_metrics={om} beta_finite={bool(torch.isfinite(beta).all())} pose_anchor_norm={float(pose_anchor.norm()):.3e} shape_anchor_norm={float(shape_anchor.norm()):.3e}")
+            if obj_rel>1e-6 or not metrics_ok:raise RuntimeError("STAGE2_POSE_SHAPE_FAST_EVAL_MISMATCH")
 
     stage = StageDefinition(
-        name="STAGE2_JOINT",
+        name="STAGE2_POSE_SHAPE",
         parameter_dimension=parameter_dimension,
         initial_lm_parameters=initial_lm,
         initial_lbfgs_parameters=initial_lbfgs,
         raw_groups_fn=raw_groups_fn,
         anchor_residual_fn=all_anchors_residual,
         raw_metrics_fn=selected_metrics_fn,
-        lm_max_accepted_steps=context.solver_config.stage2_joint_lm_max_acc,
+        lm_max_accepted_steps=context.solver_config.stage2_pose_shape_lm_max_acc,
         lbfgs_outer_steps=JOINT_LBFGS_OUTER_STEPS,
-        analytic_cache=joint_fast_cache,linearization_builder=linearization_builder,
+        analytic_cache=pose_shape_fast_cache,linearization_builder=linearization_builder,
         lm_true_objective_fn=lm_true_objective_fn,lbfgs_true_objective_fn=full_joint_objective,
         eval_backend=eval_backend,linearization_backend=linearization_backend,
         linear_solver_backend=linear_solver_backend,
         fast_eval_validator=fast_eval_validator,
     )
 
-    # STAGE2_POSE->STAGE2_JOINT handoff checks
-    handoff_lm = check_pose_to_joint(
+    # STAGE2_POSE->STAGE2_POSE_SHAPE handoff checks
+    handoff_lm = check_pose_to_pose_shape(
         stage2_pose_outcome.lm_result.parameters, initial_lm,
         context.beta_anchor, beta_abs_limit, shape_anchor_scale,
         stage2_pose_raw_groups_fn, raw_groups_fn,
@@ -753,7 +745,7 @@ def _build_joint_refinement_definition(
     )
     handoff_lbfgs = None
     if stage2_pose_outcome.lbfgs_result is not None and initial_lbfgs is not None:
-        handoff_lbfgs = check_pose_to_joint(
+        handoff_lbfgs = check_pose_to_pose_shape(
             stage2_pose_outcome.lbfgs_result.parameters, initial_lbfgs,
             context.beta_anchor, beta_abs_limit, shape_anchor_scale,
             stage2_pose_raw_groups_fn, raw_groups_fn,
@@ -764,13 +756,13 @@ def _build_joint_refinement_definition(
     return stage, handoff_info
 
 
-def _make_stage2_joint_true_objective(
+def _make_stage2_pose_shape_true_objective(
     stage: StageDefinition,
     context: StageContext,
     raw_groups_fn: Callable[[torch.Tensor], Any],
     all_anchors_residual: Callable[[torch.Tensor], torch.Tensor],
 ) -> Callable[[torch.Tensor], torch.Tensor]:
-    """Build the true objective for Stage 2 joint refinement (needed for handoff check)."""
+    """Build the true objective for Stage 2 pose/shape refinement (needed for handoff check)."""
     if context.is_irls:
         static_spec = build_primary_aggregation_spec(raw_groups_fn(stage.initial_lm_parameters))
 
@@ -789,7 +781,7 @@ def _make_stage2_joint_true_objective(
     return true_objective
 
 
-def _make_stage2_joint_true_objective_from_functions(context,raw_groups_fn,anchors_fn,initial):
+def _make_stage2_pose_shape_true_objective_from_functions(context,raw_groups_fn,anchors_fn,initial):
     if context.is_irls:
         spec=build_primary_aggregation_spec(raw_groups_fn(initial))
         def objective(x):return compute_primary_charbonnier_tensor(raw_groups_fn(x),context.charbonnier_eps,spec)+.5*torch.sum(anchors_fn(x)**2)
@@ -854,37 +846,37 @@ def run_stage2(
         "stage1_to_stage2_pose_lbfgs": s1_to_pose["lbfgs"],
     }
     if context.args.stop_after_stage == "stage2_pose":
-        return Stage2Outcome(pose_warmup=pose_outcome, joint_refinement=None, handoffs=handoffs)
+        return Stage2Outcome(pose_warmup=pose_outcome, pose_shape_refinement=None, handoffs=handoffs)
 
     _pipeline_sync(context)
     start = time.perf_counter()
-    with range_fn("stage2_joint_definition"):
-        joint_definition, pose_to_joint = _build_joint_refinement_definition(
+    with range_fn("stage2_pose_shape_definition"):
+        pose_shape_definition, pose_to_pose_shape = _build_pose_shape_refinement_definition(
             context, pose_outcome, pose_outcome.true_objective_fn, pose_definition.raw_groups_fn,
         )
     for label, tag in (("lm", "LM"), ("lbfgs", "BF")):
-        _print_handoff(pose_to_joint[label], tag, "joint")
-        if pose_to_joint[label] is not None and not pose_to_joint[label]["ok"]:
+        _print_handoff(pose_to_pose_shape[label], tag, "joint")
+        if pose_to_pose_shape[label] is not None and not pose_to_pose_shape[label]["ok"]:
             raise RuntimeError(f"{tag} handoff Stage 2 pose->joint failed")
     _pipeline_sync(context)
     if pipeline_timing is not None:
-        pipeline_timing["stage2_joint_definition_and_handoff_ms"] = (
+        pipeline_timing["stage2_pose_shape_definition_and_handoff_ms"] = (
             time.perf_counter() - start
         ) * 1000.0
     handoffs.update({
-        "stage2_pose_to_joint_lm": pose_to_joint["lm"],
-        "stage2_pose_to_joint_lbfgs": pose_to_joint["lbfgs"],
+        "stage2_pose_to_pose_shape_lm": pose_to_pose_shape["lm"],
+        "stage2_pose_to_pose_shape_lbfgs": pose_to_pose_shape["lbfgs"],
     })
     _pipeline_sync(context)
     start = time.perf_counter()
-    with range_fn("stage2_joint_solver"):
-        joint_outcome = run_stage(joint_definition, context)
+    with range_fn("stage2_pose_shape_solver"):
+        pose_shape_outcome = run_stage(pose_shape_definition, context)
     _pipeline_sync(context)
     if pipeline_timing is not None:
-        pipeline_timing["stage2_joint_run_ms"] = (time.perf_counter() - start) * 1000.0
+        pipeline_timing["stage2_pose_shape_run_ms"] = (time.perf_counter() - start) * 1000.0
     return Stage2Outcome(
         pose_warmup=pose_outcome,
-        joint_refinement=joint_outcome,
+        pose_shape_refinement=pose_shape_outcome,
         handoffs=handoffs,
     )
 
@@ -931,9 +923,9 @@ def handoff_s1_to_pose(
     return torch.cat(parts).clone()
 
 
-def check_pose_to_joint(
+def check_pose_to_pose_shape(
     stage2_pose_parameters: torch.Tensor,
-    stage2_joint_parameters: torch.Tensor,
+    stage2_pose_shape_parameters: torch.Tensor,
     beta_anchor: torch.Tensor,
     beta_abs_limit: float,
     shape_anchor_scale: float,
@@ -942,17 +934,17 @@ def check_pose_to_joint(
     true_objective_pose: Callable[[torch.Tensor], torch.Tensor],
     true_objective_joint: Callable[[torch.Tensor], torch.Tensor],
 ) -> dict[str, Any]:
-    """Verify the STAGE2_POSE->STAGE2_JOINT handoff preserves state and correctly inits beta."""
+    """Verify the STAGE2_POSE->STAGE2_POSE_SHAPE handoff preserves state and correctly inits beta."""
     stage2_pose_dim = stage2_pose_parameters.shape[0]
-    beta_dim = stage2_joint_parameters.shape[0] - stage2_pose_dim
-    state_max_diff = float((stage2_joint_parameters[:stage2_pose_dim] - stage2_pose_parameters).abs().max())
-    beta_init = beta_abs_limit * torch.tanh(stage2_joint_parameters[-beta_dim:])
+    beta_dim = stage2_pose_shape_parameters.shape[0] - stage2_pose_dim
+    state_max_diff = float((stage2_pose_shape_parameters[:stage2_pose_dim] - stage2_pose_parameters).abs().max())
+    beta_init = beta_abs_limit * torch.tanh(stage2_pose_shape_parameters[-beta_dim:])
     beta_max_diff = float((beta_init - beta_anchor).abs().max())
-    raw_diff = float((flatten_reprojection_groups(raw_groups_fn_joint(stage2_joint_parameters)).detach()
+    raw_diff = float((flatten_reprojection_groups(raw_groups_fn_joint(stage2_pose_shape_parameters)).detach()
                       - flatten_reprojection_groups(raw_groups_fn_pose(stage2_pose_parameters)).detach()).abs().max())
     shape_anchor_objective_init = float(0.5 * torch.sum((beta_init - beta_anchor) ** 2 * shape_anchor_scale ** 2))
     objective_pose = float(true_objective_pose(stage2_pose_parameters).detach().item())
-    objective_joint_init = float(true_objective_joint(stage2_joint_parameters).detach().item())
+    objective_joint_init = float(true_objective_joint(stage2_pose_shape_parameters).detach().item())
     relative_objective = abs(objective_joint_init - objective_pose) / max(abs(objective_pose), 1e-16)
     ok = (state_max_diff <= 1e-7 and beta_max_diff <= 1e-6 and raw_diff <= 1e-3
           and shape_anchor_objective_init <= 1e-10 and relative_objective <= 1e-6)

@@ -75,7 +75,7 @@ def build_manifest(root: Path) -> dict[str, Any]:
         relative = json_path.relative_to(root)
         payload = json.loads(json_path.read_text())
         pose = payload["stage2"]["pose_warmup"]["lm"]
-        joint = payload["stage2"]["joint_refinement"]["lm"]
+        joint = payload["stage2"]["pose_shape_refinement"]["lm"]
         cases[str(relative.parent)] = {
             "json_sha256": _hash_file(json_path),
             "npz_sha256": _hash_file(json_path.with_suffix(".npz")),

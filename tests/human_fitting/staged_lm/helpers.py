@@ -6,10 +6,10 @@ from types import SimpleNamespace
 
 import torch
 
-from lib_pano.human_fitting.staged_lm.joint import (
-    Stage2JointFastCache,
-    Stage2JointFrameCameraCache,
-    Stage2JointModelCache,
+from lib_pano.human_fitting.staged_lm.pose_shape import (
+    Stage2PoseShapeFastCache,
+    Stage2PoseShapeFrameCameraCache,
+    Stage2PoseShapeModelCache,
 )
 from lib_pano.human_fitting.staged_lm.types import FrozenFrameParameters
 
@@ -17,7 +17,7 @@ from lib_pano.human_fitting.staged_lm.types import FrozenFrameParameters
 DTYPE = torch.float64
 
 
-def synthetic_joint_cache(frames: int = 1) -> Stage2JointFastCache:
+def synthetic_pose_shape_cache(frames: int = 1) -> Stage2PoseShapeFastCache:
     torch.manual_seed(51)
     joint_count, vertex_count, beta_dim = 55, 6, 2
     parents = torch.arange(joint_count) - 1
@@ -28,7 +28,7 @@ def synthetic_joint_cache(frames: int = 1) -> Stage2JointFastCache:
     regressor /= regressor.sum(1, keepdim=True)
     base_joints = torch.einsum("jv,vc->jc", regressor, base_vertices)
     joint_directions = torch.einsum("jv,vcb->jcb", regressor, beta_directions)
-    model = Stage2JointModelCache(
+    model = Stage2PoseShapeModelCache(
         base_vertices, beta_directions, base_joints, joint_directions,
         parents, joint_count, 486, vertex_count, beta_dim, 63,
         DTYPE, torch.device("cpu"),
@@ -42,7 +42,7 @@ def synthetic_joint_cache(frames: int = 1) -> Stage2JointFastCache:
             )
             weights = torch.rand(ids.numel(), joint_count, dtype=DTYPE)
             weights /= weights.sum(1, keepdim=True)
-            groups.append(Stage2JointFrameCameraCache(
+            groups.append(Stage2PoseShapeFrameCameraCache(
                 frame, 513 + frame * 2, camera, ids,
                 torch.randn(ids.numel(), 2, dtype=DTYPE) * 10 + 100,
                 torch.randn(45, dtype=DTYPE) * 0.01,
@@ -52,10 +52,10 @@ def synthetic_joint_cache(frames: int = 1) -> Stage2JointFastCache:
                 torch.randn(486, ids.numel(), 3, dtype=DTYPE) * 1e-4,
                 weights,
             ))
-    return Stage2JointFastCache(model, groups, frames, 5760, 2880, 0.0)
+    return Stage2PoseShapeFastCache(model, groups, frames, 5760, 2880, 0.0)
 
 
-def synthetic_joint_parameters(frames: int = 1) -> torch.Tensor:
+def synthetic_pose_shape_parameters(frames: int = 1) -> torch.Tensor:
     torch.manual_seed(52)
     parameters = torch.randn(frames * 75 + 2, dtype=DTYPE) * 0.02
     for frame in range(frames):
@@ -69,8 +69,8 @@ def synthetic_joint_parameters(frames: int = 1) -> torch.Tensor:
 
 
 # Short aliases keep the migrated test bodies mechanically unchanged.
-_cache = synthetic_joint_cache
-_parameters = synthetic_joint_parameters
+_cache = synthetic_pose_shape_cache
+_parameters = synthetic_pose_shape_parameters
 
 
 def synthetic_stage2_context(frames: int = 1, dtype=torch.float64):

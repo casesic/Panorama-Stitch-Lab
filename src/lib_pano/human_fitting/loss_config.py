@@ -83,7 +83,7 @@ def build_optimization_stages(
     staged_charbonnier_parity: 三阶段
       stage1_camera_alignment (orient/transl only, primary only)
       stage2_pose_warmup (orient/transl + shared_body_pose, primary + pose_anchor)
-      stage2_joint_refinement (all + beta_latent, primary + pose_anchor + shape_anchor)
+      stage2_pose_shape_refinement (all + beta_latent, primary + pose_anchor + shape_anchor)
     """
     if optimization_profile == "staged_charbonnier_parity":
         return [
@@ -112,7 +112,7 @@ def build_optimization_stages(
                 },
             ),
             (
-                "stage2_joint_refinement",
+                "stage2_pose_shape_refinement",
                 lambda: [
                     smpl_c2.orient, smpl_c2.transl, smpl_c4.orient, smpl_c4.transl,
                     body_pose_param, beta_latent_param,

@@ -11,7 +11,7 @@ from pathlib import Path
 
 import torch
 
-from helpers import synthetic_joint_parameters, synthetic_stage2_context
+from helpers import synthetic_pose_shape_parameters, synthetic_stage2_context
 from lib_pano.human_fitting.staged_lm.config import PRODUCTION_POSE_LINEARIZATION
 from lib_pano.human_fitting.staged_lm.irls import build_primary_aggregation_spec
 from lib_pano.human_fitting.staged_lm.stage2_shared_cache import build_stage2_shared_geometry_cache
@@ -32,7 +32,7 @@ def _fixture(frames: int = 2, *, irls: bool = False):
     context = synthetic_stage2_context(frames)
     shared = build_stage2_shared_geometry_cache(context)
     fast = build_stage2_pose_fast_cache(context, shared)
-    parameters = synthetic_joint_parameters(frames)[:-2]
+    parameters = synthetic_pose_shape_parameters(frames)[:-2]
     anchors = [torch.zeros(63, dtype=parameters.dtype) for _ in range(frames)]
     scale = 0.3
     batch = build_stage2_pose_batch_cache(fast, pose_anchor_scale=scale)

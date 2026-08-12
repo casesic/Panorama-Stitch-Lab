@@ -10,7 +10,7 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from script.validation.staged_lm.common import add_data_arguments, add_profile_argument
-from script.validation.staged_lm.joint import (
+from script.validation.staged_lm.pose_shape import (
     run_all_joint_jacobian_validations,
     run_joint_analytic_validation,
     run_joint_beta_validation,

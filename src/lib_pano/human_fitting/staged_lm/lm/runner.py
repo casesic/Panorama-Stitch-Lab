@@ -22,9 +22,8 @@ from .convergence import (
     update_damping_after_acceptance,
 )
 from .equations import (
-    _evaluate_linearization, compute_jacobian, compute_scaled_gradient,
-    compute_scaled_gradient_from_normal_equations, normal_equations_max_diagonal,
-    solve_normal_equations,
+    _evaluate_linearization, compute_scaled_gradient,
+    normal_equations_max_diagonal, solve_normal_equations,
 )
 from .trial import (
     build_evaluated_trial_record, build_failed_trial_record,
@@ -70,7 +69,7 @@ def run_lm_optimization(
 
     timing: dict[str, float] = {
         "initial_linearization_ms": 0.0,
-        "solver_jacobian_ms": 0.0,
+        "normal_equations_ms": 0.0,
         "objective_eval_ms": 0.0,
         "linear_solve_ms": 0.0,
         "final_metrics_ms": 0.0,
@@ -84,9 +83,9 @@ def run_lm_optimization(
     linearization = make_linearization(x)
 
     t_j = time.perf_counter()
-    equations, uses_direct_normal_equations = _evaluate_linearization(linearization, x)
+    equations, _ = _evaluate_linearization(linearization, x)
     if profile:
-        timing["solver_jacobian_ms"] += (time.perf_counter() - t_j) * 1000.0
+        timing["normal_equations_ms"] += (time.perf_counter() - t_j) * 1000.0
     if profile:
         timing["initial_linearization_ms"] = (time.perf_counter() - t_init) * 1000.0
 
@@ -94,11 +93,7 @@ def run_lm_optimization(
     initial_max_diagonal = normal_equations_max_diagonal(equations)
     damping = initialise_damping_from_max_diagonal(initial_max_diagonal)
 
-    counters = LMSolverCounters(
-        solver_jacobian_count=1,
-        linearization_count=1,
-        normal_equation_count=1 if uses_direct_normal_equations else 0,
-    )
+    counters = LMSolverCounters(linearization_count=1)
     status = "RUNNING"
     weight_history: list[dict[str, Any]] = [
         {"outer": -1, **linearization.weight_stats}
@@ -138,6 +133,7 @@ def run_lm_optimization(
                 counters.rejected_trials += 1
                 trial_history.append(build_failed_trial_record(
                     outer, _trial, trial_damping, linear_solver_backend,
+                    solve_result.backend,
                     solve_result.schur_failed,
                 ))
                 if profile:
@@ -160,7 +156,8 @@ def run_lm_optimization(
                 )
             )
             trial_history.append(build_evaluated_trial_record(
-                outer, _trial, trial_damping, linear_solver_backend, delta,
+                outer, _trial, trial_damping, linear_solver_backend,
+                solve_result.backend, delta,
                 predicted_reduction, actual_reduction, rho, accepted_trial,
                 solve_result.schur_failed,
             ))
@@ -177,35 +174,19 @@ def run_lm_optimization(
 
         # ---- No acceptable step found this outer iteration ----
         if not accepted_this:
-            if uses_direct_normal_equations:
-                scaled_grad = compute_scaled_gradient(equations)
-            else:
-                residual_now = linearization.surrogate(x).detach()
-                t_j = time.perf_counter()
-                jacobian_now = compute_jacobian(linearization, x)
-                if profile:
-                    timing["solver_jacobian_ms"] += (time.perf_counter() - t_j) * 1000.0
-                counters.solver_jacobian_count += 1
-                jacobian_now_64 = jacobian_now.to(torch.float64)
-                residual_now_64 = residual_now.to(torch.float64)
-                scaled_grad = compute_scaled_gradient_from_normal_equations(
-                    jacobian_now_64.T @ jacobian_now_64,
-                    jacobian_now_64.T @ residual_now_64,
-                )
+            scaled_grad = compute_scaled_gradient(equations)
             status = classify_no_accepted_trial(
                 counters.accepted_steps, scaled_grad,
             )
             break
 
         # ---- Re-linearise at the accepted point ----
-        next_linearization = make_linearization(x)
+        next_linearization = make_linearization(x)  # 线性化，计算r,J, H=J^T@J(param_dim*param_dim), g=J^T@r(param_dim*1)
         t_j = time.perf_counter()
-        next_equations, next_uses_direct = _evaluate_linearization(next_linearization, x)
+        next_equations, _ = _evaluate_linearization(next_linearization, x)
         if profile:
-            timing["solver_jacobian_ms"] += (time.perf_counter() - t_j) * 1000.0
-        counters.solver_jacobian_count += 1
+            timing["normal_equations_ms"] += (time.perf_counter() - t_j) * 1000.0
         counters.linearization_count += 1
-        counters.normal_equation_count += int(next_uses_direct)
         weight_history.append(
             {"outer": outer, **next_linearization.weight_stats}
         )
@@ -221,7 +202,6 @@ def run_lm_optimization(
             break
         linearization = next_linearization
         equations = next_equations
-        uses_direct_normal_equations = next_uses_direct
 
     if status == "RUNNING":
         status = "MAX_ACCEPTED_STEPS"
@@ -238,9 +218,9 @@ def run_lm_optimization(
     wall_ms = _elapsed_ms(t0, x, do_sync)
 
     print(f"[{label}] {status} acc={counters.accepted_steps} rej={counters.rejected_trials} "
-          f"jac={counters.solver_jacobian_count} lins={counters.linearization_count} "
-          f"slv={counters.solve_attempt_count} "
-          f"chol_ok={counters.cholesky_success_count} fb={counters.solve_fallback_count} "
+          f"lins={counters.linearization_count} "
+          f"slv={counters.solve_attempt_count} ok={counters.solve_success_count} "
+          f"fail={counters.solve_failure_count} "
           f"obj={obj_final:.6e} rms={rms_metrics['rms']:.1f}")
 
     return LMResult(
@@ -253,8 +233,7 @@ def run_lm_optimization(
         wall_time_ms=wall_ms,
         rms_metrics=rms_metrics,
         weight_history=weight_history,
-        first_order_checks={},
-        spec=spec,
+        aggregation_spec=spec,
         jacobian_backend=linearization.provenance.jacobian_backend,
         linearization_backend=linearization.provenance.linearization_backend,
         linear_solver_backend=linear_solver_backend,

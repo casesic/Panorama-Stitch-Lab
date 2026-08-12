@@ -65,7 +65,7 @@ def _result_json(result) -> dict[str, Any]:
         "rejected_trials": result.counters.rejected_trials,
         "solve_count": result.counters.solve_attempt_count,
         "linearization_count": result.counters.linearization_count,
-        "normal_equation_count": result.counters.normal_equation_count,
+        "linearization_count": result.counters.linearization_count,
         "final_lambda": result.final_lambda, "wall_time_ms": result.wall_time_ms,
         "metrics": result.rms_metrics, "trial_history": result.trial_history,
         "weight_history": result.weight_history,

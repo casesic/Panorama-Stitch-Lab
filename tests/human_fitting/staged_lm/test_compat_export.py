@@ -55,7 +55,7 @@ def _joint_arrays(frame_count: int) -> dict[str, np.ndarray]:
     latent_beta = np.linspace(-0.5, 0.5, 10, dtype=np.float32)
     physical_beta = np.linspace(-1.0, 1.0, 10, dtype=np.float32)
     return {
-        "x_stage2_joint_lm": np.concatenate((frame_values, latent_beta)),
+        "x_stage2_pose_shape_lm": np.concatenate((frame_values, latent_beta)),
         "beta_lm": physical_beta,
     }
 
@@ -64,7 +64,7 @@ def test_build_compatible_sequences_uses_physical_beta() -> None:
     context = _context([513, 514])
     arrays = _joint_arrays(context.frame_count)
     cam2, cam4, beta = build_compatible_smplx_sequences(
-        context, arrays, "joint_refinement",
+        context, arrays, "pose_shape_refinement",
     )
 
     assert isinstance(cam2, SMPLX_Seq_Forward_Module.SMPLX_Param_Seq)
@@ -81,7 +81,7 @@ def test_build_compatible_sequences_uses_physical_beta() -> None:
 def test_export_writes_debug077_layout(tmp_path) -> None:
     context = _context([513, 514])
     export_debug029_compatible_result(
-        tmp_path, context, _joint_arrays(context.frame_count), "joint_refinement",
+        tmp_path, context, _joint_arrays(context.frame_count), "pose_shape_refinement",
     )
 
     for camera, valid_count in (("cam2", 2), ("cam4", 0)):
@@ -94,12 +94,12 @@ def test_export_writes_debug077_layout(tmp_path) -> None:
         assert metadata["frame_idxs"] == [513, 514]
         assert metadata["valid_frame_count"] == valid_count
         assert metadata["export_source"] == "staged_lm"
-        assert metadata["export_stage"] == "joint_refinement"
+        assert metadata["export_stage"] == "pose_shape_refinement"
 
 
 def test_export_rejects_noncontiguous_frames(tmp_path) -> None:
     context = _context([513, 515])
     with pytest.raises(ValueError, match="contiguous ascending"):
         export_debug029_compatible_result(
-            tmp_path, context, _joint_arrays(context.frame_count), "joint_refinement",
+            tmp_path, context, _joint_arrays(context.frame_count), "pose_shape_refinement",
         )

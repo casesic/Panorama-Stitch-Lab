@@ -22,7 +22,7 @@ from ..pose.cache import (
     build_stage2_pose_fast_cache,
 )
 from ..stage2_shared_cache import Stage2SharedGeometryCache
-from ..stage_handoff import check_s1_to_pose, handoff_s1_to_pose
+from ..stage_handoff import handoff_s1_to_pose
 from ..stage_runtime import run_stage
 from ..types import (
     StageContext,
@@ -51,10 +51,6 @@ def build_pose_stage_definition(
     initial_parameters = handoff_s1_to_pose(
         stage1_outcome.lm_result.parameters, context.body_pose_anchors,
         context.frame_count, context.body_pose_dim,
-    )
-    handoff = check_s1_to_pose(
-        stage1_outcome.lm_result.parameters, initial_parameters,
-        context.body_pose_anchors, context.frame_count, context.body_pose_dim,
     )
     synchronize_context_device(context)
     handoff_ms = (time.perf_counter() - handoff_start) * 1000.0
@@ -147,7 +143,7 @@ def build_pose_stage_definition(
         cache_setup_ms=cache_setup_ms,
         definition_bind_ms=(time.perf_counter() - bind_start) * 1000.0,
     )
-    return stage, {"lm": handoff}
+    return stage, {"lm": None}
 
 
 def run_pose_stage(

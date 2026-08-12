@@ -1,4 +1,4 @@
-"""ERP projection kernels shared by rigid, pose and joint staged-LM stages."""
+"""ERP projection kernels shared by rigid, pose and pose/shape staged-LM stages."""
 
 from __future__ import annotations
 

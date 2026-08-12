@@ -1,7 +1,7 @@
 """Data structures for staged rigid / pose / joint LM fitting.
 
 Stage 1 performs dual-camera rigid orient/transl alignment. Stage 2 performs
-pose warmup followed by pose/shape joint refinement.
+pose warmup followed by pose/shape refinement.
 
 The original script passed information between functions through loosely-typed
 dicts with abbreviated keys (``"r2d"``, ``"n_valid"``, ``"lhand_c2"`` ...).
@@ -114,26 +114,6 @@ class LinearSolveResult:
     def success(self) -> bool:
         return self.delta is not None
 
-    @property
-    def cholesky_success(self) -> bool:
-        # Preserve the legacy counter semantics: a successful Schur solve was
-        # counted as a Cholesky success.
-        return self.success and self.backend in ("cholesky", "schur")
-
-    @property
-    def fallback_success(self) -> bool:
-        return self.success and (
-            self.backend == "dense_solve" or self.schur_failed
-        )
-
-    @property
-    def schur_success(self) -> bool:
-        return self.backend == "schur"
-
-    @property
-    def schur_dense_fallback_success(self) -> bool:
-        return self.success and self.schur_failed
-
 
 @dataclass
 class LMSolverCounters:
@@ -144,39 +124,23 @@ class LMSolverCounters:
 
     accepted_steps: int = 0
     rejected_trials: int = 0
-    solver_jacobian_count: int = 0
     linearization_count: int = 0
     solve_attempt_count: int = 0
-    cholesky_success_count: int = 0
-    solve_fallback_count: int = 0
-    normal_equation_count: int = 0
-    schur_success_count: int = 0
-    schur_dense_fallback_count: int = 0
-    schur_failure_count: int = 0
+    solve_success_count: int = 0
+    solve_failure_count: int = 0
 
     def record_linear_solve(self, result: LinearSolveResult) -> None:
-        """Record one solve path without duplicating flag logic in the LM loop."""
+        """Record one mutually exclusive overall solve result."""
         self.solve_attempt_count += 1
-        self.cholesky_success_count += int(result.cholesky_success)
-        self.solve_fallback_count += int(result.fallback_success)
-        self.schur_success_count += int(result.schur_success)
-        self.schur_dense_fallback_count += int(
-            result.schur_dense_fallback_success
-        )
-        self.schur_failure_count += int(result.schur_failed)
+        if result.success:
+            self.solve_success_count += 1
+        else:
+            self.solve_failure_count += 1
 
-    @property
-    def successful_solve_count(self) -> int:
-        """Total successful linear solves (Cholesky + fallback)."""
-        return self.cholesky_success_count + self.solve_fallback_count
 
 @dataclass
 class LMResult:
-    """Outcome of a single Levenberg-Marquardt optimisation.
-
-    The ``to_json_dict`` helper strips the large ``parameters`` tensor so that
-    the remaining fields match the legacy JSON layout exactly.
-    """
+    """Outcome of one Levenberg-Marquardt optimization."""
 
     label: str
     parameters: torch.Tensor
@@ -187,8 +151,7 @@ class LMResult:
     wall_time_ms: float
     rms_metrics: dict[str, float]
     weight_history: list[dict[str, Any]]
-    first_order_checks: dict[str, Any]
-    spec: dict[str, Any]
+    aggregation_spec: dict[str, Any]
     jacobian_backend: str = "autograd"
     linearization_backend: str = "jacobian"
     eval_backend: str = "full_forward"
@@ -202,28 +165,21 @@ class LMResult:
             "label": self.label,
             "obj": self.objective,
             "status": self.status,
-            "solver_jacobian_count": self.counters.solver_jacobian_count,
             "linearization_count": self.counters.linearization_count,
             "solve_attempt_count": self.counters.solve_attempt_count,
-            "successful_solve_count": self.counters.successful_solve_count,
-            "cholesky_success_count": self.counters.cholesky_success_count,
-            "solve_fallback_count": self.counters.solve_fallback_count,
+            "solve_success_count": self.counters.solve_success_count,
+            "solve_failure_count": self.counters.solve_failure_count,
             "accepted_steps": self.counters.accepted_steps,
             "rejected_trials": self.counters.rejected_trials,
             "final_lambda": self.final_lambda,
             "rms": self.rms_metrics,
             "w_history": self.weight_history,
-            "first_order_checks": self.first_order_checks,
-            "spec": self.spec,
+            "aggregation_spec": self.aggregation_spec,
             "jacobian_backend": self.jacobian_backend,
             "linearization_backend": self.linearization_backend,
             "eval_backend": self.eval_backend,
             "linear_solver_backend": self.linear_solver_backend,
-            "schur_success_count": self.counters.schur_success_count,
-            "schur_dense_fallback_count": self.counters.schur_dense_fallback_count,
-            "schur_failure_count": self.counters.schur_failure_count,
             "trial_history": self.trial_history,
-            "normal_equation_count": self.counters.normal_equation_count,
         }
         if self.profile_timing is not None:
             result["wall_time_ms"] = self.wall_time_ms
@@ -327,9 +283,8 @@ class Stage2Outcome:
     """Results and handoffs from the two internal steps of Stage 2."""
 
     pose_warmup: StageOutcome
-    joint_refinement: StageOutcome | None
+    pose_shape_refinement: StageOutcome | None
     handoffs: dict[str, Any]
-
 
 @dataclass
 class StageContext:

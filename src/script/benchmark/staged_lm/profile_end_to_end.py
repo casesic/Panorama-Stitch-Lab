@@ -37,11 +37,11 @@ from lib_pano.human_fitting.staged_lm.residuals import (
     make_raw_reproj_groups,
 )
 from lib_pano.human_fitting.staged_lm.stage_definitions import (
-    joint as joint_definitions,
+    joint as pose_shape_definitions,
     pose as pose_definitions,
     rigid as rigid_definitions,
 )
-from lib_pano.human_fitting.staged_lm.stage_definitions.joint import build_joint_stage_definition
+from lib_pano.human_fitting.staged_lm.stage_definitions.pose_shape import build_pose_shape_stage_definition
 from lib_pano.human_fitting.staged_lm.stage_definitions.pose import build_pose_stage_definition
 from lib_pano.human_fitting.staged_lm.stage_definitions.rigid import build_stage1_definition
 from lib_pano.human_fitting.staged_lm.stage_runtime import run_stage
@@ -93,14 +93,12 @@ def run_fitting_once(context, *, record_ranges: bool = False) -> dict[str, Any]:
         )
     with _range("stage2_pipeline", record_ranges):
         stage2=run_stage2(context,stage1,timing,profiler_ranges=record_ranges)
-    pose=stage2.pose_warmup;joint=stage2.joint_refinement
+    pose=stage2.pose_warmup;joint=stage2.pose_shape_refinement
     if joint is None:raise RuntimeError("DEBUG121_REQUIRES_FULL_STAGE2")
     with _range("gate_c", record_ranges):
         start=time.perf_counter()
         beta=context.objective_config.beta_abs_limit*torch.tanh(joint.lm_result.parameters[-context.beta_dim:])
         checks={
-            "handoff_stage1_to_stage2_pose_lm":stage2.handoffs["stage1_to_stage2_pose_lm"]["ok"],
-            "handoff_stage2_pose_to_joint_lm":stage2.handoffs["stage2_pose_to_joint_lm"]["ok"],
             "beta_sat_lt_0.9":float(beta.abs().max())/context.objective_config.beta_abs_limit<.9,
             "s1_status_ok":stage1.lm_result.status not in ("LM_NO_ACCEPTED_TRIAL","NUMERICAL_FAILURE"),
             "pose_status_ok":pose.lm_result.status not in ("LM_NO_ACCEPTED_TRIAL","NUMERICAL_FAILURE"),
@@ -163,7 +161,7 @@ class FullForwardCallAudit:
             for module in (
                 rigid_definitions,
                 pose_definitions,
-                joint_definitions,
+                pose_shape_definitions,
             ):
                 stack.enter_context(patch.object(
                     module, "make_raw_reproj_groups", self.counted_forward,
@@ -187,20 +185,20 @@ def audit_full_forward_calls(context) -> dict[str, int]:
         with audit.phase("solver_run"):
             pose = run_stage(pose_definition, context)
         with audit.phase("stage_preparation"):
-            joint_definition, _ = build_joint_stage_definition(
+            pose_shape_definition, _ = build_pose_shape_stage_definition(
                 context, pose, shared_cache,
             )
         with audit.phase("solver_run"):
-            joint = run_stage(joint_definition, context)
+            joint = run_stage(pose_shape_definition, context)
         with audit.phase("stage_json_build"):
             stage_outcome_to_json(stage1)
             stage_outcome_to_json(pose)
             stage_outcome_to_json(joint)
         with audit.phase("objective_breakdown"):
-            if joint_definition.objective_terms_fn is None:
+            if pose_shape_definition.objective_terms_fn is None:
                 raise RuntimeError("MISSING_JOINT_OBJECTIVE_TERMS_FN")
             compute_objective_breakdown(
-                joint_definition.objective_terms_fn,
+                pose_shape_definition.objective_terms_fn,
                 joint.lm_result.parameters,
                 expected_true_objective=joint.lm_result.objective,
             )
@@ -211,10 +209,10 @@ def audit_full_forward_calls(context) -> dict[str, int]:
             collect_stage2_arrays(
                 stage1_definition.initial_lm_parameters,
                 pose_definition.initial_lm_parameters,
-                joint_definition.initial_lm_parameters,
+                pose_shape_definition.initial_lm_parameters,
                 stage1, pose, joint, context.beta_anchor, context.beta_latent0,
                 beta, stage1_definition.raw_groups_fn,
-                pose_definition.raw_groups_fn, joint_definition.raw_groups_fn,
+                pose_definition.raw_groups_fn, pose_shape_definition.raw_groups_fn,
             )
     return audit.counts
 
@@ -316,16 +314,16 @@ def _unique_tensor_bytes(tensors: list[torch.Tensor]) -> int:
 
 def _cache_memory_audit(run: dict[str, Any]) -> dict[str, int]:
     """Report persistent cache bytes, deduplicating shared tensor pointers."""
-    _stage1, pose_definition, joint_definition = run["definitions"]
+    _stage1, pose_definition, pose_shape_definition = run["definitions"]
     pose = pose_definition.analytic_cache
-    joint = joint_definition.analytic_cache
+    joint = pose_shape_definition.analytic_cache
     shared: list[torch.Tensor] = [pose.model.parents]
     pose_derived = [pose.model.v_shaped, pose.model.joints]
     joint_derived = [
         joint.model.base_v_shaped, joint.model.beta_shapedirs,
         joint.model.base_joints, joint.model.d_joints_d_beta,
     ]
-    for pose_group, joint_group in zip(pose.groups, joint.groups):
+    for pose_group, pose_shape_group in zip(pose.groups, joint.groups):
         shared.extend((
             pose_group.vertex_ids, pose_group.targets,
             pose_group.left_hand_pose, pose_group.right_hand_pose,
@@ -334,8 +332,8 @@ def _cache_memory_audit(run: dict[str, Any]) -> dict[str, int]:
         ))
         pose_derived.append(pose_group.selected_v_shaped)
         joint_derived.extend((
-            joint_group.selected_base_v_shaped,
-            joint_group.selected_beta_shapedirs,
+            pose_shape_group.selected_base_v_shaped,
+            pose_shape_group.selected_beta_shapedirs,
         ))
     shared_bytes = _unique_tensor_bytes(shared)
     pose_bytes = _unique_tensor_bytes(pose_derived)

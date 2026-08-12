@@ -161,8 +161,8 @@ def run_stage1_lm_lockstep(
             records.append(Stage1ShadowTrialRecord(
                 outer,trial,trial_damping,sd is not None,cd is not None,
                 serial_solve.cholesky_success,candidate_solve.cholesky_success,
-                bool(serial_solve.fallback_success or serial_solve.schur_failed),
-                bool(candidate_solve.fallback_success or candidate_solve.schur_failed),
+                bool(serial_solve.backend == "dense_solve" or serial_solve.schur_failed),
+                bool(candidate_solve.backend == "dense_solve" or candidate_solve.schur_failed),
                 None if dd is None else float(dd.abs().max()),
                 None if dd is None else float(dd.norm())/max(float(sd.norm()),1e-30),
                 sp,cp,None if cp is None else abs(cp-sp)/max(abs(sp),1e-30),sa,ca,sr,cr,
@@ -193,7 +193,7 @@ def run_stage1_lm_lockstep(
 def compare_stage1_lm_results(serial: LMResult,candidate: LMResult) -> dict[str,Any]:
     diff=candidate.parameters-serial.parameters;first=None
     for index,(left,right) in enumerate(zip(serial.trial_history,candidate.trial_history)):
-        for key in ("outer","trial","solve_success","accepted","used_dense_fallback"):
+        for key in ("outer","trial","solve_success","accepted","schur_primary_failed"):
             if left.get(key)!=right.get(key):first={"index":index,"field":key,"serial":left.get(key),"candidate":right.get(key)};break
         if first:break
     structure=(len(serial.weight_history)==len(candidate.weight_history) and all(
@@ -207,6 +207,6 @@ def compare_stage1_lm_results(serial: LMResult,candidate: LMResult) -> dict[str,
             "accepted_match":serial.counters.accepted_steps==candidate.counters.accepted_steps,
             "rejected_match":serial.counters.rejected_trials==candidate.counters.rejected_trials,
             "trial_count_match":len(serial.trial_history)==len(candidate.trial_history),
-            "solve_path_match":(serial.counters.cholesky_success_count,serial.counters.solve_fallback_count)==(candidate.counters.cholesky_success_count,candidate.counters.solve_fallback_count),
+            "solve_path_match":[t["final_solve_backend"] for t in serial.trial_history]==[t["final_solve_backend"] for t in candidate.trial_history],
             "final_lambda_relative":abs(candidate.final_lambda-serial.final_lambda)/max(abs(serial.final_lambda),1e-30),
             "weight_history_structure_match":structure}

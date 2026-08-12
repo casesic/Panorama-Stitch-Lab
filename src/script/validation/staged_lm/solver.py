@@ -9,11 +9,11 @@ import argparse, statistics
 import torch
 from script.human_fitting.staged_lm.app import build_context
 from lib_pano.human_fitting.staged_lm.residuals import flatten_reprojection_groups
-from script.validation.staged_lm.references.stage_backends import _build_joint_refinement_definition, _build_pose_warmup_definition, build_stage1_definition, run_stage
+from script.validation.staged_lm.references.stage_backends import _build_pose_shape_refinement_definition, _build_pose_warmup_definition, build_stage1_definition, run_stage
 import argparse
 import statistics
 from contextlib import nullcontext
-from script.validation.staged_lm.references.joint_backends import use_separate_fk_reference
+from script.validation.staged_lm.references.pose_shape_backends import use_separate_fk_reference
 from script.validation.staged_lm.references.gate_c import evaluate_gate_c
 
 
@@ -21,7 +21,7 @@ def backend_args(c):return argparse.Namespace(frames=c.frames,hmr_dir=c.hmr_dir,
     image_width=c.image_width,image_height=c.image_height,output_dir="/tmp/debug117",reproj_objective="charbonnier_irls",stop_after_stage="stage2",
     run_lbfgs_oracle=False,jacobian_backend="analytic_stage1",stage1_eval_backend="analytic",validate_stage1_fast_eval=False,
     stage2_pose_linearization_backend="analytic",stage2_pose_eval_backend="fast",validate_stage2_pose_fast_eval=False,
-    stage2_joint_linearization_backend="autograd",stage2_joint_eval_backend="full_forward",validate_stage2_joint_fast_eval=False,
+    stage2_pose_shape_linearization_backend="autograd",stage2_pose_shape_eval_backend="full_forward",validate_stage2_pose_shape_fast_eval=False,
     validate_irls_first_order=False,profile_timing=c.profile)
 
 
@@ -29,9 +29,9 @@ def backend_metric_close(a,b):return abs(a-b)<=1e-3 or abs(a-b)/max(abs(b),1e-16
 
 
 def backend_run_mode(context,pose,label,linearization,evaluation):
-    context.args.stage2_joint_linearization_backend=linearization;context.args.stage2_joint_eval_backend=evaluation
-    context.args.validate_stage2_joint_fast_eval=evaluation=="fast"
-    definition,_=_build_joint_refinement_definition(context,pose,pose.true_objective_fn,pose.definition.raw_groups_fn)
+    context.args.stage2_pose_shape_linearization_backend=linearization;context.args.stage2_pose_shape_eval_backend=evaluation
+    context.args.validate_stage2_pose_shape_fast_eval=evaluation=="fast"
+    definition,_=_build_pose_shape_refinement_definition(context,pose,pose.true_objective_fn,pose.definition.raw_groups_fn)
     outcome=run_stage(definition,context);raw=flatten_reprojection_groups(definition.raw_groups_fn(outcome.lm_result.parameters)).detach()
     beta=context.objective_config.beta_abs_limit*torch.tanh(outcome.lm_result.parameters[-context.beta_dim:])
     return label,outcome,raw,beta
@@ -58,7 +58,7 @@ def run_joint_backend_regression(cli=None):
     for label,values in runs.items():
         def med(key):return statistics.median((v[1].lm_result.profile_timing or {}).get(key,0.) for v in values)
         lm=values[0][1].lm_result
-        print(f"[TIMING {label}] wall={statistics.median(v[1].lm_result.wall_time_ms for v in values):.3f} normal_eq={med('normal_equations_ms'):.3f} obj={med('true_objective_ms'):.3f} metrics={med('final_metrics_ms'):.3f} solve={med('linear_solve_ms'):.3f} other={med('other_runner_ms'):.3f} NE={lm.counters.normal_equation_count} acc/rej={lm.counters.accepted_steps}/{lm.counters.rejected_trials}")
+        print(f"[TIMING {label}] wall={statistics.median(v[1].lm_result.wall_time_ms for v in values):.3f} normal_eq={med('normal_equations_ms'):.3f} obj={med('true_objective_ms'):.3f} metrics={med('final_metrics_ms'):.3f} solve={med('linear_solve_ms'):.3f} other={med('other_runner_ms'):.3f} linearizations={lm.counters.linearization_count} acc/rej={lm.counters.accepted_steps}/{lm.counters.rejected_trials}")
     print("[PASS] Stage 2 joint A/B/C solver regression");return 0
 
 
@@ -73,19 +73,19 @@ def schur_make_args(cli: argparse.Namespace) -> argparse.Namespace:
         validate_stage1_fast_eval=False,
         stage2_pose_linearization_backend="analytic", stage2_pose_eval_backend="fast",
         validate_stage2_pose_fast_eval=False,
-        stage2_joint_linearization_backend="autograd",
-        stage2_joint_eval_backend="full_forward", stage2_joint_linear_solver="dense",
-        validate_stage2_joint_fast_eval=False, validate_irls_first_order=False,
+        stage2_pose_shape_linearization_backend="autograd",
+        stage2_pose_shape_eval_backend="full_forward", stage2_pose_shape_linear_solver="dense",
+        validate_stage2_pose_shape_fast_eval=False, validate_irls_first_order=False,
         profile_timing=cli.profile,
     )
 
 
 def schur_run_mode(context, pose, label, linearization, evaluation, solver):
-    context.args.stage2_joint_linearization_backend = linearization
-    context.args.stage2_joint_eval_backend = evaluation
-    context.args.stage2_joint_linear_solver = solver
-    context.args.validate_stage2_joint_fast_eval = evaluation == "fast"
-    definition, _ = _build_joint_refinement_definition(
+    context.args.stage2_pose_shape_linearization_backend = linearization
+    context.args.stage2_pose_shape_eval_backend = evaluation
+    context.args.stage2_pose_shape_linear_solver = solver
+    context.args.validate_stage2_pose_shape_fast_eval = evaluation == "fast"
+    definition, _ = _build_pose_shape_refinement_definition(
         context, pose, pose.true_objective_fn, pose.definition.raw_groups_fn,
     )
     outcome = run_stage(definition, context)
@@ -138,8 +138,9 @@ def compare_dense_schur(dense, schur) -> None:
         f"raw_max={float((schur_raw-dense_raw).abs().max()):.3e} "
         f"parameter_max={float((candidate.parameters-reference.parameters).abs().max()):.3e} "
         f"beta_max={float((schur_beta-dense_beta).abs().max()):.3e} "
-        f"trials={len(candidate.trial_history)} schur_success={candidate.counters.schur_success_count} "
-        f"fallback={candidate.counters.schur_dense_fallback_count}"
+        f"trials={len(candidate.trial_history)} "
+        f"schur_success={sum(t['final_solve_backend'] == 'schur' for t in candidate.trial_history)} "
+        f"fallback={sum(t['schur_primary_failed'] for t in candidate.trial_history)}"
     )
 
 
@@ -178,12 +179,12 @@ def run_dense_schur_regression(cli=None) -> int:
         lm = values[0][1].lm_result
         print(
             f"[TIMING {label}] wall={statistics.median(v[1].lm_result.wall_time_ms for v in values):.3f} "
-            f"normal_eq={median('stage2_joint_normal_equations_ms'):.3f} "
-            f"solve={median('linear_solve_ms'):.3f} schur={median('stage2_joint_schur_solve_ms'):.3f} "
-            f"local={median('stage2_joint_schur_local_factor_ms'):.3f} "
-            f"reduced_build={median('stage2_joint_schur_reduced_build_ms'):.3f} "
-            f"reduced_solve={median('stage2_joint_schur_reduced_solve_ms'):.3f} "
-            f"backsub={median('stage2_joint_schur_back_substitution_ms'):.3f} "
+            f"normal_eq={median('stage2_pose_shape_normal_equations_ms'):.3f} "
+            f"solve={median('linear_solve_ms'):.3f} schur={median('stage2_pose_shape_schur_solve_ms'):.3f} "
+            f"local={median('stage2_pose_shape_schur_local_factor_ms'):.3f} "
+            f"reduced_build={median('stage2_pose_shape_schur_reduced_build_ms'):.3f} "
+            f"reduced_solve={median('stage2_pose_shape_schur_reduced_solve_ms'):.3f} "
+            f"backsub={median('stage2_pose_shape_schur_back_substitution_ms'):.3f} "
             f"acc/rej={lm.counters.accepted_steps}/{lm.counters.rejected_trials} obj={lm.objective:.8e}"
         )
     print("[PASS] Stage 2 joint dense/Schur regression")
@@ -202,10 +203,10 @@ def fk_make_args(cli: argparse.Namespace) -> argparse.Namespace:
         validate_stage1_fast_eval=False,
         stage2_pose_linearization_backend="analytic", stage2_pose_eval_backend="fast",
         validate_stage2_pose_fast_eval=False,
-        stage2_joint_linearization_backend="analytic",
-        stage2_joint_eval_backend="fast", stage2_joint_linear_solver="schur",
-        stage2_joint_fk_jacobian_backend="combined",
-        validate_stage2_joint_fast_eval=False, validate_irls_first_order=False,
+        stage2_pose_shape_linearization_backend="analytic",
+        stage2_pose_shape_eval_backend="fast", stage2_pose_shape_linear_solver="schur",
+        stage2_pose_shape_fk_jacobian_backend="combined",
+        validate_stage2_pose_shape_fast_eval=False, validate_irls_first_order=False,
         profile_timing=cli.profile,
     )
 
@@ -214,7 +215,7 @@ def run_backend(context, pose, backend: str, *, run_lbfgs: bool = False):
     context.args.run_lbfgs_oracle = run_lbfgs
     manager = use_separate_fk_reference() if backend == "separate" else nullcontext()
     with manager:
-        definition, handoff = _build_joint_refinement_definition(
+        definition, handoff = _build_pose_shape_refinement_definition(
             context, pose, pose.true_objective_fn, pose.definition.raw_groups_fn,
         )
         outcome = run_stage(definition, context)
@@ -254,15 +255,19 @@ def fk_compare(reference_data, candidate_data) -> None:
         candidate.status == reference.status,
         candidate.final_lambda == reference.final_lambda,
         candidate.counters.linearization_count == reference.counters.linearization_count,
-        candidate.counters.normal_equation_count == reference.counters.normal_equation_count,
-        candidate.counters.schur_success_count == reference.counters.schur_success_count,
-        candidate.counters.schur_dense_fallback_count == reference.counters.schur_dense_fallback_count,
+        [t["final_solve_backend"] for t in candidate.trial_history]
+        == [t["final_solve_backend"] for t in reference.trial_history],
+        [t["schur_primary_failed"] for t in candidate.trial_history]
+        == [t["schur_primary_failed"] for t in reference.trial_history],
         len(candidate.trial_history) == len(reference.trial_history),
     )
     if not all(exact):
         raise RuntimeError("COMBINED_FK_LM_TRAJECTORY_MISMATCH")
     for separate, combined in zip(reference.trial_history, candidate.trial_history):
-        for key in ("outer", "trial", "damping", "solve_success", "accepted", "used_dense_fallback"):
+        for key in (
+            "outer", "trial", "damping", "solve_success", "accepted",
+            "schur_primary_failed",
+        ):
             if separate.get(key) != combined.get(key):
                 raise RuntimeError(f"COMBINED_FK_TRIAL_FIELD_MISMATCH {key}")
         for key, tolerance in (("delta_norm", 1e-9), ("predicted_reduction", 1e-9),
@@ -317,7 +322,7 @@ def run_combined_fk_regression(cli=None) -> int:
     if cli.run_lbfgs_oracle and runs["combined"][0][0].verdict != "LM_MATCHES_LBFGS":
         raise RuntimeError("COMBINED_FK_LBFGS_ORACLE_MISMATCH")
     if cli.run_lbfgs_oracle:
-        joint_handoff = runs["combined"][0][3]
+        pose_shape_handoff = runs["combined"][0][3]
         gate = evaluate_gate_c(
             oracle_enabled=True,
             stage_matches={
@@ -327,12 +332,12 @@ def run_combined_fk_regression(cli=None) -> int:
             },
             non_oracle_checks={
                 "pose_handoff_lm": bool(pose_handoff["lm"]["ok"]),
-                "joint_handoff_lm": bool(joint_handoff["lm"]["ok"]),
+                "pose_shape_handoff_lm": bool(pose_shape_handoff["lm"]["ok"]),
                 "separate_combined_regression": True,
             },
             oracle_checks={
                 "pose_handoff_lbfgs": bool(pose_handoff["lbfgs"]["ok"]),
-                "joint_handoff_lbfgs": bool(joint_handoff["lbfgs"]["ok"]),
+                "pose_shape_handoff_lbfgs": bool(pose_shape_handoff["lbfgs"]["ok"]),
             },
         )
         print(f"[GATE_C] {gate['verdict']}")
@@ -356,7 +361,7 @@ def run_full_handoff_validation(cli=None):
     stage1 = run_stage(build_stage1_definition(context), context)
     pose_definition, _ = _build_pose_warmup_definition(context, stage1)
     pose = run_stage(pose_definition, context)
-    _, handoff = _build_joint_refinement_definition(
+    _, handoff = _build_pose_shape_refinement_definition(
         context, pose, pose.true_objective_fn, pose.definition.raw_groups_fn,
     )
     result = handoff["lm"]

@@ -21,8 +21,8 @@ if __package__ in (None, ""):
 from lib_pano.human_fitting.staged_lm.stage2_shared_cache import (
     build_stage2_shared_geometry_cache,
 )
-from lib_pano.human_fitting.staged_lm.stage_definitions.joint import (
-    build_joint_stage_definition,
+from lib_pano.human_fitting.staged_lm.stage_definitions.pose_shape import (
+    build_pose_shape_stage_definition,
 )
 from lib_pano.human_fitting.staged_lm.stage_definitions.pose import (
     build_pose_stage_definition,
@@ -39,7 +39,7 @@ from script.benchmark.staged_lm.lm_early_stop_audit import (
 from script.human_fitting.staged_lm.app import build_context
 
 
-STAGES = ("S1", "STAGE2_POSE", "STAGE2_JOINT")
+STAGES = ("S1", "STAGE2_POSE", "STAGE2_POSE_SHAPE")
 
 
 def parse_args() -> argparse.Namespace:
@@ -139,7 +139,7 @@ def _stage_record(outcome, definition, wall_ms):
         "status": result.status,
         "accepted": result.counters.accepted_steps,
         "rejected": result.counters.rejected_trials,
-        "normal_equation_calls": result.counters.normal_equation_count,
+        "linearization_calls": result.counters.linearization_count,
         "solve_calls": result.counters.solve_attempt_count,
         "result": result,
     }
@@ -174,14 +174,14 @@ def _run_variant(args, frames, variant):
         pose, pose_definition, (time.perf_counter() - start) * 1000.0,
     )
 
-    joint_definition, _ = build_joint_stage_definition(context, pose, shared)
-    definitions["STAGE2_JOINT"] = joint_definition
+    pose_shape_definition, _ = build_pose_shape_stage_definition(context, pose, shared)
+    definitions["STAGE2_POSE_SHAPE"] = pose_shape_definition
     _sync(context.device)
     start = time.perf_counter()
-    joint = runner(joint_definition, context)
+    joint = runner(pose_shape_definition, context)
     _sync(context.device)
-    records["STAGE2_JOINT"] = _stage_record(
-        joint, joint_definition, (time.perf_counter() - start) * 1000.0,
+    records["STAGE2_POSE_SHAPE"] = _stage_record(
+        joint, pose_shape_definition, (time.perf_counter() - start) * 1000.0,
     )
     _sync(context.device)
     segment_ms = (time.perf_counter() - segment_start) * 1000.0
@@ -385,7 +385,7 @@ def main() -> int:
     if frame513 and "stages" in frame513:
         expected = {
             "S1": (67, 27), "STAGE2_POSE": (16, 6),
-            "STAGE2_JOINT": (4, 2),
+            "STAGE2_POSE_SHAPE": (4, 2),
         }
         for stage, pair in expected.items():
             actual = frame513["stages"][stage]

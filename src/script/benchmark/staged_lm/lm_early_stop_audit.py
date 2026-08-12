@@ -252,7 +252,7 @@ def split_step_norms(
         "raw_norm": float(delta.norm()),
         "relative_norm": float(delta.norm()) / max(1.0, float(x_before.norm())),
     }
-    if stage_name not in ("S1", "STAGE2_POSE", "STAGE2_JOINT"):
+    if stage_name not in ("S1", "STAGE2_POSE", "STAGE2_POSE_SHAPE"):
         return result
     if stage_name == "S1":
         blocks = delta.reshape(frame_count, 12)
@@ -296,7 +296,7 @@ def split_step_norms(
         "rigid_translation_norm": float(translation.norm()),
         "pose_norm": float(pose.norm()),
     })
-    if stage_name == "STAGE2_JOINT":
+    if stage_name == "STAGE2_POSE_SHAPE":
         beta_delta = delta[-beta_dim:]
         beta_before = x_before[-beta_dim:]
         beta_after = beta_before + beta_delta.to(beta_before.dtype)
@@ -341,7 +341,7 @@ def run_lm_with_convergence_trace(
 
     timing = {
         "initial_linearization_ms": 0.0,
-        "solver_jacobian_ms": 0.0,
+        "normal_equations_ms": 0.0,
         "objective_eval_ms": 0.0,
         "linear_solve_ms": 0.0,
         "final_metrics_ms": 0.0,
@@ -366,11 +366,11 @@ def run_lm_with_convergence_trace(
     x = initial_parameters.detach().clone()
     linearization = make_linearization(x)
     t_j = time.perf_counter()
-    equations, uses_direct_normal_equations = lm_equations._evaluate_linearization(
+    equations, _ = lm_equations._evaluate_linearization(
         linearization, x,
     )
     if profile:
-        timing["solver_jacobian_ms"] += (time.perf_counter() - t_j) * 1000.0
+        timing["normal_equations_ms"] += (time.perf_counter() - t_j) * 1000.0
         timing["initial_linearization_ms"] = (
             time.perf_counter() - t_init
         ) * 1000.0
@@ -402,11 +402,7 @@ def run_lm_with_convergence_trace(
         ),
     })
 
-    counters = LMSolverCounters(
-        solver_jacobian_count=1,
-        linearization_count=1,
-        normal_equation_count=1 if uses_direct_normal_equations else 0,
-    )
+    counters = LMSolverCounters(linearization_count=1)
     status = "RUNNING"
     weight_history = [{"outer": -1, **linearization.weight_stats}]
     spec = dict(linearization.aggregation_spec)
@@ -451,11 +447,12 @@ def run_lm_with_convergence_trace(
                 rejected_in_outer += 1
                 trial_history.append({
                     "outer": outer, "trial": trial, "damping": trial_damping,
-                    "linear_solver_backend": linear_solver_backend,
+                    "configured_solver_backend": linear_solver_backend,
+                    "final_solve_backend": solve_result.backend,
                     "solve_success": False, "delta_norm": None,
                     "predicted_reduction": None, "actual_reduction": None,
                     "rho": None, "accepted": False,
-                    "used_dense_fallback": solve_result.schur_failed,
+                    "schur_primary_failed": solve_result.schur_failed,
                 })
                 trial_records.append(TrialAuditRecord(
                     outer, trial, obj_before, None, None, None, None, None,
@@ -499,12 +496,13 @@ def run_lm_with_convergence_trace(
             )
             trial_history.append({
                 "outer": outer, "trial": trial, "damping": trial_damping,
-                "linear_solver_backend": linear_solver_backend,
+                "configured_solver_backend": linear_solver_backend,
+                "final_solve_backend": solve_result.backend,
                 "solve_success": True, "delta_norm": float(delta.norm()),
                 "predicted_reduction": predicted_reduction,
                 "actual_reduction": actual_reduction, "rho": rho,
                 "accepted": accepted_trial,
-                "used_dense_fallback": solve_result.schur_failed,
+                "schur_primary_failed": solve_result.schur_failed,
             })
             damping_after = damping
             if accepted_trial:
@@ -543,25 +541,7 @@ def run_lm_with_convergence_trace(
             rejected_in_outer += 1
 
         if not accepted_this:
-            if uses_direct_normal_equations:
-                scaled_grad = lm_equations.compute_scaled_gradient(equations)
-            else:
-                residual_now = linearization.surrogate(x).detach()
-                t_j = time.perf_counter()
-                jacobian_now = lm_equations.compute_jacobian(linearization, x)
-                if profile:
-                    timing["solver_jacobian_ms"] += (
-                        time.perf_counter() - t_j
-                    ) * 1000.0
-                counters.solver_jacobian_count += 1
-                jacobian_now_64 = jacobian_now.to(torch.float64)
-                residual_now_64 = residual_now.to(torch.float64)
-                scaled_grad = (
-                    lm_equations.compute_scaled_gradient_from_normal_equations(
-                        jacobian_now_64.T @ jacobian_now_64,
-                        jacobian_now_64.T @ residual_now_64,
-                    )
-                )
+            scaled_grad = lm_equations.compute_scaled_gradient(equations)
             status = (
                 "CONVERGED_SCALED_GRADIENT"
                 if counters.accepted_steps > 4 and scaled_grad < 1e-4
@@ -586,19 +566,17 @@ def run_lm_with_convergence_trace(
         relinearization_start = time.perf_counter()
         next_linearization = make_linearization(x)
         t_j = time.perf_counter()
-        next_equations, next_uses_direct = lm_equations._evaluate_linearization(
+        next_equations, _ = lm_equations._evaluate_linearization(
             next_linearization, x,
         )
         if profile:
-            timing["solver_jacobian_ms"] += (
+            timing["normal_equations_ms"] += (
                 time.perf_counter() - t_j
             ) * 1000.0
         relinearization_ms = (
             time.perf_counter() - relinearization_start
         ) * 1000.0
-        counters.solver_jacobian_count += 1
         counters.linearization_count += 1
-        counters.normal_equation_count += int(next_uses_direct)
         weight_history.append({
             "outer": outer, **next_linearization.weight_stats,
         })
@@ -678,7 +656,6 @@ def run_lm_with_convergence_trace(
             break
         linearization = next_linearization
         equations = next_equations
-        uses_direct_normal_equations = next_uses_direct
 
     if status == "RUNNING":
         status = "MAX_ACCEPTED_STEPS"
@@ -710,7 +687,7 @@ def run_lm_with_convergence_trace(
         label=label, parameters=final_parameters, objective=obj_final,
         status=status, counters=counters, final_lambda=damping,
         wall_time_ms=wall_ms, rms_metrics=rms_metrics,
-        weight_history=weight_history, first_order_checks={}, spec=spec,
+        weight_history=weight_history, aggregation_spec=spec,
         jacobian_backend=linearization.provenance.jacobian_backend,
         linearization_backend=linearization.provenance.linearization_backend,
         linear_solver_backend=linear_solver_backend,
@@ -727,7 +704,7 @@ def assert_exact_lm_parity(production: LMResult, traced: LMResult) -> None:
     """Fail before audit conclusions if trace and production diverge."""
     scalar_fields = (
         "status", "final_lambda", "objective", "rms_metrics",
-        "trial_history", "weight_history", "spec", "jacobian_backend",
+        "trial_history", "weight_history", "aggregation_spec", "jacobian_backend",
         "linearization_backend", "eval_backend", "linear_solver_backend",
     )
     for name in scalar_fields:

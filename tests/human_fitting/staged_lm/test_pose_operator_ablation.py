@@ -9,7 +9,7 @@ if __package__ in (None, ""):
 from dataclasses import replace
 import torch
 
-from helpers import synthetic_joint_parameters, synthetic_stage2_context
+from helpers import synthetic_pose_shape_parameters, synthetic_stage2_context
 from lib_pano.human_fitting.staged_lm.stage2_shared_cache import build_stage2_shared_geometry_cache
 from lib_pano.human_fitting.staged_lm.pose.cache import build_stage2_pose_fast_cache
 from script.benchmark.staged_lm.pose_batch_candidates import (
@@ -26,7 +26,7 @@ from script.benchmark.staged_lm.pose_operator_ablation import (
 
 def _fixture(frames=2,dtype=torch.float32):
     context=synthetic_stage2_context(frames,dtype=dtype);shared=build_stage2_shared_geometry_cache(context)
-    cache=build_stage2_pose_fast_cache(context,shared);parameters=synthetic_joint_parameters(frames).to(dtype)[:-2]
+    cache=build_stage2_pose_fast_cache(context,shared);parameters=synthetic_pose_shape_parameters(frames).to(dtype)[:-2]
     return cache,build_pose_group_batch(cache),parameters
 
 

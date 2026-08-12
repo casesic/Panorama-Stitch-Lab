@@ -15,14 +15,14 @@ except ImportError:
 ensure_test_paths(__file__)
 
 from lib_pano.human_fitting.staged_lm import config, pipeline, stage_handoff
-from lib_pano.human_fitting.staged_lm.stage_definitions import joint, pose, rigid
-from lib_pano.human_fitting.staged_lm.joint import (
-    build_stage2_joint_analytic_linearization,
-    compute_joint_fk_with_combined_jacobian,
+from lib_pano.human_fitting.staged_lm.stage_definitions import pose_shape, pose, rigid
+from lib_pano.human_fitting.staged_lm.pose_shape import (
+    build_stage2_pose_shape_analytic_linearization,
+    compute_pose_shape_fk_with_combined_jacobian,
 )
 from lib_pano.human_fitting.staged_lm.types import StageDefinition
 from script.human_fitting.staged_lm.cli import build_argument_parser
-from script.validation.staged_lm.references import gate_c, joint_backends, lbfgs, oracles
+from script.validation.staged_lm.references import gate_c, pose_shape_backends, lbfgs, oracles
 from tests.human_fitting.staged_lm.helpers import _cache, _parameters
 
 
@@ -38,23 +38,23 @@ PRODUCTION_MODULES = [
             "analytic_stage1", "stage2_shared_cache",
             "pose", "pose.cache", "pose.forward", "pose.derivatives",
             "pose.objective", "pose.batched",
-            "joint", "joint.cache", "joint.shape", "joint.forward",
-            "joint.beta_derivatives", "joint.derivatives", "joint.objective",
-            "joint.arrowhead", "joint.batched",
+            "pose_shape", "pose_shape.cache", "pose_shape.shape", "pose_shape.forward",
+            "pose_shape.beta_derivatives", "pose_shape.derivatives", "pose_shape.objective",
+            "pose_shape.arrowhead", "pose_shape.batched",
             "stage_runtime", "stage_handoff", "stage_timing", "pipeline",
             "stage_definitions", "stage_definitions.common",
             "stage_definitions.rigid", "stage_definitions.pose",
-            "stage_definitions.joint", "output",
+            "stage_definitions.pose_shape", "output",
         )
     ],
 ]
 REMOVED_OPTIONS = {
     "--jacobian_backend", "--stage1_eval_backend",
     "--stage2_pose_linearization_backend", "--stage2_pose_eval_backend",
-    "--stage2_joint_linearization_backend", "--stage2_joint_eval_backend",
-    "--stage2_joint_linear_solver", "--stage2_joint_fk_jacobian_backend",
+    "--stage2_pose_shape_linearization_backend", "--stage2_pose_shape_eval_backend",
+    "--stage2_pose_shape_linear_solver", "--stage2_pose_shape_fk_jacobian_backend",
     "--run_lbfgs_oracle", "--validate_stage1_fast_eval",
-    "--validate_stage2_pose_fast_eval", "--validate_stage2_joint_fast_eval",
+    "--validate_stage2_pose_fast_eval", "--validate_stage2_pose_shape_fast_eval",
     "--validate_irls_first_order", "--no_validate_irls_first_order",
 }
 
@@ -70,7 +70,7 @@ def test_production_and_benchmark_import_locations() -> None:
         assert module.__name__ == name
         assert Path(module.__file__).resolve().is_relative_to(root)
     benchmark = importlib.import_module(
-        "script.benchmark.staged_lm.joint_kernel_candidates"
+        "script.benchmark.staged_lm.pose_shape_kernel_candidates"
     )
     expected = Path(__file__).resolve().parents[3] / "src/script/benchmark/staged_lm"
     assert Path(benchmark.__file__).resolve().is_relative_to(expected.resolve())
@@ -94,7 +94,7 @@ def test_production_has_no_script_or_benchmark_dependency() -> None:
 
 def test_validation_reference_imports() -> None:
     names = (
-        "oracles", "joint_backends", "lbfgs", "gate_c", "types",
+        "oracles", "pose_shape_backends", "lbfgs", "gate_c", "types",
         "stage_backends",
     )
     root = Path(__file__).resolve().parents[3] / "src/script/validation/staged_lm/references"
@@ -120,17 +120,17 @@ def test_production_builder_signatures_and_labels() -> None:
     for function in (
         rigid.build_stage1_definition,
         pose.build_pose_stage_definition,
-        joint.build_joint_stage_definition,
+        pose_shape.build_pose_shape_stage_definition,
     ):
         assert not any("backend" in name for name in inspect.signature(function).parameters)
     assert config.PRODUCTION_STAGE1_LINEARIZATION == "analytic_stage1"
     assert config.PRODUCTION_STAGE1_EVALUATION == "analytic"
     assert config.PRODUCTION_POSE_LINEARIZATION == "analytic_batched_full_group"
     assert config.PRODUCTION_POSE_EVALUATION == "fast"
-    assert config.PRODUCTION_JOINT_LINEARIZATION == "analytic_batched_full_group"
-    assert config.PRODUCTION_JOINT_EVALUATION == "fast"
-    assert config.PRODUCTION_JOINT_LINEAR_SOLVER == "arrowhead_schur"
-    assert config.PRODUCTION_JOINT_FK == "combined_batched_depth"
+    assert config.PRODUCTION_POSE_SHAPE_LINEARIZATION == "analytic_batched_full_group"
+    assert config.PRODUCTION_POSE_SHAPE_EVALUATION == "fast"
+    assert config.PRODUCTION_POSE_SHAPE_LINEAR_SOLVER == "arrowhead_schur"
+    assert config.PRODUCTION_POSE_SHAPE_FK == "combined_batched_depth"
     assert "argparse" not in Path(config.__file__).read_text()
     validation_only = {
         "initial_lbfgs_parameters", "lbfgs_outer_steps",
@@ -142,21 +142,21 @@ def test_production_builder_signatures_and_labels() -> None:
 
 def test_production_has_no_reference_selector() -> None:
     stage_source = "\n".join(
-        inspect.getsource(module) for module in (rigid, pose, joint, pipeline)
+        inspect.getsource(module) for module in (rigid, pose, pose_shape, pipeline)
     )
     joint_module = importlib.import_module(
-        "lib_pano.human_fitting.staged_lm.joint.derivatives"
+        "lib_pano.human_fitting.staged_lm.pose_shape.derivatives"
     )
     joint_source = inspect.getsource(joint_module)
     assert "context.args.jacobian_backend" not in stage_source
-    assert "stage2_joint_linear_solver" not in stage_source
-    assert "compute_joint_fk_with_pose_and_beta_jacobians(" not in joint_source
-    assert "compute_joint_fk_with_combined_jacobian(" in joint_source
+    assert "stage2_pose_shape_linear_solver" not in stage_source
+    assert "compute_pose_shape_fk_with_pose_and_beta_jacobians(" not in joint_source
+    assert "compute_pose_shape_fk_with_combined_jacobian(" in joint_source
 
 
 def test_production_preparation_has_no_full_forward_fallback() -> None:
     stage_source = "\n".join(
-        inspect.getsource(module) for module in (rigid, pose, joint, pipeline)
+        inspect.getsource(module) for module in (rigid, pose, pose_shape, pipeline)
     )
     output_module = importlib.import_module(
         "lib_pano.human_fitting.staged_lm.output"
@@ -164,7 +164,7 @@ def test_production_preparation_has_no_full_forward_fallback() -> None:
     assert "_make_full_true_objective" not in stage_source
     assert "sample_groups =" not in stage_source
     assert "build_primary_aggregation_spec(" not in stage_source
-    handoff_source = inspect.getsource(stage_handoff.check_pose_to_joint_state)
+    handoff_source = inspect.getsource(stage_handoff.check_pose_to_shape_state)
     assert "raw_groups_fn" not in handoff_source
     assert "make_raw_reproj_groups" not in handoff_source
     assert "true_objective" not in handoff_source
@@ -179,11 +179,11 @@ def test_production_preparation_has_no_full_forward_fallback() -> None:
 
 def test_joint_production_linearization_is_structured() -> None:
     from lib_pano.human_fitting.staged_lm.irls import build_primary_aggregation_spec
-    from lib_pano.human_fitting.staged_lm.joint import joint_fast_raw_groups
+    from lib_pano.human_fitting.staged_lm.pose_shape import pose_shape_fast_raw_groups
 
     cache, parameters = _cache(), _parameters()
-    groups = joint_fast_raw_groups(cache, parameters, 3.0)
-    linearization = build_stage2_joint_analytic_linearization(
+    groups = pose_shape_fast_raw_groups(cache, parameters, 3.0)
+    linearization = build_stage2_pose_shape_analytic_linearization(
         cache, parameters, 3.0, parameters.new_zeros(2),
         [parameters.new_zeros(63)], 0.2, 0.4,
         is_irls=True, charbonnier_eps=1.0,
@@ -198,11 +198,11 @@ def test_joint_production_linearization_is_structured() -> None:
 def test_reference_capabilities_are_importable() -> None:
     assert callable(oracles.make_irls_linearization)
     assert callable(oracles.build_full_true_objective)
-    assert callable(joint_backends.compute_joint_fk_with_pose_and_beta_jacobians_separate_reference)
-    assert callable(joint_backends.stage2_joint_normal_equations_reference)
+    assert callable(pose_shape_backends.compute_pose_shape_fk_with_pose_and_beta_jacobians_separate_reference)
+    assert callable(pose_shape_backends.stage2_pose_shape_normal_equations_reference)
     assert callable(lbfgs.run_lbfgs_oracle)
     assert callable(gate_c.evaluate_gate_c)
-    assert callable(compute_joint_fk_with_combined_jacobian)
+    assert callable(compute_pose_shape_fk_with_combined_jacobian)
 
 
 def main() -> int:

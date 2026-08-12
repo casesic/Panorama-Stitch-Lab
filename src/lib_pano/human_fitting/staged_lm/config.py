@@ -32,10 +32,10 @@ PRODUCTION_STAGE1_LINEARIZATION = "analytic_stage1"
 PRODUCTION_STAGE1_EVALUATION = "analytic"
 PRODUCTION_POSE_LINEARIZATION = "analytic_batched_full_group"
 PRODUCTION_POSE_EVALUATION = "fast"
-PRODUCTION_JOINT_LINEARIZATION = "analytic_batched_full_group"
-PRODUCTION_JOINT_EVALUATION = "fast"
-PRODUCTION_JOINT_LINEAR_SOLVER = "arrowhead_schur"
-PRODUCTION_JOINT_FK = "combined_batched_depth"
+PRODUCTION_POSE_SHAPE_LINEARIZATION = "analytic_batched_full_group"
+PRODUCTION_POSE_SHAPE_EVALUATION = "fast"
+PRODUCTION_POSE_SHAPE_LINEAR_SOLVER = "arrowhead_schur"
+PRODUCTION_POSE_SHAPE_FK = "combined_batched_depth"
 
 
 @dataclass
@@ -68,7 +68,7 @@ class SolverConfig:
 
     stage1_lm_max_acc: int = 20
     stage2_pose_warmup_lm_max_acc: int = 5
-    stage2_joint_lm_max_acc: int = 1
+    stage2_pose_shape_lm_max_acc: int = 1
     lm_max_trials: int = 8
     rel_obj_tol: float = 1e-7
     scaled_grad_tol: float = 1e-5

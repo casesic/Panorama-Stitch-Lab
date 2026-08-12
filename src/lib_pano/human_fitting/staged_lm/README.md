@@ -100,7 +100,7 @@ Production 只保留一条受支持的执行路径。应用、正确性验证和
 
 代码按职责从 `stage_runtime`、`stage_definitions.*`、`stage_handoff`
 和 `pipeline` 导入。仓库不再支持重构前的 `stage2_pose_*`、
-`stage2_joint_*`、`lm_solver` 或 `stages` import 路径。
+`stage2_pose_shape_*`、`lm_solver` 或 `stages` import 路径。
 
 数学公式与具体函数的一一对应见
 `docs/Architecture/staged_lm/math_to_code.md`，总体数据流见
@@ -240,7 +240,7 @@ trajectory 和最终结果通过 production gate。旧 microkernel gate 继续�
 
 默认 `pipeline_timing` 只记录七个汇总值：`stage1_prepare`、
 `stage1_run_ms`、`stage2_prepare`、`stage2_pose_run_ms`、
-`stage2_joints_run_ms`、`fitting_total_ms` 和 `command_total_ms`（数值单位均为
+`stage2_pose_shapes_run_ms`、`fitting_total_ms` 和 `command_total_ms`（数值单位均为
 毫秒）。`fitting_total_ms` 包含前五项及少量编排开销；`command_total_ms` 还包含
 context 构建、结果整理和首次 JSON/NPZ 保存。
 
@@ -325,10 +325,10 @@ pytest -q tests/human_fitting/staged_lm
 | debug112–114 pose 验证 | `script/validation/staged_lm/pose.py` |
 | debug115–116 joint Jacobian 验证 | `script/validation/staged_lm/joint.py` |
 | debug117、118、120 solver 回归 | `script/validation/staged_lm/solver.py` |
-| debug119 kernel profile | `script/benchmark/staged_lm/profile_joint_kernels.py` |
+| debug119 kernel profile | `script/benchmark/staged_lm/profile_pose_shape_kernels.py` |
 | debug121 端到端 profile | `script/benchmark/staged_lm/profile_end_to_end.py` |
 | staged_lm_validation | `script/validation/staged_lm/references/` |
-| staged_lm_bench | `script/benchmark/staged_lm/joint_kernel_candidates.py` |
+| staged_lm_bench | `script/benchmark/staged_lm/pose_shape_kernel_candidates.py` |
 | test_debug109/test_debug110 | `tests/human_fitting/staged_lm/` |
 
 ## 后续整理项

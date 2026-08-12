@@ -11,7 +11,7 @@ Stage 1:
     Body pose and beta are frozen to the HMR initialisation.
 
 Stage 2:
-    Perform a pose warmup with beta fixed, then pose/shape joint refinement
+    Perform a pose warmup with beta fixed, then pose/shape refinement
     with shared bounded beta active.
 
 The production solver is the fixed analytic/fast/Schur/combined-FK
@@ -102,7 +102,7 @@ class ProductionRunResult:
     context: StageContext
     stage1_outcome: Any
     pose_outcome: Any | None
-    joint_outcome: Any | None
+    pose_shape_outcome: Any | None
     results: dict[str, Any]
     arrays: dict[str, Any]
     output_directory: Path
@@ -353,21 +353,21 @@ def run_production_pipeline(
             output_directory, pipeline_timing,
         )
 
-    joint_outcome = stage2_outcome.joint_refinement
-    if joint_outcome is None:
+    pose_shape_outcome = stage2_outcome.pose_shape_refinement
+    if pose_shape_outcome is None:
         raise RuntimeError(
-            "Stage 2 joint refinement result is missing in full Stage 2 mode"
+            "Stage 2 pose/shape refinement result is missing in full Stage 2 mode"
         )
-    joint_definition = joint_outcome.definition
+    pose_shape_definition = pose_shape_outcome.definition
     beta_abs_limit = context.objective_config.beta_abs_limit
-    beta_lm = beta_abs_limit * torch.tanh(joint_outcome.lm_result.parameters[-context.beta_dim:])
+    beta_lm = beta_abs_limit * torch.tanh(pose_shape_outcome.lm_result.parameters[-context.beta_dim:])
     beta_metrics = build_beta_metrics(
         beta_lm, context.beta_anchor, beta_abs_limit,
     )
     pipeline_timing["fitting_total_ms"] = (
         time.perf_counter() - fitting_start
     ) * 1000.0
-    results["stage2"]["joint_refinement"] = stage_outcome_to_json(joint_outcome)
+    results["stage2"]["pose_shape_refinement"] = stage_outcome_to_json(pose_shape_outcome)
     results["stage2"]["beta"] = beta_metrics
 
     pose_definition = pose_outcome.definition
@@ -375,10 +375,10 @@ def run_production_pipeline(
     if getattr(args, "export_debug029_format", False):
         arrays = collect_stage2_arrays(
             stage1_definition.initial_lm_parameters, pose_definition.initial_lm_parameters,
-            joint_definition.initial_lm_parameters, stage1_outcome, pose_outcome, joint_outcome,
+            pose_shape_definition.initial_lm_parameters, stage1_outcome, pose_outcome, pose_shape_outcome,
             context.beta_anchor, context.beta_latent0, beta_lm,
             stage1_definition.raw_groups_fn, pose_definition.raw_groups_fn,
-            joint_definition.raw_groups_fn,
+            pose_shape_definition.raw_groups_fn,
         )
     if save_outputs:
         save_experiment_outputs(
@@ -387,9 +387,9 @@ def run_production_pipeline(
         )
         if getattr(args, "export_debug029_format", False):
             export_debug029_compatible_result(
-                Path(args.output_dir), context, arrays, "joint_refinement",
+                Path(args.output_dir), context, arrays, "pose_shape_refinement",
             )
     return ProductionRunResult(
-        context, stage1_outcome, pose_outcome, joint_outcome, results, arrays,
+        context, stage1_outcome, pose_outcome, pose_shape_outcome, results, arrays,
         output_directory, pipeline_timing,
     )

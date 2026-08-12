@@ -42,16 +42,16 @@ from lib_pano.human_vis import (
 from lib_pano.human_vis.dual_erp_vis import project_points_erp
 
 
-STAGES = ("stage1", "pose_warmup", "joint_refinement")
+STAGES = ("stage1", "pose_warmup", "pose_shape_refinement")
 PARAMETER_KEYS = {
     "stage1": "x_s1_lm",
     "pose_warmup": "x_stage2_pose_lm",
-    "joint_refinement": "x_stage2_joint_lm",
+    "pose_shape_refinement": "x_stage2_pose_shape_lm",
 }
 BETA_KEYS = {
     "stage1": "beta_anchor",
     "pose_warmup": "beta_anchor",
-    "joint_refinement": "beta_lm",
+    "pose_shape_refinement": "beta_lm",
 }
 
 
@@ -59,7 +59,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Visualize staged-LM JSON/NPZ outputs")
     parser.add_argument("--result_dir", type=Path, required=True)
     parser.add_argument("--image_dir", type=Path, required=True)
-    parser.add_argument("--stage", choices=STAGES, default="joint_refinement")
+    parser.add_argument("--stage", choices=STAGES, default="pose_shape_refinement")
     parser.add_argument(
         "--output_dir",
         type=Path,
@@ -130,7 +130,7 @@ def expected_parameter_dimension(context: StageContext, stage: str) -> tuple[int
     else:
         per_frame_dim = STAGE1_PER_FRAME_DIM + context.body_pose_dim
         expected = context.frame_count * per_frame_dim
-        if stage == "joint_refinement":
+        if stage == "pose_shape_refinement":
             expected += context.beta_dim
     return expected, per_frame_dim
 
@@ -410,7 +410,7 @@ python src/script/human_fitting/staged_lm/visualize.py \
     --result_dir data_process/Vis/staged_lm_cpu/704_711 \
     --image_dir data_process/Output/20260311_riding/image/equirect_rotate \
     --output_dir data_process/Vis/staged_lm_render \
-    --stage joint_refinement \
+    --stage pose_shape_refinement \
     --mesh \
     --scale 0.5
 '''

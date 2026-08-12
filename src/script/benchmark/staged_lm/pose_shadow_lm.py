@@ -241,8 +241,8 @@ def run_pose_lm_lockstep(
                 None if delta_diff is None else float(delta_diff.norm()) / max(float(sd.norm()), 1e-30),
                 sp, bp, None if bp is None else abs(bp-sp)/max(abs(sp),1e-30), sa, ba, sr, br,
                 None if br is None else abs(br-sr), sacc, bacc, sacc == bacc,
-                bool(serial_solve.fallback_success or serial_solve.schur_failed),
-                bool(batch_solve.fallback_success or batch_solve.schur_failed),
+                bool(serial_solve.backend == "dense_solve" or serial_solve.schur_failed),
+                bool(batch_solve.backend == "dense_solve" or batch_solve.schur_failed),
                 errors["H"]["relative_frobenius"], errors["H"]["max_abs"],
                 errors["g"]["relative_frobenius"], errors["g"]["max_abs"],
                 float(gref.norm()), float(gcand.norm()), errors["residual"]["relative_frobenius"],
@@ -286,7 +286,7 @@ def compare_lm_results(serial: LMResult, batch: LMResult) -> dict[str, Any]:
     difference = batch.parameters - serial.parameters
     first = None
     for index, (left, right) in enumerate(zip(serial.trial_history, batch.trial_history)):
-        for key in ("outer", "trial", "solve_success", "accepted", "used_dense_fallback"):
+        for key in ("outer", "trial", "solve_success", "accepted", "schur_primary_failed"):
             if left.get(key) != right.get(key):
                 first = {"index": index, "difference_type": key, "serial": left.get(key), "batch": right.get(key)}; break
         if first: break

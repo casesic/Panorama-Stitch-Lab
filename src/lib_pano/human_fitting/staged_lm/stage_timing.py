@@ -15,14 +15,14 @@ def build_stage_run_profile(
 ) -> dict[str, Any]:
     """Convert raw LM-runner timings into the public per-stage profile."""
     accounted_ms = (
-        raw["solver_jacobian_ms"]
+        raw["normal_equations_ms"]
         + raw["objective_eval_ms"]
         + raw["linear_solve_ms"]
         + raw["final_metrics_ms"]
     )
     return {
         "units": "ms",
-        "normal_equations_ms": raw["solver_jacobian_ms"],
+        "normal_equations_ms": raw["normal_equations_ms"],
         "true_objective_ms": raw["objective_eval_ms"],
         "linear_solve_ms": raw["linear_solve_ms"],
         "final_metrics_ms": raw["final_metrics_ms"],
@@ -54,14 +54,14 @@ def build_pipeline_timing(context: StageContext) -> dict[str, Any]:
         "containment": {
             "fitting_total_ms": [
                 "stage1_prepare", "stage1_run_ms", "stage2_prepare",
-                "stage2_pose_run_ms", "stage2_joints_run_ms",
+                "stage2_pose_run_ms", "stage2_pose_shape_run_ms",
                 "orchestration_overhead",
             ],
             "command_total_ms": [
                 "context.total_ms", "fitting_total_ms", "after_fitting",
             ],
             "stage2_prepare": [
-                "shared_cache", "stage2_pose", "stage2_joint",
+                "shared_cache", "stage2_pose", "stage2_pose_shape",
             ],
         },
         "context": {
@@ -106,19 +106,19 @@ def record_stage2_cache_totals(
     pipeline_timing: dict[str, Any] | None,
     shared_cache: Stage2SharedGeometryCache,
     pose_definition: StageDefinition,
-    joint_definition: StageDefinition | None = None,
+    pose_shape_definition: StageDefinition | None = None,
 ) -> None:
     if pipeline_timing is None:
         return
     pose_preparation = pose_definition.preparation_timing
-    joint_preparation = (
-        joint_definition.preparation_timing
-        if joint_definition is not None else StagePreparationTiming()
+    pose_shape_preparation = (
+        pose_shape_definition.preparation_timing
+        if pose_shape_definition is not None else StagePreparationTiming()
     )
     stage2_prepare = (
         shared_cache.setup_ms
         + pose_preparation.total_ms
-        + joint_preparation.total_ms
+        + pose_shape_preparation.total_ms
     )
     # Preparation finishes after the Pose run has already been measured. Reinsert
     # that value so the serialized summary follows the pipeline reading order.

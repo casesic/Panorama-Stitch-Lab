@@ -195,7 +195,7 @@ def check_lm_regression(context, autograd_definition, analytic_definition) -> bo
     print(
         f"  autograd status={auto.status} lambda={auto.final_lambda:.6e}; "
         f"analytic status={analytic.status} lambda={analytic.final_lambda:.6e} "
-        f"normal_equation_count={analytic.counters.normal_equation_count}"
+        f"linearization_count={analytic.counters.linearization_count}"
     )
     metrics_ok = comparisons["objective_relative"] <= 1e-5 and all(
         metric_close_with_absolute_or_relative(

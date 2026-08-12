@@ -65,16 +65,16 @@ def run_objective_breakdown_validation(args: Any) -> int:
     context = build_context(_production_args(args))
     stage1_outcome = run_stage(build_stage1_definition(context), context)
     stage2_outcome = run_stage2(context, stage1_outcome)
-    joint_outcome = stage2_outcome.joint_refinement
-    if joint_outcome is None or joint_outcome.definition is None:
+    pose_shape_outcome = stage2_outcome.pose_shape_refinement
+    if pose_shape_outcome is None or pose_shape_outcome.definition is None:
         raise RuntimeError("MISSING_JOINT_OUTCOME_FOR_OBJECTIVE_BREAKDOWN")
-    objective_terms_fn = joint_outcome.definition.objective_terms_fn
+    objective_terms_fn = pose_shape_outcome.definition.objective_terms_fn
     if objective_terms_fn is None:
         raise RuntimeError("MISSING_JOINT_OBJECTIVE_TERMS_FN")
     breakdown = compute_objective_breakdown(
         objective_terms_fn,
-        joint_outcome.lm_result.parameters,
-        expected_true_objective=joint_outcome.lm_result.objective,
+        pose_shape_outcome.lm_result.parameters,
+        expected_true_objective=pose_shape_outcome.lm_result.objective,
     )
     print("[OBJECTIVE_BREAKDOWN] " + json.dumps(breakdown, sort_keys=True))
     print("OBJECTIVE_BREAKDOWN_VALIDATION_PASS")

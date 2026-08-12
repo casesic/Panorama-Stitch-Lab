@@ -23,7 +23,7 @@ from lib_pano.human_fitting.staged_lm.pose.cache import (
 )
 from lib_pano.human_fitting.staged_lm.pose.forward import assemble_full_pose_rotations, fast_selected_vertices
 from lib_pano.human_fitting.staged_lm.stage2_shared_cache import build_stage2_shared_geometry_cache
-from lib_pano.human_fitting.staged_lm.stage_definitions.joint import build_joint_stage_definition
+from lib_pano.human_fitting.staged_lm.stage_definitions.pose_shape import build_pose_shape_stage_definition
 from lib_pano.human_fitting.staged_lm.stage_definitions.pose import build_pose_stage_definition
 from lib_pano.human_fitting.staged_lm.stage_definitions.rigid import build_stage1_definition
 from lib_pano.human_fitting.staged_lm.stage_handoff import handoff_s1_to_pose
@@ -714,7 +714,7 @@ def profile_summary(results: list[ModeResult]) -> None:
             f"true_objective={timing.get('true_objective_ms', 0.):.3f} "
             f"final_metrics={timing.get('final_metrics_ms', 0.):.3f} "
             f"linear_solve={timing.get('linear_solve_ms', 0.):.3f} "
-            f"normal_eq={lm.counters.normal_equation_count} "
+            f"linearizations={lm.counters.linearization_count} "
             f"other={timing.get('other_runner_ms', 0.):.3f}"
         )
 
@@ -799,10 +799,10 @@ def run_pose_production_regression(cli) -> int:
         f"serial_ms={ref.wall_time_ms:.3f} batch_ms={got.wall_time_ms:.3f} "
         f"speedup={ref.wall_time_ms/max(got.wall_time_ms,1e-16):.3f}x"
     )
-    serial_joint_definition, _ = build_joint_stage_definition(context, serial, shared)
-    production_joint_definition, _ = build_joint_stage_definition(context, production, shared)
-    serial_joint = run_stage(serial_joint_definition, context).lm_result
-    production_joint = run_stage(production_joint_definition, context).lm_result
+    serial_pose_shape_definition, _ = build_pose_shape_stage_definition(context, serial, shared)
+    production_pose_shape_definition, _ = build_pose_shape_stage_definition(context, production, shared)
+    serial_joint = run_stage(serial_pose_shape_definition, context).lm_result
+    production_joint = run_stage(production_pose_shape_definition, context).lm_result
     joint_acceptance_ref = [trial["accepted"] for trial in serial_joint.trial_history]
     joint_acceptance_got = [trial["accepted"] for trial in production_joint.trial_history]
     if joint_acceptance_ref != joint_acceptance_got or serial_joint.status != production_joint.status:

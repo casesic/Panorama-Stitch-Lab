@@ -76,7 +76,10 @@ class Stage2PoseLinearizationCommon:
 
 
 def rotation_matrix_jacobian_additive(axis_angle: torch.Tensor) -> torch.Tensor:
-    """Return ``dR/dphi`` for direct additive axis-angle coordinates."""
+    """
+    Return ``dR/dphi`` for direct additive axis-angle coordinates.
+    计算一个 3×3 的旋转矩阵 R 对应的 3 维轴角向量 ϕ 发生微小变化时，旋转矩阵R的每个元素会如何变化。
+    """
     phi = axis_angle.reshape(3)
     rotation = axis_angle_to_matrix(phi)
     right_jacobian = so3_right_jacobian(phi)
@@ -94,8 +97,9 @@ def assemble_full_pose_rotation_jacobians(
     rotations = assemble_full_pose_rotations(
         global_orient, body_pose, left_hand_pose, right_hand_pose, model_cache,
     )
+    # 当第p个姿态参数发生微小变化时，第j个关节的旋转矩阵中第r行第c列的元素会变化多少？
     derivatives = torch.zeros(
-        model_cache.joint_count, 3, 3, ROTATION_PARAMETER_DIM,
+        model_cache.joint_count, 3, 3, ROTATION_PARAMETER_DIM, 
         dtype=rotations.dtype, device=rotations.device,
     )
     derivatives[0, :, :, :3] = rotation_matrix_jacobian_additive(global_orient)
@@ -103,7 +107,7 @@ def assemble_full_pose_rotation_jacobians(
     body_derivatives = torch.stack([
         rotation_matrix_jacobian_additive(body_axis_angles[joint])
         for joint in range(21)
-    ])
+    ])# [21,3,3,3]
     for joint in range(21):
         column = 3 + joint * 3
         derivatives[joint + 1, :, :, column:column + 3] = body_derivatives[joint]
@@ -115,7 +119,10 @@ def compute_pose_feature_with_jacobian(
     rotation_jacobians: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     identity = torch.eye(3, dtype=rotations.dtype, device=rotations.device)
+    # pose feature R-I
     feature = (rotations[1:] - identity).reshape(-1)
+    # 单位矩阵 I 是常数，其对参数的导数为 0。所以 (R−I) 对参数 θ 的导数，就等于 R 对 θ 的导数
+    # [J-1, 3, 3, P] 重塑为 [(J-1)*9, P]
     derivative = rotation_jacobians[1:].reshape(-1, rotation_jacobians.shape[-1])
     return feature, derivative
 

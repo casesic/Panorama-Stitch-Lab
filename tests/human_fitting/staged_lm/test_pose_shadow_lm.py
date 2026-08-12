@@ -9,7 +9,7 @@ if __package__ in (None, ""):
 from types import SimpleNamespace
 import torch
 
-from helpers import synthetic_joint_parameters, synthetic_stage2_context
+from helpers import synthetic_pose_shape_parameters, synthetic_stage2_context
 from lib_pano.human_fitting.staged_lm.config import SolverConfig
 from lib_pano.human_fitting.staged_lm.irls import build_primary_aggregation_spec
 from lib_pano.human_fitting.staged_lm.stage2_shared_cache import build_stage2_shared_geometry_cache
@@ -32,7 +32,7 @@ from script.benchmark.staged_lm.pose_shadow_lm import (
 
 def _fixture(frames=2, objective="raw_l2"):
     base=synthetic_stage2_context(frames);shared=build_stage2_shared_geometry_cache(base)
-    cache=build_stage2_pose_fast_cache(base,shared);parameters=synthetic_joint_parameters(frames)[:-2]
+    cache=build_stage2_pose_fast_cache(base,shared);parameters=synthetic_pose_shape_parameters(frames)[:-2]
     anchors=[torch.zeros(63,dtype=parameters.dtype) for _ in range(frames)]
     groups=fast_raw_groups(cache,parameters);spec=build_primary_aggregation_spec(groups)
     scale=.3;eps=1.;rep=.2

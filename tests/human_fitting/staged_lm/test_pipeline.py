@@ -137,7 +137,7 @@ def test_output_keys_stage1() -> None:
         label="S1_LM", parameters=torch.randn(s1_dim), objective=1.0,
         status="MAX_ACCEPTED_STEPS", counters=LMSolverCounters(),
         final_lambda=0.1, wall_time_ms=10.0, rms_metrics={"rms": 1.0, "median": 1.0, "p95": 1.0},
-        weight_history=[], first_order_checks={}, spec={},
+        weight_history=[], aggregation_spec={},
     )
     outcome = StageOutcome(lm_result=lm_result, true_objective_fn=lambda x: x.sum())
     beta_anchor = torch.randn(10)
@@ -161,21 +161,20 @@ def test_lm_result_json_has_distinct_solver_counters() -> None:
 
     counters = LMSolverCounters(
         solve_attempt_count=4,
-        cholesky_success_count=2,
-        solve_fallback_count=1,
-        schur_failure_count=1,
+        solve_success_count=3,
+        solve_failure_count=1,
     )
     result = LMResult(
         label="TEST", parameters=torch.zeros(1), objective=1.0,
         status="MAX_ACCEPTED_STEPS", counters=counters,
         final_lambda=0.1, wall_time_ms=1.0,
         rms_metrics={"rms": 1.0, "median": 1.0, "p95": 1.0},
-        weight_history=[], first_order_checks={}, spec={},
+        weight_history=[], aggregation_spec={},
     ).to_json_dict()
 
     assert result["solve_attempt_count"] == 4
-    assert result["successful_solve_count"] == 3
-    assert result["schur_failure_count"] == 1
+    assert result["solve_success_count"] == 3
+    assert result["solve_failure_count"] == 1
     assert "solve_count" not in result
     assert "structured_to_dense_count" not in result
     assert "stage1_eval_backend" not in result
@@ -197,13 +196,13 @@ def test_output_keys_stage2_lm_only() -> None:
             label=f"{name}_LM", parameters=torch.randn(dim), objective=1.0,
             status="MAX_ACCEPTED_STEPS", counters=LMSolverCounters(),
             final_lambda=0.1, wall_time_ms=10.0, rms_metrics={"rms": 1.0, "median": 1.0, "p95": 1.0},
-            weight_history=[], first_order_checks={}, spec={},
+            weight_history=[], aggregation_spec={},
         )
         return StageOutcome(lm_result=lm, true_objective_fn=lambda x: x.sum())
 
     s1_outcome = make_outcome(s1_dim, "S1")
     s2_pose_outcome = make_outcome(s2_pose_dim, "STAGE2_POSE")
-    s2b_outcome = make_outcome(s2b_dim, "STAGE2_JOINT")
+    s2b_outcome = make_outcome(s2b_dim, "STAGE2_POSE_SHAPE")
 
     from lib_pano.human_fitting.staged_lm.types import ReprojectionGroup
     mock_groups = [ReprojectionGroup(frame_index=0, camera="cam2", residual_2d=torch.zeros(10, 2))]
@@ -214,15 +213,15 @@ def test_output_keys_stage2_lm_only() -> None:
         lambda x: mock_groups, lambda x: mock_groups, lambda x: mock_groups,
     )
     expected_keys = {
-        "x0_s1", "x0_stage2_pose_lm", "x0_stage2_joint_lm",
-        "x_s1_lm", "x_stage2_pose_lm", "x_stage2_joint_lm",
+        "x0_s1", "x0_stage2_pose_lm", "x0_stage2_pose_shape_lm",
+        "x_s1_lm", "x_stage2_pose_lm", "x_stage2_pose_shape_lm",
         "beta_anchor", "beta_latent0", "beta_lm",
-        "raw_reproj_s1_lm", "raw_reproj_stage2_pose_lm", "raw_reproj_stage2_joint_lm",
+        "raw_reproj_s1_lm", "raw_reproj_stage2_pose_lm", "raw_reproj_stage2_pose_shape_lm",
     }
     assert set(arrays.keys()) == expected_keys, f"Missing/extra keys: {set(arrays.keys()) - expected_keys} / {expected_keys - set(arrays.keys())}"
     assert not any("final" in key for key in arrays)
-    results = {"stage2": {"pose_warmup": {}, "joint_refinement": {}, "beta": {}}}
-    assert "joint_refinement" in results["stage2"] and "final" not in results["stage2"]
+    results = {"stage2": {"pose_warmup": {}, "pose_shape_refinement": {}, "beta": {}}}
+    assert "pose_shape_refinement" in results["stage2"] and "final" not in results["stage2"]
     print("test_output_keys_stage2_lm_only: PASS")
 
 
@@ -261,7 +260,7 @@ def test_gate_c_three_states() -> None:
     """Gate C distinguishes skipped oracle, pass, and blocked states."""
     from script.validation.staged_lm.references.gate_c import evaluate_gate_c
 
-    matches = {"s1_match": None, "stage2_pose_match": None, "stage2_joint_match": None}
+    matches = {"s1_match": None, "stage2_pose_match": None, "stage2_pose_shape_match": None}
     non_oracle = {"handoff_stage1_to_stage2_pose_lm": True, "beta_sat_lt_0.9": True, "s1_lm_status_ok": True}
     result = evaluate_gate_c(oracle_enabled=False, stage_matches=matches, non_oracle_checks=non_oracle, oracle_checks={})
     assert result["verdict"] == "GATE_C_NOT_EVALUATED"
@@ -277,16 +276,55 @@ def test_gate_c_three_states() -> None:
     print("test_gate_c_three_states: PASS")
 
 
-def test_stage2_outcome_optional_joint_refinement() -> None:
+def test_stage2_outcome_optional_pose_shape_refinement() -> None:
     """Pose early exit has no joint result; full Stage 2 has one."""
     from lib_pano.human_fitting.staged_lm.types import Stage2Outcome
 
     marker = object()
-    pose_only = Stage2Outcome(pose_warmup=marker, joint_refinement=None, handoffs={})
-    full = Stage2Outcome(pose_warmup=marker, joint_refinement=marker, handoffs={})
-    assert pose_only.joint_refinement is None
-    assert full.joint_refinement is not None
-    print("test_stage2_outcome_optional_joint_refinement: PASS")
+    pose_only = Stage2Outcome(pose_warmup=marker, pose_shape_refinement=None, handoffs={})
+    full = Stage2Outcome(pose_warmup=marker, pose_shape_refinement=marker, handoffs={})
+    assert pose_only.pose_shape_refinement is None
+    assert full.pose_shape_refinement is not None
+    print("test_stage2_outcome_optional_pose_shape_refinement: PASS")
+
+
+def test_saved_config_contains_only_inputs_and_numerical_settings() -> None:
+    from types import SimpleNamespace
+
+    from lib_pano.human_fitting.staged_lm.config import (
+        ObjectiveConfig,
+        SolverConfig,
+    )
+    from lib_pano.human_fitting.staged_lm.output import build_saved_config
+
+    args = SimpleNamespace(frames="1,2", device="cpu", profile_timing=False)
+    context = SimpleNamespace(
+        solver_config=SolverConfig(),
+        objective_config=ObjectiveConfig(),
+    )
+    result = build_saved_config(args, context)
+    assert result == {
+        "frames": "1,2",
+        "device": "cpu",
+        "profile_timing": False,
+        "solver_config": {
+            "stage1_lm_max_acc": 20,
+            "stage2_pose_warmup_lm_max_acc": 5,
+            "stage2_pose_shape_lm_max_acc": 1,
+            "lm_max_trials": 8,
+            "rel_obj_tol": 1e-7,
+            "scaled_grad_tol": 1e-5,
+            "step_tol": 1e-5,
+            "irls_gradient_rel_tol": 5e-4,
+        },
+        "objective_config": {
+            "reproj_sigma_px": 10.0,
+            "charbonnier_eps": 1.0,
+            "pose_anchor_weight": 1.0,
+            "beta_abs_limit": 2.5,
+            "shape_anchor_weight": 10.0,
+        },
+    }
 
 
 if __name__ == "__main__":
@@ -299,5 +337,6 @@ if __name__ == "__main__":
     test_output_keys_stage2_lm_only()
     test_objective_breakdown_modes()
     test_gate_c_three_states()
-    test_stage2_outcome_optional_joint_refinement()
+    test_stage2_outcome_optional_pose_shape_refinement()
+    test_saved_config_contains_only_inputs_and_numerical_settings()
     print("\nAll tests PASSED")

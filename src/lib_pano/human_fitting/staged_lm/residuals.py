@@ -72,7 +72,7 @@ def make_raw_reproj_groups(
         layout size when pose is optimised.
     beta_fn:
         Maps ``parameters`` to the physical beta tensor.  Stage 1/2A pass a
-        constant-frozen beta; Stage 2 joint refinement passes the active
+        constant-frozen beta; Stage 2 pose/shape refinement passes the active
         ``tanh`` mapping.
     body_pose_anchors:
         When provided (Stage 1), the frozen anchor is used as the body pose

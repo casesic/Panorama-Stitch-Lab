@@ -15,8 +15,8 @@ except ImportError:
 ensure_test_paths(__file__)
 
 from tests.human_fitting.staged_lm.helpers import (  # noqa: E402
-    synthetic_joint_cache,
-    synthetic_joint_parameters,
+    synthetic_pose_shape_cache,
+    synthetic_pose_shape_parameters,
 )
 from lib_pano.human_fitting.staged_lm.irls import (  # noqa: E402
     build_primary_aggregation_spec,
@@ -26,12 +26,12 @@ from lib_pano.human_fitting.staged_lm.output import stage_outcome_to_json  # noq
 from script.validation.staged_lm.objective_breakdown import (  # noqa: E402
     compute_objective_breakdown,
 )
-from lib_pano.human_fitting.staged_lm.joint import (  # noqa: E402
-    joint_fast_raw_groups,
-    stage2_joint_fast_objective_terms,
-    stage2_joint_fast_true_objective,
+from lib_pano.human_fitting.staged_lm.pose_shape import (  # noqa: E402
+    pose_shape_fast_raw_groups,
+    stage2_pose_shape_fast_objective_terms,
+    stage2_pose_shape_fast_true_objective,
 )
-from lib_pano.human_fitting.staged_lm.stage_handoff import check_pose_to_joint_state  # noqa: E402
+from lib_pano.human_fitting.staged_lm.stage_handoff import check_pose_to_shape_state  # noqa: E402
 from lib_pano.human_fitting.staged_lm.stage_runtime import run_stage  # noqa: E402
 from lib_pano.human_fitting.staged_lm.types import (  # noqa: E402
     LMResult,
@@ -85,7 +85,7 @@ def _fake_result(parameters: torch.Tensor) -> LMResult:
         status="CONVERGED_SCALED_GRADIENT", counters=LMSolverCounters(),
         final_lambda=0.0, wall_time_ms=0.0,
         rms_metrics={"rms": 0.0, "median": 0.0, "p95": 0.0},
-        weight_history=[], first_order_checks={}, spec={},
+        weight_history=[], aggregation_spec={},
     )
 
 
@@ -140,13 +140,13 @@ def test_stage_json_does_not_call_raw_groups() -> None:
     }
 
 
-def test_lightweight_joint_handoff() -> None:
+def test_lightweight_pose_shape_handoff() -> None:
     pose = torch.randn(75)
     beta_anchor = torch.linspace(-0.2, 0.2, 2)
     beta_abs_limit = 3.0
     beta_latent = torch.atanh(beta_anchor / beta_abs_limit)
     joint = torch.cat((pose.clone(), beta_latent))
-    result = check_pose_to_joint_state(
+    result = check_pose_to_shape_state(
         pose, joint, beta_anchor, beta_abs_limit, 0.1,
     )
     assert result["ok"]
@@ -155,25 +155,25 @@ def test_lightweight_joint_handoff() -> None:
     assert result["relative_difference_joint_init_to_pose"] is None
     assert result["expensive_validation_performed"] is False
     assert result["validation_scope"] == "state_only"
-    signature = inspect.signature(check_pose_to_joint_state)
+    signature = inspect.signature(check_pose_to_shape_state)
     assert "raw_groups_fn" not in signature.parameters
     assert "true_objective_fn" not in signature.parameters
 
 
 def test_joint_objective_terms_match_true_objective() -> None:
-    cache = synthetic_joint_cache()
-    parameters = synthetic_joint_parameters()
+    cache = synthetic_pose_shape_cache()
+    parameters = synthetic_pose_shape_parameters()
     beta_anchor = torch.tensor([0.02, -0.03], dtype=parameters.dtype)
     body_anchors = [torch.zeros(63, dtype=parameters.dtype)]
-    groups = joint_fast_raw_groups(cache, parameters, 3.0)
+    groups = pose_shape_fast_raw_groups(cache, parameters, 3.0)
     spec = build_primary_aggregation_spec(groups)
     for mode in ("charbonnier_irls", "raw_l2"):
         arguments = (
             cache, parameters, 3.0, beta_anchor, body_anchors,
             0.1, 0.2, mode, 1e-3, 0.01, spec,
         )
-        terms = stage2_joint_fast_objective_terms(*arguments)
-        objective = stage2_joint_fast_true_objective(*arguments)
+        terms = stage2_pose_shape_fast_objective_terms(*arguments)
+        objective = stage2_pose_shape_fast_true_objective(*arguments)
         torch.testing.assert_close(terms["total"], objective, rtol=0, atol=0)
         torch.testing.assert_close(
             terms["total"],
@@ -212,7 +212,7 @@ if __name__ == "__main__":
     test_static_aggregation_spec_matches_group_spec()
     test_run_stage_does_not_call_raw_groups()
     test_stage_json_does_not_call_raw_groups()
-    test_lightweight_joint_handoff()
+    test_lightweight_pose_shape_handoff()
     test_joint_objective_terms_match_true_objective()
     test_breakdown_calls_terms_once()
     test_preparation_timing_is_exact_sum()

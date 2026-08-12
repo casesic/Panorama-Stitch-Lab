@@ -140,7 +140,10 @@ def test_structured_arrowhead_smoke() -> None:
     production = run_lm_optimization(**kwargs)
     trace = run_lm_with_convergence_trace(**kwargs)
     assert_exact_lm_parity(production, trace.result)
-    assert trace.result.counters.schur_success_count > 0
+    assert any(
+        trial["final_solve_backend"] == "schur"
+        for trial in trace.result.trial_history
+    )
 
 
 def test_static_behavior_audit() -> None:
@@ -195,7 +198,7 @@ def test_step_norm_block_decomposition() -> None:
     )
     assert pose["pose_norm"] > pose["rigid_norm"]
     joint = split_step_norms(
-        "STAGE2_JOINT", torch.ones(85), torch.ones(85), frame_count=1,
+        "STAGE2_POSE_SHAPE", torch.ones(85), torch.ones(85), frame_count=1,
         beta_dim=10,
     )
     assert joint["beta_latent_norm"] == float(torch.ones(10).norm())

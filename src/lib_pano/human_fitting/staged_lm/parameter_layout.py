@@ -1,6 +1,6 @@
 """Parameter layout helpers that replace magic index slicing.
 
-The optimisation vector ``x`` packs per-frame parameters (and, in Stage 2 joint refinement, a
+The optimisation vector ``x`` packs per-frame parameters (and, in Stage 2 pose/shape refinement, a
 shared beta block) into a single flat tensor.  The original script accessed
 fields through raw slices such as ``x[s:s+3]``, ``x[s+3:s+6]`` ... which made
 the layout hard to follow and easy to break.
@@ -64,7 +64,7 @@ def frame_slices(frame_index: int, per_frame_dim: int, include_body_pose: bool) 
         Zero-based frame position within the multi-frame batch.
     per_frame_dim:
         Number of parameters consumed by one frame (12 for Stage 1, 75 for
-        Stage 2 pose warmup/joint refinement).
+        Stage 2 pose warmup or pose/shape refinement).
     include_body_pose:
         Whether the per-frame block contains a body-pose segment.
     """

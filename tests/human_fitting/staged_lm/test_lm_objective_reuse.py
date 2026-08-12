@@ -137,8 +137,8 @@ def test_dense_multi_outer_exact_and_call_formula() -> None:
     assert legacy.result.objective == optimized.objective
     assert legacy.result.trial_history == optimized.trial_history
     assert legacy.result.weight_history == optimized.weight_history
-    assert legacy.result.counters.normal_equation_count == (
-        optimized.counters.normal_equation_count
+    assert legacy.result.counters.linearization_count == (
+        optimized.counters.linearization_count
     )
     assert optimized.counters.linearization_count == (
         optimized.counters.accepted_steps + 1
@@ -149,10 +149,13 @@ def test_structured_arrowhead_path_is_exact() -> None:
     legacy, optimized, _, new_objective = _legacy_and_optimized(
         structured=True,
     )
-    assert optimized.counters.schur_success_count > 0
+    assert any(
+        trial["final_solve_backend"] == "schur"
+        for trial in optimized.trial_history
+    )
     assert vars(legacy.result.counters) == vars(optimized.counters)
     assert len(new_objective.calls) == (
-        1 + optimized.counters.successful_solve_count
+        1 + optimized.counters.solve_success_count
     )
 
 
@@ -169,7 +172,7 @@ def test_first_trial_accept_and_convergence_statuses() -> None:
         assert optimized.status == expected
         assert optimized.trial_history[0]["accepted"]
         assert len(objective.calls) == (
-            1 + optimized.counters.successful_solve_count
+            1 + optimized.counters.solve_success_count
         )
 
 

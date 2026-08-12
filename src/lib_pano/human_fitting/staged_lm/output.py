@@ -1,7 +1,7 @@
 """Output serialisation for rigid alignment and pose/shape fitting.
 
 Stage 1 performs dual-camera orient/transl rigid alignment. Stage 2 performs
-pose warmup followed by pose/shape joint refinement.
+pose warmup followed by pose/shape refinement.
 """
 
 from __future__ import annotations
@@ -18,15 +18,6 @@ import torch
 from lib_pano.fitting_io.fitting_result_io import save_segment_result
 from lib_pano.human_fitting.smplx_sequence import SMPLX_Seq_Forward_Module
 
-from .config import (
-    PRODUCTION_JOINT_EVALUATION,
-    PRODUCTION_JOINT_FK,
-    PRODUCTION_JOINT_LINEARIZATION,
-    PRODUCTION_POSE_EVALUATION,
-    PRODUCTION_POSE_LINEARIZATION,
-    PRODUCTION_STAGE1_EVALUATION,
-    PRODUCTION_STAGE1_LINEARIZATION,
-)
 from .parameter_layout import unpack_frame_parameters
 from .residuals import flatten_reprojection_groups
 from .types import LMResult, StageContext, StageOutcome
@@ -35,7 +26,7 @@ from .types import LMResult, StageContext, StageOutcome
 _COMPAT_RESULT_KEYS = {
     "stage1": ("x_s1_lm", "beta_anchor", False),
     "pose_warmup": ("x_stage2_pose_lm", "beta_anchor", True),
-    "joint_refinement": ("x_stage2_joint_lm", "beta_lm", True),
+    "pose_shape_refinement": ("x_stage2_pose_shape_lm", "beta_lm", True),
 }
 
 
@@ -57,21 +48,9 @@ def stage_outcome_to_json(outcome: StageOutcome) -> dict[str, Any]:
 
 
 def build_saved_config(args: Any, context: StageContext) -> dict[str, Any]:
-    """Build the stable production configuration stored in result JSON."""
+    """Store user inputs and numerical settings needed for reproducibility."""
     return {
         **vars(args),
-        "jacobian_backend": PRODUCTION_STAGE1_LINEARIZATION,
-        "stage1_eval_backend": PRODUCTION_STAGE1_EVALUATION,
-        "stage2_pose_linearization_backend": PRODUCTION_POSE_LINEARIZATION,
-        "stage2_pose_eval_backend": PRODUCTION_POSE_EVALUATION,
-        "stage2_joint_linearization_backend": PRODUCTION_JOINT_LINEARIZATION,
-        "stage2_joint_eval_backend": PRODUCTION_JOINT_EVALUATION,
-        "stage2_joint_linear_solver": "schur",
-        "stage2_joint_fk_jacobian_backend": PRODUCTION_JOINT_FK,
-        "validate_stage1_fast_eval": False,
-        "validate_stage2_pose_fast_eval": False,
-        "validate_stage2_joint_fast_eval": False,
-        "validate_irls_first_order": False,
         "solver_config": asdict(context.solver_config),
         "objective_config": asdict(context.objective_config),
     }
@@ -102,7 +81,7 @@ def build_beta_metrics(
     beta_anchor: torch.Tensor,
     beta_abs_limit: float,
 ) -> dict[str, Any]:
-    """Build the compact Joint-stage beta summary."""
+    """Build the compact Pose/Shape-stage beta summary."""
     beta_max = float(beta.abs().max())
     return {
         "lm": {
@@ -136,7 +115,7 @@ def build_compatible_smplx_sequences(
 
     per_frame_dim = 12 + (context.body_pose_dim if include_body_pose else 0)
     expected_parameter_count = context.frame_count * per_frame_dim
-    if stage == "joint_refinement":
+    if stage == "pose_shape_refinement":
         expected_parameter_count += context.beta_dim
     parameters = _flat_cpu_tensor(arrays[parameter_key], parameter_key, expected_parameter_count)
     shared_beta = _flat_cpu_tensor(arrays[beta_key], beta_key, context.beta_dim)
@@ -329,18 +308,18 @@ def collect_stage2_pose_arrays(
 def collect_stage2_arrays(
     stage1_initial: torch.Tensor,
     stage2_pose_initial_lm: torch.Tensor,
-    stage2_joint_initial_lm: torch.Tensor,
+    stage2_pose_shape_initial_lm: torch.Tensor,
     stage1_outcome: StageOutcome,
     stage2_pose_outcome: StageOutcome,
-    stage2_joint_outcome: StageOutcome,
+    stage2_pose_shape_outcome: StageOutcome,
     beta_anchor: torch.Tensor,
     beta_latent0: torch.Tensor,
     beta_lm: torch.Tensor,
     stage1_raw_groups_fn: Any,
     stage2_pose_raw_groups_fn: Any,
-    stage2_joint_raw_groups_fn: Any,
+    stage2_pose_shape_raw_groups_fn: Any,
 ) -> dict[str, np.ndarray]:
-    """Collect NPZ arrays for the full Stage 2 joint refinement path."""
+    """Collect NPZ arrays for the full Stage 2 Pose/Shape path."""
     raw_s1_lm = flatten_reprojection_groups(
         stage1_raw_groups_fn(stage1_outcome.lm_result.parameters)
     ).detach().cpu().numpy()
@@ -348,22 +327,22 @@ def collect_stage2_arrays(
         stage2_pose_raw_groups_fn(stage2_pose_outcome.lm_result.parameters)
     ).detach().cpu().numpy()
     raw_joint_lm = flatten_reprojection_groups(
-        stage2_joint_raw_groups_fn(stage2_joint_outcome.lm_result.parameters)
+        stage2_pose_shape_raw_groups_fn(stage2_pose_shape_outcome.lm_result.parameters)
     ).detach().cpu().numpy()
 
     arrays: dict[str, np.ndarray] = {
         "x0_s1": stage1_initial.cpu().numpy(),
         "x0_stage2_pose_lm": stage2_pose_initial_lm.cpu().numpy(),
-        "x0_stage2_joint_lm": stage2_joint_initial_lm.cpu().numpy(),
+        "x0_stage2_pose_shape_lm": stage2_pose_shape_initial_lm.cpu().numpy(),
         "x_s1_lm": stage1_outcome.lm_result.parameters.cpu().numpy(),
         "x_stage2_pose_lm": stage2_pose_outcome.lm_result.parameters.cpu().numpy(),
-        "x_stage2_joint_lm": stage2_joint_outcome.lm_result.parameters.cpu().numpy(),
+        "x_stage2_pose_shape_lm": stage2_pose_shape_outcome.lm_result.parameters.cpu().numpy(),
         "beta_anchor": beta_anchor.cpu().numpy(),
         "beta_latent0": beta_latent0.cpu().numpy(),
         "beta_lm": beta_lm.cpu().numpy(),
         "raw_reproj_s1_lm": raw_s1_lm,
         "raw_reproj_stage2_pose_lm": raw_pose_lm,
-        "raw_reproj_stage2_joint_lm": raw_joint_lm,
+        "raw_reproj_stage2_pose_shape_lm": raw_joint_lm,
     }
 
     return arrays

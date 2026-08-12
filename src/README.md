@@ -157,14 +157,14 @@ src/script/human_fitting/staged_lm/visualize.py
 python src/script/human_fitting/staged_lm/visualize.py \
   --result_dir data_process/Vis/staged_lm/513_513 \
   --image_dir data_process/Output/20260311_riding/image/equirect_crop_rotate \
-  --stage joint_refinement \
+  --stage pose_shape_refinement \
   --solver lm \
   --output_dir data_process/Vis/staged_lm_render \
   --mesh \
   --save_video
 ```
 
-可选 Stage 为 `stage1`、`pose_warmup` 和 `joint_refinement`。脚本只读取已有结果，
+可选 Stage 为 `stage1`、`pose_warmup` 和 `pose_shape_refinement`。脚本只读取已有结果，
 不会重新执行 LM。
 
 ## 6. Correctness 与 solver validation
@@ -222,7 +222,7 @@ python src/script/validation/staged_lm/run.py joint-fk \
 ### 7.1 Joint analytic H/g kernel profile
 
 ```bash
-python src/script/benchmark/staged_lm/profile_joint_kernels.py \
+python src/script/benchmark/staged_lm/profile_pose_shape_kernels.py \
   --frames 513 \
   --hmr_dir data_process/Output/20260311_riding/hmr_cache \
   --sam3d_dense_dir data_process/Output/20260311_riding/sam3dbody/smplx_dense \
@@ -289,7 +289,7 @@ args = parser.parse_args([
 ])
 
 result = run_production_pipeline(args, save_outputs=True)
-print(result.joint_outcome.lm_result.objective)
+print(result.pose_shape_outcome.lm_result.objective)
 print(result.output_directory)
 ```
 
@@ -360,8 +360,8 @@ validation checks -> validation references -> production library
 
 | 文件 | 职责 |
 | --- | --- |
-| `joint_kernel_candidates.py` | 隔离的 kernel candidate 和 tensor/memory 审计 helper |
-| `profile_joint_kernels.py` | joint group analytic H/g 细粒度 profile |
+| `pose_shape_kernel_candidates.py` | 隔离的 kernel candidate 和 tensor/memory 审计 helper |
+| `profile_pose_shape_kernels.py` | joint group analytic H/g 细粒度 profile |
 | `profile_end_to_end.py` | context、cold-start、steady-state、Stage timing 和 CPU/CUDA profile |
 
 候选 kernel 不会被 production 导入。

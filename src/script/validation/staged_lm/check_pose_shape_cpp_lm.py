@@ -1,0 +1,23 @@
+"""Check full Pose/Shape C++ LM trajectory against canonical Python."""
+from __future__ import annotations
+import argparse,csv,json
+from pathlib import Path
+import numpy as np
+def met(a,b):
+ a=np.asarray(a,dtype='f8');b=np.asarray(b,dtype='f8');d=np.abs(a-b);return {"max_abs":float(d.max(initial=0)),"mean_abs":float(d.mean()),"relative":float(np.linalg.norm(d)/max(np.linalg.norm(a),1e-300)),"exact":bool(np.array_equal(a,b))}
+def kv(p):return dict(line.split('=',1) for line in p.read_text().splitlines())
+def main():
+ p=argparse.ArgumentParser();p.add_argument('--reference_dir',type=Path,required=True);p.add_argument('--cpp_output',type=Path,required=True);x=p.parse_args();traj=json.loads((x.reference_dir/'pose_shape_lm_reference_trajectory.json').read_text());rows=list(csv.DictReader((x.cpp_output/'trajectory.tsv').open(),delimiter='\t'));counts=kv(x.cpp_output/'counters.txt');metrics={};first='NONE'
+ with np.load(x.reference_dir/'pose_shape_lm_reference.npz') as a:
+  metrics['initial_parameters']=met(a['initial_parameters'],np.fromfile(x.cpp_output/'initial_parameters.f32','<f4'))
+  for i,t in enumerate(traj['trials']):
+   for name,suffix,dtype in (('delta_double','f64','<f8'),('delta_float','f32','<f4'),('candidate','f32','<f4')):metrics[f'trial_{i}_{name}']=met(a[f'trial_{i}_{name}'],np.fromfile(x.cpp_output/f'trial_{i}_{name}.{suffix}',dtype))
+   for name,ck in (('candidate_objective','candidate_objective'),('predicted_reduction','predicted'),('actual_reduction','actual'),('rho','rho'),('lambda_before','lambda_before'),('lambda_after','lambda_after')):metrics[f'trial_{i}_{name}']=met(t[name],float(rows[i][ck]))
+  metrics['final_parameters']=met(a['final_parameters'],np.fromfile(x.cpp_output/'final_parameters.f32','<f4'));metrics['final_frame_parameters']=met(a['final_frame_parameters'],np.fromfile(x.cpp_output/'final_parameters.f32','<f4')[:75]);metrics['final_beta_latent']=met(a['final_beta_latent'],np.fromfile(x.cpp_output/'final_beta_latent.f32','<f4'));metrics['final_physical_beta']=met(a['final_physical_beta'],np.fromfile(x.cpp_output/'final_physical_beta.f32','<f4'));metrics['final_objective']=met(traj['final_objective'],float(counts['final_objective']));metrics['initial_lambda']=met(traj['initial_lambda'],float(counts['initial_lambda']));metrics['final_lambda']=met(traj['final_lambda'],float(counts['final_lambda']))
+ branch={"trial_count":len(rows)==len(traj['trials']),"accept_reject":[r['accepted']=='1' for r in rows]==[t['accepted'] for t in traj['trials']],"solve_methods":[r['solve_backend'] for r in rows]==[t['solve_backend'] for t in traj['trials']],"lambda_branches":[('ACCEPT_DIV3' if float(r['rho'])>.75 and r['accepted']=='1' else 'ACCEPT_MUL3' if float(r['rho'])<.25 and r['accepted']=='1' else 'REJECT_X10') for r in rows]==[t['lambda_branch'] for t in traj['trials']],"status":counts['status']==traj['status'],"convergence":counts['convergence_branch']==traj['convergence_branch']}
+ counters={k:int(counts[k])==traj[k] for k in ('accepted_steps','rejected_trials','objective_call_count','linearization_call_count','structured_solve_calls','dense_fallback_calls','total_trials')}
+ gates={k:(v['max_abs']<=1e-5 if any(q in k for q in ('delta','candidate','parameters','beta')) else v['relative']<=2e-4 or v['max_abs']<=1e-4) for k,v in metrics.items()};gates.update({k:(v['relative']<=1e-5 or v['max_abs']<=1e-4) for k,v in metrics.items() if 'objective' in k});order=list(metrics);first=next((k for k in order if not gates[k]),'NONE');
+ if first=='NONE' and not all(branch.values()):first=next(k for k,v in branch.items() if not v)
+ if first=='NONE' and not all(counters.values()):first=next(k for k,v in counters.items() if not v)
+ margins=[min(abs(t['rho']-q) for q in (0,.25,.75)) for t in traj['trials']];rho_error=max((metrics[f'trial_{i}_rho']['max_abs'] for i in range(len(rows))),default=0);result={"LM_FIRST_DIVERGENCE":first,"metrics":metrics,"metric_gates":gates,"branch_parity":branch,"counter_parity":counters,"MIN_RHO_BRANCH_MARGIN":min(margins),"max_rho_error":rho_error,"near_branch_boundary":rho_error>=min(margins),"POSE_SHAPE_LM_CPP_CPU_REFERENCE_READY":"PASS" if first=='NONE' else 'FAIL'};(x.cpp_output/'pose_shape_lm_cpp_parity.json').write_text(json.dumps(result,indent=2)+'\n');(x.cpp_output/'pose_shape_lm_cpp_parity.md').write_text(f"# Pose/Shape LM parity\n\nLM_FIRST_DIVERGENCE={first}\n\nMIN_RHO_BRANCH_MARGIN={min(margins):.6e}\n");print(f'LM_FIRST_DIVERGENCE={first}');print(f"POSE_SHAPE_LM_CPP_CPU_REFERENCE_READY={result['POSE_SHAPE_LM_CPP_CPU_REFERENCE_READY']}");return 0 if first=='NONE' else 1
+if __name__=='__main__':raise SystemExit(main())

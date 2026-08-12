@@ -132,7 +132,7 @@ def build_stage2_shared_geometry_cache(
     layout = _validate_model_contract(context)
     posedirs_by_vertex = model.posedirs.reshape(
         layout.pose_feature_dim, layout.full_vertex_count, 3,
-    )
+    )# posedirs 关节对点的影响, 原来是P*3V P=9(J-1) V=10475 3=xyz  重新reshape成P*V*3
     metadata: list[tuple[int, int, str, torch.Tensor, torch.Tensor,
                              torch.Tensor, torch.Tensor, torch.Tensor]] = []
     for position, frame_index in enumerate(context.frame_indices):
@@ -175,7 +175,7 @@ def build_stage2_shared_geometry_cache(
     metadata_setup_ms = (time.perf_counter() - metadata_start) * 1000.0
 
     posedirs_start = time.perf_counter()
-    selected_posedirs = [
+    selected_posedirs = [ # 挑选出loss计算中需要的点，posedirs关节影响这些点
         posedirs_by_vertex.index_select(1, item[3]).detach()
         for item in metadata
     ]

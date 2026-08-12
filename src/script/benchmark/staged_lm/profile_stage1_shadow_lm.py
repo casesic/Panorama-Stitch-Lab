@@ -10,12 +10,12 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from lib_pano.human_fitting.staged_lm.lm.runner import run_lm_optimization
-from lib_pano.human_fitting.staged_lm.stage_definitions.joint import build_joint_stage_definition
+from lib_pano.human_fitting.staged_lm.stage_definitions.pose_shape import build_pose_shape_stage_definition
 from lib_pano.human_fitting.staged_lm.stage_definitions.pose import build_pose_stage_definition
 from lib_pano.human_fitting.staged_lm.stage_definitions.rigid import build_stage1_definition
 from lib_pano.human_fitting.staged_lm.stage_runtime import run_stage
 from lib_pano.human_fitting.staged_lm.stage2_shared_cache import build_stage2_shared_geometry_cache
-from lib_pano.human_fitting.staged_lm.joint import physical_beta_from_latent
+from lib_pano.human_fitting.staged_lm.pose_shape import physical_beta_from_latent
 from lib_pano.human_fitting.staged_lm.types import StageOutcome
 from script.benchmark.staged_lm.batch_common import environment_record
 from script.benchmark.staged_lm.stage1_batch_candidates import (
@@ -56,9 +56,9 @@ def _result(result):
     c=result.counters
     return {"status":result.status,"objective":result.objective,"wall_time_ms":result.wall_time_ms,
             "accepted_steps":c.accepted_steps,"rejected_trials":c.rejected_trials,
-            "linearization_count":c.linearization_count,"normal_equation_count":c.normal_equation_count,
-            "solve_attempt_count":c.solve_attempt_count,"cholesky_success_count":c.cholesky_success_count,
-            "solve_fallback_count":c.solve_fallback_count,"final_lambda":result.final_lambda,
+            "linearization_count":c.linearization_count,
+            "solve_attempt_count":c.solve_attempt_count,"solve_success_count":c.solve_success_count,
+            "final_lambda":result.final_lambda,
             "metrics":result.rms_metrics,"trial_history":result.trial_history,"weight_history":result.weight_history,
             "profile_timing":result.profile_timing or {}}
 
@@ -121,7 +121,7 @@ def _downstream(context,stage,serial,candidate):
     for label,result in (("serial",serial),("candidate",candidate)):
         s1=StageOutcome(result,stage.lm_true_objective_fn,stage)
         pose_def,_=build_pose_stage_definition(context,s1,shared);pose=run_stage(pose_def,context)
-        joint_def,_=build_joint_stage_definition(context,pose,shared);joint=run_stage(joint_def,context)
+        joint_def,_=build_pose_shape_stage_definition(context,pose,shared);joint=run_stage(joint_def,context)
         outcomes.append((pose,joint))
         output[label]={"pose":_result(pose.lm_result),"joint":_result(joint.lm_result)}
     pc=compare_stage1_lm_results(outcomes[0][0].lm_result,outcomes[1][0].lm_result)
@@ -152,7 +152,6 @@ def _run_count(args,frames):
     attribution={**cache.timing_dict(),"accepted_steps":baseline.counters.accepted_steps,
         "rejected_trials":baseline.counters.rejected_trials,"solve_attempt_count":baseline.counters.solve_attempt_count,
         "linearization_count":baseline.counters.linearization_count,
-        "normal_equation_count":baseline.counters.normal_equation_count,
         "wall_time_ms":baseline.wall_time_ms,"lm_profile_timing":baseline.profile_timing or {}}
     output={"T":len(frames),"G":batch.layout.group_count,"production_baseline":attribution,
         "batch_preparation":{"setup_ms":batch.setup_ms,
@@ -215,12 +214,12 @@ def _run_count(args,frames):
     first=next(iter(output["perturbations"].values()),None)
     if first and Stage1NEMode.FULL_BATCH_GROUP_GEMM.value in first["modes"]:
         mode=first["modes"][Stage1NEMode.FULL_BATCH_GROUP_GEMM.value]
-        saved=max(0.0,(mode["equation_timing"]["serial"]["p50"]-mode["equation_timing"]["candidate"]["p50"])*attribution["normal_equation_count"])
+        saved=max(0.0,(mode["equation_timing"]["serial"]["p50"]-mode["equation_timing"]["candidate"]["p50"])*attribution["linearization_count"])
         output["amdahl_projection"]={"measured_stage1_wall_ms":attribution["wall_time_ms"],
             "predicted_ne_only_stage1_ms":max(0.0,attribution["wall_time_ms"]-saved),
-            "ideal_ne_zero_stage1_ms":max(0.0,attribution["wall_time_ms"]-mode["equation_timing"]["serial"]["p50"]*attribution["normal_equation_count"]),
+            "ideal_ne_zero_stage1_ms":max(0.0,attribution["wall_time_ms"]-mode["equation_timing"]["serial"]["p50"]*attribution["linearization_count"]),
             "objective_zero_upper_bound_stage1_ms":max(0.0,attribution["wall_time_ms"]-attribution["analytic_objective_ms"]),
-            "measured_ne_calls":attribution["normal_equation_count"],
+            "measured_ne_calls":attribution["linearization_count"],
             "measured_objective_calls":attribution["analytic_objective_calls"]}
     return output
 

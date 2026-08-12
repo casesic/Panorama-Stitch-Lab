@@ -8,7 +8,7 @@ if __package__ in (None, ""):
 
 import torch
 
-from helpers import synthetic_joint_cache, synthetic_joint_parameters, synthetic_stage2_context
+from helpers import synthetic_pose_shape_cache, synthetic_pose_shape_parameters, synthetic_stage2_context
 from lib_pano.human_fitting.staged_lm.analytic_stage1 import (
     Stage1AnalyticCache, Stage1AnalyticGroupCache,
     _group_raw_residual_and_local_jacobian, stage1_normal_equations,
@@ -21,9 +21,9 @@ from lib_pano.human_fitting.staged_lm.pose.objective import stage2_pose_fast_tru
 from lib_pano.human_fitting.staged_lm.pose.derivatives import (
     stage2_pose_group_raw_residual_and_jacobian, stage2_pose_normal_equations,
 )
-from lib_pano.human_fitting.staged_lm.joint import stage2_joint_fast_objective_terms
-from lib_pano.human_fitting.staged_lm.joint import (
-    accumulate_stage2_joint_arrowhead_system, joint_group_raw_residual_and_jacobians,
+from lib_pano.human_fitting.staged_lm.pose_shape import stage2_pose_shape_fast_objective_terms
+from lib_pano.human_fitting.staged_lm.pose_shape import (
+    accumulate_stage2_pose_shape_arrowhead_system, pose_shape_group_raw_residual_and_jacobians,
 )
 from script.benchmark.staged_lm.stage1_batch_candidates import (
     build_stage1_group_batch, gather_stage1_group_parameters,
@@ -33,8 +33,8 @@ from script.benchmark.staged_lm.pose_batch_candidates import (
     build_pose_group_batch, gather_pose_batch_parameters, gather_pose_group_parameters,
     batched_pose_group_analytic, batched_pose_hg, batched_pose_objective,
 )
-from script.benchmark.staged_lm.joint_kernel_candidates import (
-    build_joint_group_batch, batched_joint_arrowhead_hg, batched_joint_objective,
+from script.benchmark.staged_lm.pose_shape_kernel_candidates import (
+    build_pose_shape_group_batch, batched_joint_arrowhead_hg, batched_joint_objective,
 )
 
 
@@ -71,7 +71,7 @@ def test_stage1_batch_residual_jacobian_hg():
 
 def test_pose_batch_residual_active_jacobian_hg_objective():
     context=synthetic_stage2_context(frames=2);shared=build_stage2_shared_geometry_cache(context)
-    cache=build_stage2_pose_fast_cache(context,shared);parameters=synthetic_joint_parameters(2)[:-2]
+    cache=build_stage2_pose_fast_cache(context,shared);parameters=synthetic_pose_shape_parameters(2)[:-2]
     batch=build_pose_group_batch(cache);orient,translation,body=gather_pose_group_parameters(parameters,batch.layout)
     pose_parameters=gather_pose_batch_parameters(parameters,batch.layout)
     residual,active,_=batched_pose_group_analytic(batch,orient,translation,body,5760,2880)
@@ -93,15 +93,15 @@ def test_pose_batch_residual_active_jacobian_hg_objective():
 
 
 def test_joint_batch_arrowhead_and_objective():
-    cache=synthetic_joint_cache(2);parameters=synthetic_joint_parameters(2);batch=build_joint_group_batch(cache.groups)
+    cache=synthetic_pose_shape_cache(2);parameters=synthetic_pose_shape_parameters(2);batch=build_pose_shape_group_batch(cache.groups)
     anchors=[torch.zeros(63,dtype=torch.float64) for _ in range(2)];beta_anchor=torch.zeros(2,dtype=torch.float64)
     scales=torch.ones(batch.valid_mask.shape+(2,),dtype=torch.float64)
     candidate, residual, active, beta_j=batched_joint_arrowhead_hg(cache,batch,parameters,1.,scales,anchors,beta_anchor,.3,.2)
-    _,reference=accumulate_stage2_joint_arrowhead_system(cache,parameters,1.,[torch.ones(x.targets.numel(),dtype=torch.float64) for x in cache.groups],anchors,beta_anchor,.3,.2)
+    _,reference=accumulate_stage2_pose_shape_arrowhead_system(cache,parameters,1.,[torch.ones(x.targets.numel(),dtype=torch.float64) for x in cache.groups],anchors,beta_anchor,.3,.2)
     torch.testing.assert_close(candidate.to_dense(),reference.to_dense(),rtol=2e-5,atol=1e-7)
     torch.testing.assert_close(candidate.flat_gradient(),reference.flat_gradient(),rtol=2e-5,atol=1e-7)
     terms=batched_joint_objective(cache,batch,parameters,1.,anchors,beta_anchor,.3,.2,objective_mode="raw_l2",charbonnier_eps=1.,rep_scale=.2,aggregation_spec=None)
-    truth=stage2_joint_fast_objective_terms(cache,parameters,1.,beta_anchor,anchors,.3,.2,"raw_l2",1.,.2,None)
+    truth=stage2_pose_shape_fast_objective_terms(cache,parameters,1.,beta_anchor,anchors,.3,.2,"raw_l2",1.,.2,None)
     torch.testing.assert_close(terms["total"],truth["total"],rtol=1e-10,atol=1e-10)
 
 

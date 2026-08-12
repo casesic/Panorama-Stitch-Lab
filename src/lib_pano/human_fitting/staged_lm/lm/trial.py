@@ -43,16 +43,18 @@ def build_failed_trial_record(
     outer: int,
     trial: int,
     damping: float,
-    linear_solver_backend: str,
-    used_dense_fallback: bool,
+    configured_solver_backend: str,
+    final_solve_backend: str,
+    schur_primary_failed: bool,
 ) -> dict[str, Any]:
     return {
         "outer": outer, "trial": trial, "damping": damping,
-        "linear_solver_backend": linear_solver_backend,
+        "configured_solver_backend": configured_solver_backend,
+        "final_solve_backend": final_solve_backend,
         "solve_success": False, "delta_norm": None,
         "predicted_reduction": None, "actual_reduction": None,
         "rho": None, "accepted": False,
-        "used_dense_fallback": used_dense_fallback,
+        "schur_primary_failed": schur_primary_failed,
     }
 
 
@@ -60,21 +62,22 @@ def build_evaluated_trial_record(
     outer: int,
     trial: int,
     damping: float,
-    linear_solver_backend: str,
+    configured_solver_backend: str,
+    final_solve_backend: str,
     delta: torch.Tensor,
     predicted_reduction: float,
     actual_reduction: float,
     rho: float,
     accepted: bool,
-    used_dense_fallback: bool,
+    schur_primary_failed: bool,
 ) -> dict[str, Any]:
     return {
         "outer": outer, "trial": trial, "damping": damping,
-        "linear_solver_backend": linear_solver_backend,
+        "configured_solver_backend": configured_solver_backend,
+        "final_solve_backend": final_solve_backend,
         "solve_success": True, "delta_norm": float(delta.norm()),
         "predicted_reduction": predicted_reduction,
         "actual_reduction": actual_reduction, "rho": rho,
         "accepted": accepted,
-        "used_dense_fallback": used_dense_fallback,
+        "schur_primary_failed": schur_primary_failed,
     }
-

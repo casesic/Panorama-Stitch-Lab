@@ -18,8 +18,8 @@ if __package__ in (None, ""):
 from lib_pano.human_fitting.staged_lm.stage2_shared_cache import (
     build_stage2_shared_geometry_cache,
 )
-from lib_pano.human_fitting.staged_lm.stage_definitions.joint import (
-    build_joint_stage_definition,
+from lib_pano.human_fitting.staged_lm.stage_definitions.pose_shape import (
+    build_pose_shape_stage_definition,
 )
 from lib_pano.human_fitting.staged_lm.stage_definitions.pose import (
     build_pose_stage_definition,
@@ -42,7 +42,7 @@ from script.benchmark.staged_lm.lm_early_stop_audit import (
 from script.human_fitting.staged_lm.app import build_context
 
 
-EXTENDED_DEFAULTS = {"S1": 40, "STAGE2_POSE": 15, "STAGE2_JOINT": 5}
+EXTENDED_DEFAULTS = {"S1": 40, "STAGE2_POSE": 15, "STAGE2_POSE_SHAPE": 5}
 
 
 def parse_args() -> argparse.Namespace:
@@ -337,8 +337,8 @@ def _stage_audit(
                 ).norm()
             ),
             "extra_normal_equation_calls": (
-                extended_trace.result.counters.normal_equation_count
-                - production.lm_result.counters.normal_equation_count
+                extended_trace.result.counters.linearization_count
+                - production.lm_result.counters.linearization_count
             ),
             "extra_objective_calls": (
                 len(extended_trace.objective_calls)
@@ -454,18 +454,18 @@ def run_audit(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, np.nd
             context, stage1, shared_cache,
         )
         pose, pose_trace = _production_and_trace(pose_definition, context)
-        joint_definition, _ = build_joint_stage_definition(
+        pose_shape_definition, _ = build_pose_shape_stage_definition(
             context, pose, shared_cache,
         )
         joint, joint_trace = _production_and_trace(
-            joint_definition, context,
+            pose_shape_definition, context,
         )
         stage_inputs = (
             ("S1", stage1_definition, stage1, stage1_trace,
              args.stage1_extended_acc),
             ("STAGE2_POSE", pose_definition, pose, pose_trace,
              args.pose_extended_acc),
-            ("STAGE2_JOINT", joint_definition, joint, joint_trace,
+            ("STAGE2_POSE_SHAPE", pose_shape_definition, joint, joint_trace,
              args.joint_extended_acc),
         )
         stage_reports = {}

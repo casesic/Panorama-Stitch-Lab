@@ -55,3 +55,4 @@ tools/SingleFitting/lib_dynamic_hvip/*
 tools/SingleFitting/lib_dynamic_hvip/fitting/*
 !tools/SingleFitting/lib_dynamic_hvip/fitting/smplx_seq_forward_module.py
 !tools/SingleFitting/lib_dynamic_hvip/fitting/smpl_seq_forward_module.py
+build/

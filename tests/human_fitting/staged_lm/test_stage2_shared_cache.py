@@ -17,9 +17,9 @@ except ImportError:
 ensure_test_paths(__file__)
 
 from tests.human_fitting.staged_lm.helpers import synthetic_stage2_context  # noqa: E402
-from lib_pano.human_fitting.staged_lm.joint import (  # noqa: E402
-    build_stage2_joint_fast_cache,
-    joint_fast_raw_groups,
+from lib_pano.human_fitting.staged_lm.pose_shape import (  # noqa: E402
+    build_stage2_pose_shape_fast_cache,
+    pose_shape_fast_raw_groups,
 )
 from lib_pano.human_fitting.staged_lm.pose.cache import build_stage2_pose_fast_cache  # noqa: E402
 from lib_pano.human_fitting.staged_lm.pose.forward import fast_raw_groups  # noqa: E402
@@ -59,7 +59,7 @@ def _build(frames: int = 2):
     context = synthetic_stage2_context(frames)
     shared = build_stage2_shared_geometry_cache(context)
     pose = build_stage2_pose_fast_cache(context, shared)
-    joint = build_stage2_joint_fast_cache(context, shared)
+    joint = build_stage2_pose_shape_fast_cache(context, shared)
     return context, shared, pose, joint
 
 
@@ -85,7 +85,7 @@ def test_group_order_device_dtype_and_select_counts() -> None:
 def test_common_storage_is_shared_and_read_only() -> None:
     _context, shared, pose, joint = _build()
     tracked = []
-    for shared_group, pose_group, joint_group in zip(
+    for shared_group, pose_group, pose_shape_group in zip(
         shared.groups, pose.groups, joint.groups,
     ):
         for name in (
@@ -94,7 +94,7 @@ def test_common_storage_is_shared_and_read_only() -> None:
         ):
             common = getattr(shared_group, name)
             assert getattr(pose_group, name).data_ptr() == common.data_ptr()
-            assert getattr(joint_group, name).data_ptr() == common.data_ptr()
+            assert getattr(pose_shape_group, name).data_ptr() == common.data_ptr()
             tracked.append(common)
     snapshots = [(tensor.clone(), tensor._version) for tensor in tracked]
     pose_parameters = _pose_parameters(pose.frame_count, pose.model.dtype)
@@ -102,7 +102,7 @@ def test_common_storage_is_shared_and_read_only() -> None:
         pose_parameters, torch.zeros(joint.model.beta_dim, dtype=pose.model.dtype),
     ))
     fast_raw_groups(pose, pose_parameters)
-    joint_fast_raw_groups(joint, joint_parameters, 3.0)
+    pose_shape_fast_raw_groups(joint, joint_parameters, 3.0)
     for tensor, (value, version) in zip(tracked, snapshots):
         assert tensor._version == version
         assert torch.equal(tensor, value)
@@ -134,7 +134,7 @@ def test_derived_values_match_legacy_formulas() -> None:
     assert torch.equal(joint.model.base_joints, joint_joints)
     assert torch.equal(joint.model.d_joints_d_beta, d_joints)
     posedirs = model.posedirs.reshape(486, model.v_template.shape[0], 3)
-    for common, pose_group, joint_group in zip(
+    for common, pose_group, pose_shape_group in zip(
         shared.groups, pose.groups, joint.groups,
     ):
         ids = common.vertex_ids
@@ -143,9 +143,9 @@ def test_derived_values_match_legacy_formulas() -> None:
         assert torch.equal(common.selected_posedirs, legacy_posedirs)
         assert torch.equal(common.selected_lbs_weights, legacy_weights)
         assert torch.equal(pose_group.selected_v_shaped, pose_v.index_select(0, ids))
-        assert torch.equal(joint_group.selected_base_v_shaped, joint_v.index_select(0, ids))
+        assert torch.equal(pose_shape_group.selected_base_v_shaped, joint_v.index_select(0, ids))
         assert torch.equal(
-            joint_group.selected_beta_shapedirs,
+            pose_shape_group.selected_beta_shapedirs,
             model.shapedirs.index_select(0, ids),
         )
 
@@ -158,7 +158,7 @@ def test_persistent_bytes_are_deduplicated() -> None:
         joint.model.base_v_shaped, joint.model.beta_shapedirs,
         joint.model.base_joints, joint.model.d_joints_d_beta,
     ]
-    for shared_group, pose_group, joint_group in zip(
+    for shared_group, pose_group, pose_shape_group in zip(
         shared.groups, pose.groups, joint.groups,
     ):
         common.extend((
@@ -169,8 +169,8 @@ def test_persistent_bytes_are_deduplicated() -> None:
         ))
         pose_derived.append(pose_group.selected_v_shaped)
         joint_derived.extend((
-            joint_group.selected_base_v_shaped,
-            joint_group.selected_beta_shapedirs,
+            pose_shape_group.selected_base_v_shaped,
+            pose_shape_group.selected_beta_shapedirs,
         ))
     shared_bytes = _tensor_bytes(common)
     assert shared_bytes > 0
@@ -185,13 +185,13 @@ def test_no_redundant_selected_row_clone_in_production() -> None:
     root = Path(__file__).resolve().parents[3] / "src/lib_pano/human_fitting/staged_lm"
     shared_source = (root / "stage2_shared_cache.py").read_text()
     pose_source = (root / "pose/cache.py").read_text()
-    joint_source = (root / "joint/cache.py").read_text()
+    pose_shape_source = (root / "pose_shape/cache.py").read_text()
     assert "index_select(1, item[3]).detach().clone()" not in shared_source
     assert "index_select(0, item[3]).detach().clone()" not in shared_source
-    assert "selected_posedirs=posedirs" not in pose_source + joint_source
-    assert "selected_lbs_weights=model.lbs_weights" not in pose_source + joint_source
+    assert "selected_posedirs=posedirs" not in pose_source + pose_shape_source
+    assert "selected_lbs_weights=model.lbs_weights" not in pose_source + pose_shape_source
     assert "shared_cache=None" not in inspect.getsource(build_stage2_pose_fast_cache)
-    assert "shared_cache=None" not in inspect.getsource(build_stage2_joint_fast_cache)
+    assert "shared_cache=None" not in inspect.getsource(build_stage2_pose_shape_fast_cache)
 
 
 def test_stop_stage_lifecycle_build_counts() -> None:
@@ -216,7 +216,7 @@ def test_stop_stage_lifecycle_build_counts() -> None:
         preparation_timing=StagePreparationTiming(0.1, 0.2, 0.3),
         analytic_cache=pose_cache,
     )
-    joint_definition = SimpleNamespace(
+    pose_shape_definition = SimpleNamespace(
         preparation_timing=StagePreparationTiming(0.2, 0.3, 0.4),
         analytic_cache=joint_cache,
     )
@@ -224,12 +224,12 @@ def test_stop_stage_lifecycle_build_counts() -> None:
         lm_result=SimpleNamespace(wall_time_ms=1.0),
         definition=pose_definition,
     )
-    joint_outcome = SimpleNamespace(
+    pose_shape_outcome = SimpleNamespace(
         lm_result=SimpleNamespace(wall_time_ms=1.0),
-        definition=joint_definition,
+        definition=pose_shape_definition,
     )
     pose_handoff = {"lm": {"ot_max": 0.0, "bp_max": 0.0, "ok": True}}
-    joint_handoff = {"lm": {
+    pose_shape_handoff = {"lm": {
         "state_max_diff": 0.0,
         "physical_beta_init_max_diff_to_anchor": 0.0,
         "raw_reprojection_max_diff": None,
@@ -243,8 +243,8 @@ def test_stop_stage_lifecycle_build_counts() -> None:
         )
         shared_builder = Mock(return_value=shared)
         pose_builder = Mock(return_value=(pose_definition, pose_handoff))
-        joint_builder = Mock(return_value=(joint_definition, joint_handoff))
-        outcomes = [pose_outcome] + ([joint_outcome] if expected_joint_builds else [])
+        joint_builder = Mock(return_value=(pose_shape_definition, pose_shape_handoff))
+        outcomes = [pose_outcome] + ([pose_shape_outcome] if expected_joint_builds else [])
         timing = {}
         with patch(
             "lib_pano.human_fitting.staged_lm.pipeline.build_stage2_shared_geometry_cache",
@@ -253,7 +253,7 @@ def test_stop_stage_lifecycle_build_counts() -> None:
             "lib_pano.human_fitting.staged_lm.pipeline.build_pose_stage_definition",
             pose_builder,
         ), patch(
-            "lib_pano.human_fitting.staged_lm.pipeline.build_joint_stage_definition",
+            "lib_pano.human_fitting.staged_lm.pipeline.build_pose_shape_stage_definition",
             joint_builder,
         ), patch(
             "lib_pano.human_fitting.staged_lm.pipeline.run_stage",
@@ -268,7 +268,7 @@ def test_stop_stage_lifecycle_build_counts() -> None:
         )
         assert set(timing) == {
             "stage2_prepare", "stage2_pose_run_ms",
-            *(('stage2_joints_run_ms',) if expected_joint_builds else ()),
+            *(('stage2_pose_shape_run_ms',) if expected_joint_builds else ()),
         }
 
 

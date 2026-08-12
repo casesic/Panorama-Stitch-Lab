@@ -403,7 +403,7 @@ class DualCamERPFitter(BaseSMPLXFitter):
                 param_names = ["cam2_orient", "cam2_transl", "cam4_orient", "cam4_transl"]
             elif stage_name == "stage2_pose_warmup":
                 param_names = ["cam2_orient", "cam2_transl", "cam4_orient", "cam4_transl", "shared_body_pose"]
-            elif stage_name == "stage2_joint_refinement":
+            elif stage_name == "stage2_pose_shape_refinement":
                 param_names = ["cam2_orient", "cam2_transl", "cam4_orient", "cam4_transl", "shared_body_pose", "beta_latent"]
             optimizer = torch.optim.LBFGS(params, line_search_fn="strong_wolfe", lr=self.lr_lbfgs, max_iter=self.max_iter_closure)
             closure_count = [0]
