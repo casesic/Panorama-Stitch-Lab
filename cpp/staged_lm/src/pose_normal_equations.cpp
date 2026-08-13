@@ -9,6 +9,7 @@
 namespace staged_lm {
 namespace {
 
+// Pose normal equations apply robust row weights and assemble the 75-D H/g.
 using Clock = std::chrono::steady_clock;
 
 double milliseconds(Clock::time_point start) {

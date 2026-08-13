@@ -46,5 +46,10 @@ PoseShapeCameraJacobianResult evaluate_pose_shape_camera_with_jacobian(
     const std::vector<float>& dynamic_v_shaped,
     const std::vector<float>& d_dynamic_joints_beta,
     const std::vector<float>& d_beta_d_latent);
+PoseShapeCameraJacobianResult evaluate_pose_shape_camera_with_jacobian_from_value(
+    const PoseModelInput& dynamic_model,const PoseShapeCameraInput& input,
+    const std::vector<float>& dynamic_v_shaped,
+    const std::vector<float>& d_dynamic_joints_beta,
+    const std::vector<float>& d_beta_d_latent,PoseCameraResult value);
 
 }  // namespace staged_lm

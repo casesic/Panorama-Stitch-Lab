@@ -10,6 +10,8 @@
 namespace staged_lm {
 namespace {
 
+// Stage1 projects rigidly transformed camera points and builds analytic
+// residual/Jacobian blocks for the per-frame camera parameters.
 using Clock = std::chrono::steady_clock;
 
 double elapsed_ms(Clock::time_point start) {

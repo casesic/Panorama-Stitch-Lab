@@ -1,4 +1,5 @@
 #include "staged_lm/pose_shape_jacobian.h"
+#include "staged_lm/performance.h"
 
 #include <chrono>
 #include <cmath>
@@ -6,6 +7,7 @@
 
 namespace staged_lm {
 namespace {
+// PoseShape Jacobian adds beta derivatives to the Pose derivative chain.
 using Clock = std::chrono::steady_clock;
 double ms(Clock::time_point s) {
   return std::chrono::duration<double, std::milli>(Clock::now() - s).count();
@@ -24,11 +26,11 @@ float product_derivative(const float* dl, const float* r, const float* l,
 }
 }  // namespace
 
-PoseShapeCameraJacobianResult evaluate_pose_shape_camera_with_jacobian(
+PoseShapeCameraJacobianResult evaluate_pose_shape_camera_with_jacobian_from_value(
     const PoseModelInput& model, const PoseShapeCameraInput& input,
     const std::vector<float>& dynamic_v_shaped,
     const std::vector<float>& d_joints_beta,
-    const std::vector<float>& d_beta) {
+    const std::vector<float>& d_beta, PoseCameraResult value) {
   const auto total = Clock::now();
   if (d_beta.size() != kPoseShapeBetaDimension ||
       d_joints_beta.size() != kPoseJointCount * 3 * kPoseShapeBetaDimension) {
@@ -37,7 +39,8 @@ PoseShapeCameraJacobianResult evaluate_pose_shape_camera_with_jacobian(
   PoseShapeCameraJacobianResult out;
   PoseCameraInput pi = input.pose;
   pi.selected_v_shaped = dynamic_v_shaped;
-  out.pose = evaluate_pose_camera_with_jacobian(model, pi);
+  out.pose = evaluate_pose_camera_with_jacobian_from_value(
+      model, pi, std::move(value));
   out.d_beta_d_latent = d_beta;
   const int n = pi.point_count, p = kPoseRotationParameterDimension;
   const int b = kPoseShapeBetaDimension, qn = kPoseShapeCombinedDimension;
@@ -112,18 +115,44 @@ PoseShapeCameraJacobianResult evaluate_pose_shape_camera_with_jacobian(
   out.combined_fk_ms=ms(start);
 
   start=Clock::now();
-  out.d_selected_transforms_combined.resize(static_cast<std::size_t>(n)*16*qn);
-  for(int i=0;i<n;++i)for(int e=0;e<16;++e)for(int q=0;q<qn;++q){float v=0;for(int j=0;j<kPoseJointCount;++j)v=std::fma(pi.selected_lbs_weights[i*kPoseJointCount+j],out.d_relative_combined[ix4(j,e,q,qn)],v);out.d_selected_transforms_combined[(static_cast<std::size_t>(i)*16+e)*qn+q]=v;}
-  const std::size_t vc=static_cast<std::size_t>(n)*3*qn;
-  out.d_skin_from_transform.resize(vc);out.d_skin_from_vertex.resize(vc);out.d_skinned_combined.resize(vc);out.d_vertices_combined.resize(vc);
-  for(int i=0;i<n;++i){float h[4]={out.pose.value.v_posed[i*3],out.pose.value.v_posed[i*3+1],out.pose.value.v_posed[i*3+2],1};for(int xyz=0;xyz<3;++xyz)for(int q=0;q<qn;++q){float a=0,bv=0;for(int k=0;k<4;++k){a=std::fma(out.d_selected_transforms_combined[((static_cast<std::size_t>(i)*16+xyz*4+k)*qn)+q],h[k],a);float dh=k<3?out.d_v_posed_combined[((static_cast<std::size_t>(i)*3+k)*qn)+q]:0;bv=std::fma(out.pose.value.selected_transforms[i*16+xyz*4+k],dh,bv);}auto ix=((static_cast<std::size_t>(i)*3+xyz)*qn)+q;out.d_skin_from_transform[ix]=a;out.d_skin_from_vertex[ix]=bv;out.d_skinned_combined[ix]=a+bv;out.d_vertices_combined[ix]=(a+bv)*pi.scale;}}
+  LbsDerivativeMaterializedResult lbs;
+  compute_lbs_derivative_materialized(
+      pi.selected_lbs_weights, out.d_relative_combined,
+      out.pose.value.selected_transforms, out.pose.value.v_posed,
+      out.d_v_posed_combined, n, qn, lbs);
+  out.d_selected_transforms_combined =
+      std::move(lbs.selected_transform_derivatives);
+  out.d_skin_from_transform = std::move(lbs.transform_term);
+  out.d_skin_from_vertex = std::move(lbs.vertex_term);
+  out.d_skinned_combined = std::move(lbs.skinned_derivatives);
+  out.d_vertices_combined = out.d_skinned_combined;
+  for (float& value : out.d_vertices_combined) value *= pi.scale;
   out.d_vertices_rotpose.resize(static_cast<std::size_t>(n)*3*p);out.d_vertices_beta.resize(static_cast<std::size_t>(n)*3*b);
   for(int i=0;i<n*3;++i){for(int q=0;q<p;++q)out.d_vertices_rotpose[i*p+q]=out.d_vertices_combined[i*qn+q];for(int z=0;z<b;++z)out.d_vertices_beta[i*b+z]=out.d_vertices_combined[i*qn+p+z];}
   out.combined_lbs_ms=ms(start);
+  record_performance_sample(pi.camera, "combined.lbs_selected_transform", n,
+                            lbs.selected_transform_ms);
+  record_performance_sample(pi.camera, "combined.lbs_downstream", n,
+                            lbs.downstream_ms);
 
   start=Clock::now();out.uv_combined.resize(static_cast<std::size_t>(n)*2*qn);out.beta_jacobian.resize(static_cast<std::size_t>(n)*2*b);
   for(int i=0;i<n;++i)for(int uv=0;uv<2;++uv)for(int q=0;q<qn;++q){float v=0;for(int xyz=0;xyz<3;++xyz)v=std::fma(out.pose.projection_jacobian[i*6+uv*3+xyz],out.d_vertices_combined[((static_cast<std::size_t>(i)*3+xyz)*qn)+q],v);out.uv_combined[((static_cast<std::size_t>(i)*2+uv)*qn)+q]=v;if(q>=p)out.beta_jacobian[((static_cast<std::size_t>(i)*2+uv)*b)+q-p]=v;}
   out.erp_chain_ms=ms(start);
-  start=Clock::now();out.active_jacobian=out.pose.active_jacobian;out.assemble_ms=ms(start);out.total_ms=ms(total);return out;
+  start=Clock::now();out.active_jacobian=out.pose.active_jacobian;out.assemble_ms=ms(start);out.total_ms=ms(total);
+  record_performance_sample(pi.camera,"combined.shape_setup",n,out.shape_derivative_ms);
+  record_performance_sample(pi.camera,"combined.fk",n,out.combined_fk_ms);
+  record_performance_sample(pi.camera,"combined.lbs",n,out.combined_lbs_ms);
+  record_performance_sample(pi.camera,"combined.erp_chain",n,out.erp_chain_ms);
+  record_performance_sample(pi.camera,"combined.assembly",n,out.assemble_ms);
+  return out;
+}
+PoseShapeCameraJacobianResult evaluate_pose_shape_camera_with_jacobian(
+    const PoseModelInput& model,const PoseShapeCameraInput& input,
+    const std::vector<float>& dynamic_v_shaped,
+    const std::vector<float>& d_joints_beta,const std::vector<float>& d_beta){
+  PoseCameraInput pi=input.pose;pi.selected_v_shaped=dynamic_v_shaped;
+  return evaluate_pose_shape_camera_with_jacobian_from_value(
+      model,input,dynamic_v_shaped,d_joints_beta,d_beta,
+      evaluate_pose_camera_value(model,pi));
 }
 }  // namespace staged_lm

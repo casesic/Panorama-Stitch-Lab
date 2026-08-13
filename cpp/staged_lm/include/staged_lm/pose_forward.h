@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -23,12 +24,16 @@ struct PoseCameraInput {
   float scale = 1.0F;
   std::vector<float> selected_v_shaped;
   std::vector<float> selected_posedirs;
+  std::shared_ptr<const std::vector<float>> stable_selected_posedirs;
   std::vector<float> selected_lbs_weights;
   std::vector<float> targets;
   int point_count = 0;
   int image_width = 0;
   int image_height = 0;
 };
+
+const std::vector<float>& selected_posedirs_view(const PoseCameraInput& input);
+void promote_selected_posedirs_to_stable_owner(PoseCameraInput& input);
 
 struct PoseCameraResult {
   std::vector<float> axis_angles;
@@ -56,5 +61,12 @@ struct PoseCameraResult {
 
 PoseCameraResult evaluate_pose_camera_value(
     const PoseModelInput& model, const PoseCameraInput& input);
+
+void compute_value_pose_offset_scalar(
+    const std::vector<float>& selected_posedirs,
+    const std::vector<float>& pose_feature,
+    int point_count,
+    std::vector<float>& output);
+void set_experimental_value_pose_offset_gemv(bool enabled);
 
 }  // namespace staged_lm

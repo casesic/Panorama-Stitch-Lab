@@ -6,6 +6,7 @@
 namespace staged_lm {
 namespace {
 
+// ERP utilities project 3-D camera points and expose the projection Jacobian.
 constexpr float kPi = 3.14159265358979323846F;
 
 Eigen::Matrix3f fixed_rotation() {

@@ -2,6 +2,8 @@
 
 #include "staged_lm/erp.h"
 #include "staged_lm/so3.h"
+#include "staged_lm/performance.h"
+#include "staged_lm/experimental/value_pose_offset_gemv.h"
 
 #include <Eigen/Core>
 
@@ -10,9 +12,24 @@
 #include <stdexcept>
 
 namespace staged_lm {
+
+// Pose value forward maps a 75-D frame state through rotations, pose offsets,
+// FK, LBS, and ERP projection to two-dimensional residuals.
+const std::vector<float>& selected_posedirs_view(const PoseCameraInput& input) {
+  return input.stable_selected_posedirs ? *input.stable_selected_posedirs
+                                       : input.selected_posedirs;
+}
+
+void promote_selected_posedirs_to_stable_owner(PoseCameraInput& input) {
+  if (input.stable_selected_posedirs) return;
+  auto owner = std::make_shared<std::vector<float>>(
+      std::move(input.selected_posedirs));
+  input.stable_selected_posedirs = std::move(owner);
+}
 namespace {
 
 using Clock = std::chrono::steady_clock;
+thread_local bool use_experimental_value_pose_offset_gemv = false;
 
 double elapsed_ms(Clock::time_point start) {
   return std::chrono::duration<double, std::milli>(Clock::now() - start).count();
@@ -45,7 +62,7 @@ void validate_input(const PoseModelInput& model, const PoseCameraInput& input) {
       || input.left_hand_pose.size() != 45
       || input.right_hand_pose.size() != 45
       || input.selected_v_shaped.size() != static_cast<std::size_t>(input.point_count * 3)
-      || input.selected_posedirs.size()
+      || selected_posedirs_view(input).size()
           != static_cast<std::size_t>(kPoseFeatureDimension * input.point_count * 3)
       || input.selected_lbs_weights.size()
           != static_cast<std::size_t>(input.point_count * kPoseJointCount)
@@ -63,6 +80,28 @@ void validate_input(const PoseModelInput& model, const PoseCameraInput& input) {
 }
 
 }  // namespace
+
+void set_experimental_value_pose_offset_gemv(bool enabled) {
+  use_experimental_value_pose_offset_gemv = enabled;
+}
+
+void compute_value_pose_offset_scalar(
+    const std::vector<float>& selected_posedirs,
+    const std::vector<float>& pose_feature,
+    int point_count, std::vector<float>& output) {
+  output.resize(point_count * 3);
+  for (int vertex = 0; vertex < point_count; ++vertex) {
+    for (int xyz = 0; xyz < 3; ++xyz) {
+      float offset = 0.0F;
+      for (int feature = 0; feature < kPoseFeatureDimension; ++feature) {
+        const std::size_t direction =
+            (static_cast<std::size_t>(feature) * point_count + vertex) * 3 + xyz;
+        offset = std::fma(pose_feature[feature], selected_posedirs[direction], offset);
+      }
+      output[vertex * 3 + xyz] = offset;
+    }
+  }
+}
 
 PoseCameraResult evaluate_pose_camera_value(
     const PoseModelInput& model, const PoseCameraInput& input) {
@@ -113,20 +152,26 @@ PoseCameraResult evaluate_pose_camera_value(
       }
     }
   }
-  result.pose_offsets.resize(n * 3);
+  record_value_pose_offset_state(input.camera, n, result.pose_feature);
+  const auto pose_offset_kernel_start = Clock::now();
+  if (use_experimental_value_pose_offset_gemv) {
+    experimental::compute_value_pose_offset_eigen_gemv(
+        selected_posedirs_view(input), result.pose_feature, n, result.pose_offsets);
+  } else {
+    compute_value_pose_offset_scalar(
+        selected_posedirs_view(input), result.pose_feature, n, result.pose_offsets);
+  }
+  record_value_pose_offset_dispatch(use_experimental_value_pose_offset_gemv);
+  record_performance_sample(
+      input.camera,
+      use_experimental_value_pose_offset_gemv
+          ? "value.pose_offsets_gemv" : "value.pose_offsets_scalar",
+      n, elapsed_ms(pose_offset_kernel_start));
   result.v_posed.resize(n * 3);
   for (int vertex = 0; vertex < n; ++vertex) {
     for (int xyz = 0; xyz < 3; ++xyz) {
-      float offset = 0.0F;
-      for (int feature = 0; feature < kPoseFeatureDimension; ++feature) {
-        const std::size_t direction =
-            (static_cast<std::size_t>(feature) * n + vertex) * 3 + xyz;
-        offset = std::fma(
-            result.pose_feature[feature], input.selected_posedirs[direction], offset);
-      }
-      result.pose_offsets[vertex * 3 + xyz] = offset;
       result.v_posed[vertex * 3 + xyz] =
-          input.selected_v_shaped[vertex * 3 + xyz] + offset;
+          input.selected_v_shaped[vertex * 3 + xyz] + result.pose_offsets[vertex * 3 + xyz];
     }
   }
   result.pose_offsets_ms = elapsed_ms(start);
@@ -239,6 +284,14 @@ PoseCameraResult evaluate_pose_camera_value(
   }
   result.erp_ms = elapsed_ms(start);
   result.total_value_forward_ms = elapsed_ms(total_start);
+  record_forward_value_sample(input.camera, n, input.parameters, result);
+  record_performance_sample(input.camera, "value.rotations", n, result.rotations_ms);
+  record_performance_sample(input.camera, "value.pose_offsets", n, result.pose_offsets_ms);
+  record_performance_sample(input.camera, "value.fk", n, result.fk_ms);
+  record_performance_sample(input.camera, "value.lbs", n, result.lbs_ms);
+  record_performance_sample(input.camera, "value.erp", n, result.erp_ms);
+  record_performance_sample(input.camera, "value.total", n,
+                            result.total_value_forward_ms);
   return result;
 }
 

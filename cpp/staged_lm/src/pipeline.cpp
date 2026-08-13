@@ -6,6 +6,7 @@
 
 namespace staged_lm {
 namespace {
+// The pipeline hands parameters forward through Stage1, Pose, then PoseShape.
 using Clock = std::chrono::steady_clock;
 double elapsed_ms(Clock::time_point start) {
   return std::chrono::duration<double, std::milli>(Clock::now() - start).count();

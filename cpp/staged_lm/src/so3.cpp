@@ -5,6 +5,7 @@
 namespace staged_lm {
 namespace {
 
+// SO(3) utilities evaluate axis-angle rotations and their analytic derivatives.
 Eigen::Matrix3f multiply3(const Eigen::Matrix3f& left, const Eigen::Matrix3f& right) {
   Eigen::Matrix3f result;
   for (int row = 0; row < 3; ++row) {

@@ -6,6 +6,7 @@
 
 namespace staged_lm {
 namespace {
+// Shape expands bounded latent beta values into joints and selected vertices.
 using Clock = std::chrono::steady_clock;
 double elapsed_ms(Clock::time_point start) {
   return std::chrono::duration<double, std::milli>(Clock::now() - start).count();

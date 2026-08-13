@@ -1,10 +1,12 @@
 #include "staged_lm/stage1_lm.h"
+#include "staged_lm/performance.h"
 
 #include <cmath>
 
 namespace staged_lm {
 namespace {
 
+// Stage1 LM adapts the camera problem to generic LM callbacks.
 Stage1CameraInput camera_at(
     const Stage1CameraInput& source, const std::vector<float>& parameters,
     int offset) {
@@ -30,6 +32,7 @@ double camera_objective(const Stage1CameraResult& result, float alpha, float eps
 }  // namespace
 
 LMRunResult run_stage1_lm(const Stage1LMProblem& problem) {
+  set_lm_attribution_stage("stage1");
   std::vector<float> initial(12);
   for (int index = 0; index < 3; ++index) {
     initial[index] = problem.cam2.orientation(index);

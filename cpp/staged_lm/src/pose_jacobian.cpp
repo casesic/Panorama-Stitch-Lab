@@ -2,6 +2,9 @@
 
 #include "staged_lm/erp.h"
 #include "staged_lm/so3.h"
+#include "staged_lm/performance.h"
+#include "staged_lm/experimental/pose_offset_gemm.h"
+#include "staged_lm/experimental/selected_transform_gemm.h"
 
 #include <Eigen/Core>
 
@@ -11,7 +14,12 @@
 namespace staged_lm {
 namespace {
 
+// Pose Jacobian differentiates the value-forward chain with respect to the
+// active camera and body-pose parameters.
 using Clock = std::chrono::steady_clock;
+thread_local bool use_experimental_pose_offset_gemm = false;
+thread_local bool use_experimental_pose_offset_transposed_gemm = false;
+thread_local bool use_experimental_selected_transform_gemm = false;
 
 double elapsed_ms(Clock::time_point start) {
   return std::chrono::duration<double, std::milli>(Clock::now() - start).count();
@@ -37,11 +45,172 @@ float derivative_product_entry(
 
 }  // namespace
 
-PoseCameraJacobianResult evaluate_pose_camera_with_jacobian(
-    const PoseModelInput& model, const PoseCameraInput& input) {
+void compute_selected_transform_derivative_scalar(
+    const std::vector<float>& weights,
+    const std::vector<float>& relative_transform_derivatives,
+    int point_count, int parameter_count, std::vector<float>& output) {
+  output.resize(
+      static_cast<std::size_t>(point_count) * 16 * parameter_count);
+  for (int vertex = 0; vertex < point_count; ++vertex)
+    for (int element = 0; element < 16; ++element)
+      for (int parameter = 0; parameter < parameter_count; ++parameter) {
+        float value = 0.0F;
+        for (int joint = 0; joint < kPoseJointCount; ++joint)
+          value = std::fma(weights[vertex * kPoseJointCount + joint],
+              relative_transform_derivatives[
+                  ((joint * 16 + element) * parameter_count) + parameter], value);
+        output[
+            ((static_cast<std::size_t>(vertex) * 16 + element) * parameter_count) +
+            parameter] = value;
+      }
+}
+
+void compute_lbs_derivative_from_selected_transforms(
+    const std::vector<float>& selected_transform_derivatives,
+    const std::vector<float>& selected_transforms,
+    const std::vector<float>& posed_vertices,
+    const std::vector<float>& posed_vertex_derivatives,
+    int point_count, int parameter_count,
+    std::vector<float>& transform_output, std::vector<float>& vertex_output,
+    std::vector<float>& skinned_output) {
+  const std::size_t count =
+      static_cast<std::size_t>(point_count) * 3 * parameter_count;
+  transform_output.resize(count); vertex_output.resize(count); skinned_output.resize(count);
+  for (int vertex = 0; vertex < point_count; ++vertex) {
+    const float homogeneous[4] = {
+        posed_vertices[vertex * 3], posed_vertices[vertex * 3 + 1],
+        posed_vertices[vertex * 3 + 2], 1.0F};
+    for (int row = 0; row < 3; ++row)
+      for (int parameter = 0; parameter < parameter_count; ++parameter) {
+        float transform_term = 0.0F, vertex_term = 0.0F;
+        for (int column = 0; column < 4; ++column) {
+          transform_term = std::fma(selected_transform_derivatives[
+              ((static_cast<std::size_t>(vertex) * 16 + row * 4 + column) *
+               parameter_count) + parameter], homogeneous[column], transform_term);
+          const float derivative = column < 3 ? posed_vertex_derivatives[
+              ((static_cast<std::size_t>(vertex) * 3 + column) * parameter_count) +
+              parameter] : 0.0F;
+          vertex_term = std::fma(
+              selected_transforms[vertex * 16 + row * 4 + column], derivative,
+              vertex_term);
+        }
+        const std::size_t index =
+            ((static_cast<std::size_t>(vertex) * 3 + row) * parameter_count) +
+            parameter;
+        transform_output[index] = transform_term;
+        vertex_output[index] = vertex_term;
+        skinned_output[index] = transform_term + vertex_term;
+      }
+  }
+}
+
+void compute_lbs_derivative_materialized(
+    const std::vector<float>& weights,
+    const std::vector<float>& relative_transform_derivatives,
+    const std::vector<float>& selected_transforms,
+    const std::vector<float>& posed_vertices,
+    const std::vector<float>& posed_vertex_derivatives,
+    int point_count, int parameter_count,
+    LbsDerivativeMaterializedResult& output) {
+  auto started = Clock::now();
+  if (use_experimental_selected_transform_gemm) {
+    experimental::compute_selected_transform_derivative_eigen_gemm(
+        weights, relative_transform_derivatives, point_count, parameter_count,
+        output.selected_transform_derivatives);
+  } else {
+    compute_selected_transform_derivative_scalar(
+        weights, relative_transform_derivatives, point_count, parameter_count,
+        output.selected_transform_derivatives);
+  }
+  record_lbs_selected_transform_dispatch(use_experimental_selected_transform_gemm);
+  output.selected_transform_ms = elapsed_ms(started);
+  started = Clock::now();
+  compute_lbs_derivative_from_selected_transforms(output.selected_transform_derivatives,
+      selected_transforms, posed_vertices, posed_vertex_derivatives, point_count,
+      parameter_count, output.transform_term, output.vertex_term,
+      output.skinned_derivatives);
+  output.downstream_ms = elapsed_ms(started);
+}
+
+void set_experimental_pose_offset_gemm(bool enabled) {
+  use_experimental_pose_offset_gemm = enabled;
+}
+void set_experimental_pose_offset_transposed_gemm(bool enabled) {
+  use_experimental_pose_offset_transposed_gemm = enabled;
+}
+namespace {
+thread_local int experimental_pose_offset_row_block = 0;
+thread_local int experimental_pose_offset_column_block = 0;
+}
+void set_experimental_pose_offset_blocking(int row_block_size,
+                                           int column_block_size) {
+  experimental_pose_offset_row_block = row_block_size;
+  experimental_pose_offset_column_block = column_block_size;
+}
+
+void set_experimental_selected_transform_gemm(bool enabled) {
+  use_experimental_selected_transform_gemm = enabled;
+}
+
+void compute_pose_offset_derivative_dispatched(
+    const std::vector<float>& selected_posedirs,
+    const std::vector<float>& d_pose_feature,
+    int point_count,
+    std::vector<float>& output,
+    experimental::PoseOffsetGemmTiming* timing) {
+  if (experimental_pose_offset_row_block || experimental_pose_offset_column_block) {
+    experimental::compute_pose_offset_derivative_blocked_eigen_gemm(
+        selected_posedirs, d_pose_feature, point_count,
+        experimental_pose_offset_row_block,
+        experimental_pose_offset_column_block, output, timing);
+  } else if (use_experimental_pose_offset_transposed_gemm) {
+    experimental::compute_pose_offset_derivative_transposed_eigen_gemm(
+        selected_posedirs, d_pose_feature, point_count, output, timing);
+    record_pose_offset_transposed_dispatch();
+  } else if (use_experimental_pose_offset_gemm) {
+    experimental::compute_pose_offset_derivative_eigen_gemm(
+        selected_posedirs, d_pose_feature, point_count, output, timing);
+  } else {
+    compute_pose_offset_derivative_scalar(
+        selected_posedirs, d_pose_feature, point_count, output);
+  }
+  if (!use_experimental_pose_offset_transposed_gemm)
+    record_pose_offset_dispatch(use_experimental_pose_offset_gemm);
+}
+
+void compute_pose_offset_derivative_scalar(
+    const std::vector<float>& selected_posedirs,
+    const std::vector<float>& d_pose_feature,
+    int point_count,
+    std::vector<float>& output) {
+  output.resize(
+      static_cast<std::size_t>(point_count) * 3 *
+      kPoseRotationParameterDimension);
+  for (int vertex = 0; vertex < point_count; ++vertex) {
+    for (int xyz = 0; xyz < 3; ++xyz) {
+      for (int parameter = 0; parameter < kPoseRotationParameterDimension;
+           ++parameter) {
+        float derivative = 0.0F;
+        for (int feature = 0; feature < kPoseFeatureDimension; ++feature) {
+          const std::size_t direction =
+              (static_cast<std::size_t>(feature) * point_count + vertex) * 3 + xyz;
+          derivative = std::fma(
+              d_pose_feature[feature * kPoseRotationParameterDimension + parameter],
+              selected_posedirs[direction], derivative);
+        }
+        output[(vertex * 3 + xyz) * kPoseRotationParameterDimension + parameter] =
+            derivative;
+      }
+    }
+  }
+}
+
+PoseCameraJacobianResult evaluate_pose_camera_with_jacobian_from_value(
+    const PoseModelInput& model, const PoseCameraInput& input,
+    PoseCameraResult value) {
   const auto total_start = Clock::now();
   PoseCameraJacobianResult result;
-  result.value = evaluate_pose_camera_value(model, input);
+  result.value = std::move(value);
   const int n = input.point_count;
 
   auto start = Clock::now();
@@ -96,25 +265,33 @@ PoseCameraJacobianResult evaluate_pose_camera_with_jacobian(
   result.pose_feature_derivative_ms = elapsed_ms(start);
 
   start = Clock::now();
-  result.d_pose_offsets.resize(n * 3 * kPoseRotationParameterDimension);
-  for (int vertex = 0; vertex < n; ++vertex) {
-    for (int xyz = 0; xyz < 3; ++xyz) {
-      for (int parameter = 0; parameter < kPoseRotationParameterDimension; ++parameter) {
-        float derivative = 0.0F;
-        for (int feature = 0; feature < kPoseFeatureDimension; ++feature) {
-          const std::size_t direction =
-              (static_cast<std::size_t>(feature) * n + vertex) * 3 + xyz;
-          derivative = std::fma(
-              result.d_pose_feature[feature * kPoseRotationParameterDimension + parameter],
-              input.selected_posedirs[direction], derivative);
-        }
-        result.d_pose_offsets[(vertex * 3 + xyz) * kPoseRotationParameterDimension
-                              + parameter] = derivative;
-      }
-    }
-  }
+  experimental::PoseOffsetGemmTiming pose_offset_timing;
+  compute_pose_offset_derivative_dispatched(
+      selected_posedirs_view(input), result.d_pose_feature, n, result.d_pose_offsets,
+      pose_offset_derivative_attribution_enabled() ? &pose_offset_timing : nullptr);
+  const auto postprocess_started = Clock::now();
   result.d_v_posed = result.d_pose_offsets;
+  const double postprocess_ms = elapsed_ms(postprocess_started);
   result.pose_offset_derivative_ms = elapsed_ms(start);
+  if (pose_offset_derivative_attribution_enabled()) {
+    const double known = pose_offset_timing.output_preparation_ms +
+        pose_offset_timing.view_setup_ms + pose_offset_timing.gemm_core_ms +
+        postprocess_ms;
+    record_pose_offset_derivative_attribution({
+        "", input.camera, n, kPoseRotationParameterDimension,
+        result.pose_offset_derivative_ms + result.pose_feature_derivative_ms,
+        result.pose_feature_derivative_ms,
+        pose_offset_timing.view_setup_ms,
+        pose_offset_timing.output_preparation_ms,
+        pose_offset_timing.gemm_core_ms, postprocess_ms,
+        result.pose_offset_derivative_ms - known,
+        result.d_pose_offsets.size(), pose_offset_timing.capacity_before,
+        pose_offset_timing.capacity_after,
+        reinterpret_cast<std::uintptr_t>(pose_offset_timing.pointer_before),
+        reinterpret_cast<std::uintptr_t>(pose_offset_timing.pointer_after),
+        reinterpret_cast<std::uintptr_t>(selected_posedirs_view(input).data())},
+        selected_posedirs_view(input), result.d_pose_feature);
+  }
 
   start = Clock::now();
   const std::size_t transform_derivative_count =
@@ -192,65 +369,24 @@ PoseCameraJacobianResult evaluate_pose_camera_with_jacobian(
   result.fk_derivative_ms = elapsed_ms(start);
 
   start = Clock::now();
-  result.d_selected_transforms.resize(
-      static_cast<std::size_t>(n) * 16 * kPoseRotationParameterDimension);
-  for (int vertex = 0; vertex < n; ++vertex) {
-    for (int element = 0; element < 16; ++element) {
-      for (int parameter = 0; parameter < kPoseRotationParameterDimension; ++parameter) {
-        float value = 0.0F;
-        for (int joint = 0; joint < kPoseJointCount; ++joint) {
-          value = std::fma(
-              input.selected_lbs_weights[vertex * kPoseJointCount + joint],
-              result.d_relative_transforms[
-                  ((joint * 16 + element) * kPoseRotationParameterDimension) + parameter],
-              value);
-        }
-        result.d_selected_transforms[
-            ((vertex * 16 + element) * kPoseRotationParameterDimension) + parameter] = value;
-      }
-    }
-  }
-  result.d_skin_from_transform.resize(
-      static_cast<std::size_t>(n) * 3 * kPoseRotationParameterDimension);
-  result.d_skin_from_vertex.resize(result.d_skin_from_transform.size());
-  result.d_skinned_vertices.resize(result.d_skin_from_transform.size());
-  for (int vertex = 0; vertex < n; ++vertex) {
-    const float homogeneous[4] = {
-        result.value.v_posed[vertex * 3], result.value.v_posed[vertex * 3 + 1],
-        result.value.v_posed[vertex * 3 + 2], 1.0F,
-    };
-    for (int xyz = 0; xyz < 3; ++xyz) {
-      for (int parameter = 0; parameter < kPoseRotationParameterDimension; ++parameter) {
-        float transform_term = 0.0F;
-        float vertex_term = 0.0F;
-        for (int component = 0; component < 4; ++component) {
-          transform_term = std::fma(
-              result.d_selected_transforms[
-                  ((vertex * 16 + xyz * 4 + component)
-                   * kPoseRotationParameterDimension) + parameter],
-              homogeneous[component], transform_term);
-          const float d_vertex = component < 3
-              ? result.d_v_posed[
-                  ((vertex * 3 + component) * kPoseRotationParameterDimension) + parameter]
-              : 0.0F;
-          vertex_term = std::fma(
-              result.value.selected_transforms[vertex * 16 + xyz * 4 + component],
-              d_vertex, vertex_term);
-        }
-        const std::size_t index =
-            ((static_cast<std::size_t>(vertex) * 3 + xyz)
-             * kPoseRotationParameterDimension) + parameter;
-        result.d_skin_from_transform[index] = transform_term;
-        result.d_skin_from_vertex[index] = vertex_term;
-        result.d_skinned_vertices[index] = transform_term + vertex_term;
-      }
-    }
-  }
+  LbsDerivativeMaterializedResult lbs;
+  compute_lbs_derivative_materialized(
+      input.selected_lbs_weights, result.d_relative_transforms,
+      result.value.selected_transforms, result.value.v_posed, result.d_v_posed,
+      n, kPoseRotationParameterDimension, lbs);
+  result.d_selected_transforms = std::move(lbs.selected_transform_derivatives);
+  result.d_skin_from_transform = std::move(lbs.transform_term);
+  result.d_skin_from_vertex = std::move(lbs.vertex_term);
+  result.d_skinned_vertices = std::move(lbs.skinned_derivatives);
   result.d_vertices_rotpose = result.d_skinned_vertices;
   for (float& value : result.d_vertices_rotpose) {
     value *= input.scale;
   }
   result.lbs_derivative_ms = elapsed_ms(start);
+  record_performance_sample(input.camera, "jac.lbs_selected_transform", n,
+                            lbs.selected_transform_ms);
+  record_performance_sample(input.camera, "jac.lbs_downstream", n,
+                            lbs.downstream_ms);
 
   start = Clock::now();
   result.projection_jacobian.resize(n * 6);
@@ -316,7 +452,27 @@ PoseCameraJacobianResult evaluate_pose_camera_with_jacobian(
   }
   result.assemble_active_ms = elapsed_ms(start);
   result.total_jacobian_ms = elapsed_ms(total_start);
+  record_performance_sample(input.camera, "jac.rotation_derivative", n,
+                            result.rotation_derivative_ms);
+  record_performance_sample(input.camera, "jac.pose_feature_derivative", n,
+                            result.pose_feature_derivative_ms);
+  record_performance_sample(input.camera, "jac.pose_offset_derivative", n,
+                            result.pose_offset_derivative_ms);
+  record_performance_sample(input.camera, "jac.fk_derivative", n,
+                            result.fk_derivative_ms);
+  record_performance_sample(input.camera, "jac.lbs_derivative", n,
+                            result.lbs_derivative_ms);
+  record_performance_sample(input.camera, "jac.erp_chain", n,
+                            result.erp_jacobian_chain_ms);
+  record_performance_sample(input.camera, "jac.assembly", n,
+                            result.assemble_active_ms);
   return result;
+}
+
+PoseCameraJacobianResult evaluate_pose_camera_with_jacobian(
+    const PoseModelInput& model, const PoseCameraInput& input) {
+  return evaluate_pose_camera_with_jacobian_from_value(
+      model, input, evaluate_pose_camera_value(model, input));
 }
 
 }  // namespace staged_lm
