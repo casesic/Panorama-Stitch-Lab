@@ -53,6 +53,7 @@ def main() -> None:
     parser.add_argument("--frame", type=int, default=513)
     parser.add_argument("--hmr_dir", required=True)
     parser.add_argument("--sam3d_dense_dir", required=True)
+    parser.add_argument("--surface_sample_ids", default=None)
     parser.add_argument("--bbox_dir", required=True)
     parser.add_argument("--output_dir", type=Path, required=True)
     parser.add_argument("--device", default="cpu")

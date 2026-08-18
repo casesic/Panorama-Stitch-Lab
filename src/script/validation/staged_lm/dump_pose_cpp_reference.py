@@ -625,6 +625,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output_dir", type=Path, default=None)
     parser.add_argument("--hmr_dir", required=True)
     parser.add_argument("--sam3d_dense_dir", required=True)
+    parser.add_argument("--surface_sample_ids", default=None)
     parser.add_argument("--bbox_dir", required=True)
     parser.add_argument("--image_width", type=int, default=5760)
     parser.add_argument("--image_height", type=int, default=2880)

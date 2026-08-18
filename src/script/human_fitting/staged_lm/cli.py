@@ -11,6 +11,13 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--frames", type=str, required=True)
     parser.add_argument("--hmr_dir", type=str, required=True)
     parser.add_argument("--sam3d_dense_dir", type=str, required=True)
+    parser.add_argument(
+        "--surface_sample_ids", type=str, default=None,
+        help=(
+            "Optional fixed SMPL-X vertex-id .npy for sampling experiments; "
+            "the production default remains smplx_surface_ids_fps_1024.npy."
+        ),
+    )
     parser.add_argument("--bbox_dir", type=str, required=True)
     parser.add_argument("--image_width", type=int, default=5760)
     parser.add_argument("--image_height", type=int, default=2880)

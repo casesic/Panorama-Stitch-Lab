@@ -32,7 +32,7 @@ struct LMLinearizationRecord {
   std::vector<double> gradient;
   double objective = 0.0;
   double lambda_before = 0.0;
-  double max_diagonal = 0.0;
+  double max_diagonal = 0.0; // 对角线最大值, 决定初始阻尼
   double scaled_gradient = 0.0;
   double relative_objective_change = 0.0;
   double step_norm = 0.0;

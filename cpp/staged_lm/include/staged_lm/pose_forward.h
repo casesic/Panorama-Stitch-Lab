@@ -12,21 +12,21 @@ constexpr int kPoseJointCount = 55;
 constexpr int kPoseFeatureDimension = 486;
 
 struct PoseModelInput {
-  std::vector<float> joints;
-  std::vector<std::int64_t> parents;
+  std::vector<float> joints;            // 55 * 3 = 165
+  std::vector<std::int64_t> parents;    // 55
 };
 
 struct PoseCameraInput {
   std::string camera;
-  std::vector<float> parameters;
-  std::vector<float> left_hand_pose;
-  std::vector<float> right_hand_pose;
+  std::vector<float> parameters;            // 75 (kPoseParameterDimension)
+  std::vector<float> left_hand_pose;        // 45
+  std::vector<float> right_hand_pose;       // 45
   float scale = 1.0F;
-  std::vector<float> selected_v_shaped;
-  std::vector<float> selected_posedirs;
+  std::vector<float> selected_v_shaped;     // point_count * 3
+  std::vector<float> selected_posedirs;     // 486(55-1*9) * point_count * 3
   std::shared_ptr<const std::vector<float>> stable_selected_posedirs;
-  std::vector<float> selected_lbs_weights;
-  std::vector<float> targets;
+  std::vector<float> selected_lbs_weights;  // point_count * 55
+  std::vector<float> targets;               // point_count * 2
   int point_count = 0;
   int image_width = 0;
   int image_height = 0;

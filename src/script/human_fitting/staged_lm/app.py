@@ -90,6 +90,7 @@ from lib_pano.human_fitting.staged_lm.stage_definitions.rigid import (
 from lib_pano.human_fitting.staged_lm.stage_runtime import run_stage
 from lib_pano.human_fitting.staged_lm.stage_timing import build_pipeline_timing
 from lib_pano.human_fitting.staged_lm.types import StageContext
+from lib_pano.human3d.mesh_surface_sampling import load_vertex_ids
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[4]
@@ -162,6 +163,14 @@ def build_context(args) -> StageContext:
     # Fit SMPL-X initial parameters and extract shared beta / body-pose.
     start = time.perf_counter()
     fitter = DualCamERPFitter(primary_observation_source="sam3d_dense", gender="neutral", R_cam4=R_CAM4)
+    surface_sample_ids = getattr(args, "surface_sample_ids", None)
+    if surface_sample_ids is not None:
+        fitter._sam3d_dense_sample_ids = load_vertex_ids(
+            surface_sample_ids, total_vertices=10475,
+        )
+        fitter.sam3d_dense_num_points = int(
+            fitter._sam3d_dense_sample_ids.size
+        )
     context_timing["fitter_create_ms"] = (time.perf_counter() - start) * 1000.0
     start = time.perf_counter()
     model = fitter._get_model()
