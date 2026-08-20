@@ -27,8 +27,10 @@ struct PoseShapeCameraJacobianResult {
   std::vector<float> d_skin_from_vertex;
   std::vector<float> d_skinned_combined;
   std::vector<float> d_vertices_combined;
+  std::vector<float> observation_d_vertices_combined;
   std::vector<float> d_vertices_rotpose;
   std::vector<float> d_vertices_beta;
+  std::vector<float> observation_d_vertices_beta;
   std::vector<float> uv_combined;
   std::vector<float> beta_jacobian;
   std::vector<float> active_jacobian;

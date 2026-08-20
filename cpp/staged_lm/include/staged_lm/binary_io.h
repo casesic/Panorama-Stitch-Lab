@@ -15,6 +15,8 @@ std::vector<float> read_float32_file(
     const std::filesystem::path& path, std::size_t expected_count);
 std::vector<std::int64_t> read_int64_file(
     const std::filesystem::path& path, std::size_t expected_count);
+std::vector<std::int32_t> read_int32_file(
+    const std::filesystem::path& path, std::size_t expected_count);
 void write_float32_file(
     const std::filesystem::path& path, const std::vector<float>& values);
 void write_float64_file(

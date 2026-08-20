@@ -1,5 +1,4 @@
 #include "staged_lm/stage1_lm.h"
-#include "staged_lm/performance.h"
 
 #include <cmath>
 
@@ -32,7 +31,6 @@ double camera_objective(const Stage1CameraResult& result, float alpha, float eps
 }  // namespace
 
 LMRunResult run_stage1_lm(const Stage1LMProblem& problem) {
-  set_lm_attribution_stage("stage1");
   std::vector<float> initial(12);
   for (int index = 0; index < 3; ++index) {
     initial[index] = problem.cam2.orientation(index);

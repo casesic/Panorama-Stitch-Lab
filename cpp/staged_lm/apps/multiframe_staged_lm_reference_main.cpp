@@ -1,6 +1,5 @@
 #include "staged_lm/binary_io.h"
 #include "staged_lm/multiframe.h"
-#include "staged_lm/performance.h"
 #include "staged_lm/shape.h"
 
 #include <Eigen/Core>
@@ -74,8 +73,13 @@ Stage1CameraInput stage1_camera(
 PoseShapeCameraInput model_camera(
     const std::filesystem::path& fixture,
     const std::map<std::string, std::string>& metadata,
-    const std::string& camera) {
-  const int count = integer(metadata, camera + "_count");
+    const std::string& camera,
+    const std::shared_ptr<const DenseKPRegressor>& regressor) {
+  const bool densekp = static_cast<bool>(regressor);
+  const int count = densekp ? integer(metadata, camera + "_support_count")
+                            : integer(metadata, camera + "_count");
+  const int observation_count = densekp
+      ? integer(metadata, camera + "_observation_count") : count;
   const std::string prefix = "model_" + camera + "_";
   PoseShapeCameraInput result;
   result.pose.camera = camera;
@@ -89,8 +93,16 @@ PoseShapeCameraInput model_camera(
       fixture / (prefix + "selected_posedirs.f32"), 486 * count * 3);
   result.pose.selected_lbs_weights = read_float32_file(
       fixture / (prefix + "selected_lbs_weights.f32"), count * 55);
-  result.pose.targets = read_float32_file(
-      fixture / (prefix + "targets.f32"), count * 2);
+  const auto targets = read_float32_file(
+      fixture / (prefix + "targets.f32"), observation_count * 2);
+  if (densekp) {
+    auto observation = std::make_shared<DenseKPObservation>();
+    observation->regressor = regressor;
+    observation->densekp_ids = read_int32_file(
+        fixture / (prefix + "densekp_ids.i32"), observation_count);
+    observation->targets = targets;
+    result.pose.densekp_observation = std::move(observation);
+  } else result.pose.targets = targets;
   result.pose.image_width = integer(metadata, "image_width");
   result.pose.image_height = integer(metadata, "image_height");
   result.selected_base_v_shaped = read_float32_file(
@@ -107,7 +119,8 @@ StagedLMFrameProblem load_frame(
     const std::vector<float>& joint_basis,
     const std::vector<float>& beta_anchor,
     const std::vector<std::int64_t>& parents,
-    const PoseShapeNormalEquationConfig& normal_config) {
+    const PoseShapeNormalEquationConfig& normal_config,
+    const std::shared_ptr<const DenseKPRegressor>& regressor) {
   const auto pipeline_meta = read_key_value_file(fixture / "pipeline_meta.txt");
   const auto stage1_meta = read_key_value_file(
       fixture / "stage1_fixture_meta.txt");
@@ -126,8 +139,8 @@ StagedLMFrameProblem load_frame(
   frame.stage1.lm_config = stage1_config;
   frame.body_pose_anchor = read_float32_file(
       fixture / "model_body_pose_anchor.f32", 63);
-  frame.pose_shape_cam2 = model_camera(fixture, model_meta, "cam2");
-  frame.pose_shape_cam4 = model_camera(fixture, model_meta, "cam4");
+  frame.pose_shape_cam2 = model_camera(fixture, model_meta, "cam2", regressor);
+  frame.pose_shape_cam4 = model_camera(fixture, model_meta, "cam4", regressor);
 
   std::vector<float> anchor_joints = base_joints;
   for (int coordinate = 0; coordinate < 165; ++coordinate) {
@@ -170,6 +183,20 @@ int main(int argc, char** argv) {
     const auto first_pipeline_meta = read_key_value_file(
         fixtures.front() / "pipeline_meta.txt");
     MultiFrameStagedLMProblem problem;
+    std::shared_ptr<const DenseKPRegressor> densekp_regressor;
+    if (first_model_meta.count("observation_mode") &&
+        first_model_meta.at("observation_mode") == "densekp") {
+      auto value = std::make_shared<DenseKPRegressor>();
+      value->support_count = integer(first_model_meta, "densekp_support_count");
+      value->densekp_count = integer(first_model_meta, "densekp_row_count");
+      value->support_vertex_ids = read_int32_file(
+          fixtures.front() / "densekp_support_vertex_ids.i32", value->support_count);
+      const auto dense_weights = read_float32_file(
+          fixtures.front() / "densekp_regressor_138x204.f32",
+          value->support_count * value->densekp_count);
+      build_densekp_sparse_representation(*value, dense_weights);
+      densekp_regressor = std::move(value);
+    }
     problem.base_joints = read_float32_file(
         fixtures.front() / "model_base_joints.f32", 165);
     problem.joint_basis = read_float32_file(
@@ -196,12 +223,9 @@ int main(int argc, char** argv) {
       problem.frames.push_back(load_frame(
           fixture, problem.base_joints, problem.joint_basis,
           problem.beta_anchor, problem.parents,
-          problem.pose_shape_normal_config));
+          problem.pose_shape_normal_config, densekp_regressor));
     }
 
-    set_experimental_pose_offset_gemm(true);
-    set_experimental_selected_transform_gemm(true);
-    set_experimental_value_pose_offset_gemv(true);
     Eigen::setNbThreads(1);
     const MultiFrameStagedLMResult result =
         run_multiframe_staged_pipeline(problem);
@@ -233,6 +257,7 @@ int main(int argc, char** argv) {
         {"total_ms", std::to_string(result.total_ms)},
         {"ms_per_frame", std::to_string(result.ms_per_frame)},
         {"kernel_policy", "optimized_native_stable_p"},
+        {"densekp_variant", "sparse_materialized"},
     });
     std::cout << "MULTI_FRAME_STAGED_LM_READY=PASS frames="
               << result.frames.size() << " parameter_dimension="

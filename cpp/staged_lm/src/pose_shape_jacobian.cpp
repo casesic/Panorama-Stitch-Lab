@@ -1,5 +1,4 @@
 #include "staged_lm/pose_shape_jacobian.h"
-#include "staged_lm/performance.h"
 
 #include <chrono>
 #include <cmath>
@@ -130,20 +129,29 @@ PoseShapeCameraJacobianResult evaluate_pose_shape_camera_with_jacobian_from_valu
   out.d_vertices_rotpose.resize(static_cast<std::size_t>(n)*3*p);out.d_vertices_beta.resize(static_cast<std::size_t>(n)*3*b);
   for(int i=0;i<n*3;++i){for(int q=0;q<p;++q)out.d_vertices_rotpose[i*p+q]=out.d_vertices_combined[i*qn+q];for(int z=0;z<b;++z)out.d_vertices_beta[i*b+z]=out.d_vertices_combined[i*qn+p+z];}
   out.combined_lbs_ms=ms(start);
-  record_performance_sample(pi.camera, "combined.lbs_selected_transform", n,
-                            lbs.selected_transform_ms);
-  record_performance_sample(pi.camera, "combined.lbs_downstream", n,
-                            lbs.downstream_ms);
 
-  start=Clock::now();out.uv_combined.resize(static_cast<std::size_t>(n)*2*qn);out.beta_jacobian.resize(static_cast<std::size_t>(n)*2*b);
-  for(int i=0;i<n;++i)for(int uv=0;uv<2;++uv)for(int q=0;q<qn;++q){float v=0;for(int xyz=0;xyz<3;++xyz)v=std::fma(out.pose.projection_jacobian[i*6+uv*3+xyz],out.d_vertices_combined[((static_cast<std::size_t>(i)*3+xyz)*qn)+q],v);out.uv_combined[((static_cast<std::size_t>(i)*2+uv)*qn)+q]=v;if(q>=p)out.beta_jacobian[((static_cast<std::size_t>(i)*2+uv)*b)+q-p]=v;}
+  start=Clock::now();
+  const int observation_count = pose_observation_count(pi);
+  const std::vector<float>* combined = &out.d_vertices_combined;
+  if (pi.densekp_observation) {
+    apply_densekp_operator(*pi.densekp_observation,
+        out.d_vertices_combined, 3, qn, out.observation_d_vertices_combined);
+    combined = &out.observation_d_vertices_combined;
+  } else {
+    out.observation_d_vertices_combined = out.d_vertices_combined;
+  }
+  out.observation_d_vertices_beta.resize(
+        static_cast<std::size_t>(observation_count) * 3 * b);
+    for (int i = 0; i < observation_count * 3; ++i)
+      for (int z = 0; z < b; ++z)
+        out.observation_d_vertices_beta[i*b+z] = (*combined)[i*qn+p+z];
+    out.uv_combined.resize(static_cast<std::size_t>(observation_count)*2*qn);
+    for(int i=0;i<observation_count;++i)for(int uv=0;uv<2;++uv)for(int q=0;q<qn;++q){float v=0;for(int xyz=0;xyz<3;++xyz)v=std::fma(out.pose.projection_jacobian[i*6+uv*3+xyz],(*combined)[((static_cast<std::size_t>(i)*3+xyz)*qn)+q],v);out.uv_combined[((static_cast<std::size_t>(i)*2+uv)*qn)+q]=v;}
+  out.beta_jacobian.resize(static_cast<std::size_t>(observation_count)*2*b);
+  for(int i=0;i<observation_count*2;++i)for(int z=0;z<b;++z)
+    out.beta_jacobian[i*b+z]=out.uv_combined[i*qn+p+z];
   out.erp_chain_ms=ms(start);
   start=Clock::now();out.active_jacobian=out.pose.active_jacobian;out.assemble_ms=ms(start);out.total_ms=ms(total);
-  record_performance_sample(pi.camera,"combined.shape_setup",n,out.shape_derivative_ms);
-  record_performance_sample(pi.camera,"combined.fk",n,out.combined_fk_ms);
-  record_performance_sample(pi.camera,"combined.lbs",n,out.combined_lbs_ms);
-  record_performance_sample(pi.camera,"combined.erp_chain",n,out.erp_chain_ms);
-  record_performance_sample(pi.camera,"combined.assembly",n,out.assemble_ms);
   return out;
 }
 PoseShapeCameraJacobianResult evaluate_pose_shape_camera_with_jacobian(

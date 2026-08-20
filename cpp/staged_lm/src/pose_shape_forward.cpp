@@ -1,7 +1,5 @@
 #include "staged_lm/pose_shape_forward.h"
 
-#include "staged_lm/performance.h"
-
 #include <chrono>
 #include <cmath>
 
@@ -74,27 +72,15 @@ PoseShapeValueResult evaluate_pose_shape_value(
   std::vector<float> latent(parameters.begin() + 75, parameters.end());
   result.shape = evaluate_shape_value(
       latent, beta_limit, base_joints, joint_basis, 55);
-  record_performance_sample(
-      "state", "shape.value", 0,
-      result.shape.beta_ms + result.shape.dynamic_joints_ms);
 
   result.cam2_dynamic_v_shaped = evaluate_dynamic_vertices(
       cam2_input.selected_base_v_shaped,
       cam2_input.selected_beta_shapedirs, result.shape.beta,
       cam2_input.pose.point_count, &result.cam2_shape_ms);
-  record_performance_sample(
-      "cam2", "shape.dynamic_vertices", cam2_input.pose.point_count,
-      result.cam2_shape_ms);
   result.cam4_dynamic_v_shaped = evaluate_dynamic_vertices(
       cam4_input.selected_base_v_shaped,
       cam4_input.selected_beta_shapedirs, result.shape.beta,
       cam4_input.pose.point_count, &result.cam4_shape_ms);
-  record_performance_sample(
-      "cam4", "shape.dynamic_vertices", cam4_input.pose.point_count,
-      result.cam4_shape_ms);
-  record_shape_forward_sample(
-      parameters, result.shape, result.cam2_dynamic_v_shaped,
-      result.cam4_dynamic_v_shaped);
 
   PoseModelInput model{result.shape.joints, parents};
   auto cam2 = cam2_input.pose;

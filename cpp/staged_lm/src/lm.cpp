@@ -1,5 +1,4 @@
 #include "staged_lm/lm.h"
-#include "staged_lm/performance.h"
 
 #include <Eigen/Dense>
 
@@ -100,7 +99,6 @@ LMRunResult run_lm(
   std::vector<float> x = initial;
 
   auto evaluate_equations = [&](int outer, double objective, double lambda) {
-    record_lm_state_call(outer, -1, "linearization", "current", x);
     DenseNormalEquations equations = normal_equations(x);
     ++result.normal_equation_call_count;
     result.total_jacobian_ms += equations.jacobian_ms;
@@ -124,7 +122,6 @@ LMRunResult run_lm(
   DenseNormalEquations equations = evaluate_equations(-1, std::numeric_limits<double>::quiet_NaN(), 0.0);
   double damping = initialise_lm_damping(result.linearizations[0].max_diagonal);
   auto started = Clock::now();
-  record_lm_state_call(-1, -1, "objective", "initial_current", x);
   double current_objective = true_objective(x);
   result.initial_objective_ms = ms(started);
   result.total_objective_ms += result.initial_objective_ms;
@@ -171,8 +168,6 @@ LMRunResult run_lm(
         record.candidate[index] = x[index] + record.delta_float[index];
       }
       started = Clock::now();
-      record_lm_state_call(outer, trial, "objective", "candidate_pending",
-                           record.candidate);
       record.candidate_objective = true_objective(record.candidate);
       result.total_objective_ms += ms(started);
       ++result.objective_call_count;
@@ -202,12 +197,10 @@ LMRunResult run_lm(
       record.delta_norm = vector_norm(record.delta_double);
       last_delta_norm = record.delta_norm;
       if (record.accepted) {
-        update_last_lm_objective_disposition("accepted");
         x = record.candidate; current_objective = record.candidate_objective;
         ++result.accepted_steps; accepted_this = true;
         damping = update_lm_damping_after_acceptance(damping, record.rho);
       } else {
-        update_last_lm_objective_disposition("rejected");
         damping = increase_lm_damping(damping); ++result.rejected_trials;
       }
       record.lambda_after = damping;

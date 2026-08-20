@@ -52,16 +52,6 @@ int main() {
     return 1;
   }
   const auto jacobian = staged_lm::evaluate_pose_camera_with_jacobian(model, input);
-  staged_lm::set_experimental_pose_offset_gemm(true);
-  const auto gemm_shadow = staged_lm::evaluate_pose_camera_with_jacobian(model, input);
-  staged_lm::set_experimental_pose_offset_gemm(false);
-  for (std::size_t index = 0; index < jacobian.active_jacobian.size(); ++index) {
-    if (std::abs(jacobian.active_jacobian[index] - gemm_shadow.active_jacobian[index])
-        > 1.0e-4F) {
-      std::cerr << "POSE_GEMM_SHADOW_J_ACTIVE_FAILED\n";
-      return 1;
-    }
-  }
   for (float value : jacobian.d_skinned_vertices) {
     if (!std::isfinite(value)) {
       std::cerr << "POSE_DERIVATIVE_NONFINITE\n";

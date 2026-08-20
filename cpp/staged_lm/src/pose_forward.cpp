@@ -2,8 +2,7 @@
 
 #include "staged_lm/erp.h"
 #include "staged_lm/so3.h"
-#include "staged_lm/performance.h"
-#include "staged_lm/experimental/value_pose_offset_gemv.h"
+#include "pose_kernels.h"
 
 #include <Eigen/Core>
 
@@ -29,8 +28,6 @@ void promote_selected_posedirs_to_stable_owner(PoseCameraInput& input) {
 namespace {
 
 using Clock = std::chrono::steady_clock;
-thread_local bool use_experimental_value_pose_offset_gemv = false;
-
 double elapsed_ms(Clock::time_point start) {
   return std::chrono::duration<double, std::milli>(Clock::now() - start).count();
 }
@@ -56,6 +53,7 @@ void multiply4(const float* left, const float* right, float* output) {
 }
 
 void validate_input(const PoseModelInput& model, const PoseCameraInput& input) {
+  const int observation_count = pose_observation_count(input);
   if (input.parameters.size() != kPoseParameterDimension
       || model.joints.size() != kPoseJointCount * 3
       || model.parents.size() != kPoseJointCount
@@ -66,8 +64,12 @@ void validate_input(const PoseModelInput& model, const PoseCameraInput& input) {
           != static_cast<std::size_t>(kPoseFeatureDimension * input.point_count * 3)
       || input.selected_lbs_weights.size()
           != static_cast<std::size_t>(input.point_count * kPoseJointCount)
-      || input.targets.size() != static_cast<std::size_t>(input.point_count * 2)) {
+      || (!input.densekp_observation &&
+          input.targets.size() != static_cast<std::size_t>(observation_count * 2))) {
     throw std::runtime_error("invalid Pose value input shape");
+  }
+  if (input.densekp_observation) {
+    validate_densekp_observation(*input.densekp_observation, input.point_count);
   }
   if (model.parents[0] != -1) {
     throw std::runtime_error("Pose root parent must be -1");
@@ -81,26 +83,10 @@ void validate_input(const PoseModelInput& model, const PoseCameraInput& input) {
 
 }  // namespace
 
-void set_experimental_value_pose_offset_gemv(bool enabled) {
-  use_experimental_value_pose_offset_gemv = enabled;
-}
-
-void compute_value_pose_offset_scalar(
-    const std::vector<float>& selected_posedirs,
-    const std::vector<float>& pose_feature,
-    int point_count, std::vector<float>& output) {
-  output.resize(point_count * 3);
-  for (int vertex = 0; vertex < point_count; ++vertex) {
-    for (int xyz = 0; xyz < 3; ++xyz) {
-      float offset = 0.0F;
-      for (int feature = 0; feature < kPoseFeatureDimension; ++feature) {
-        const std::size_t direction =
-            (static_cast<std::size_t>(feature) * point_count + vertex) * 3 + xyz;
-        offset = std::fma(pose_feature[feature], selected_posedirs[direction], offset);
-      }
-      output[vertex * 3 + xyz] = offset;
-    }
-  }
+int pose_observation_count(const PoseCameraInput& input) {
+  return input.densekp_observation
+      ? static_cast<int>(input.densekp_observation->densekp_ids.size())
+      : input.point_count;
 }
 
 PoseCameraResult evaluate_pose_camera_value(
@@ -152,21 +138,8 @@ PoseCameraResult evaluate_pose_camera_value(
       }
     }
   }
-  record_value_pose_offset_state(input.camera, n, result.pose_feature);
-  const auto pose_offset_kernel_start = Clock::now();
-  if (use_experimental_value_pose_offset_gemv) {
-    experimental::compute_value_pose_offset_eigen_gemv(
-        selected_posedirs_view(input), result.pose_feature, n, result.pose_offsets);
-  } else {
-    compute_value_pose_offset_scalar(
-        selected_posedirs_view(input), result.pose_feature, n, result.pose_offsets);
-  }
-  record_value_pose_offset_dispatch(use_experimental_value_pose_offset_gemv);
-  record_performance_sample(
-      input.camera,
-      use_experimental_value_pose_offset_gemv
-          ? "value.pose_offsets_gemv" : "value.pose_offsets_scalar",
-      n, elapsed_ms(pose_offset_kernel_start));
+  compute_value_pose_offset(
+      selected_posedirs_view(input), result.pose_feature, n, result.pose_offsets);
   result.v_posed.resize(n * 3);
   for (int vertex = 0; vertex < n; ++vertex) {
     for (int xyz = 0; xyz < 3; ++xyz) {
@@ -268,30 +241,33 @@ PoseCameraResult evaluate_pose_camera_value(
   result.lbs_ms = elapsed_ms(start);
 
   start = Clock::now();
-  result.uv.resize(n * 2);
-  result.raw_residual.resize(n * 2);
-  for (int vertex = 0; vertex < n; ++vertex) {
+  const std::vector<float>* targets = &input.targets;
+  if (input.densekp_observation) {
+    apply_densekp_operator(
+        *input.densekp_observation, result.vertices, 3, 1,
+        result.observation_points);
+    targets = &input.densekp_observation->targets;
+  } else {
+    result.observation_points = result.vertices;
+  }
+  const int observation_count = pose_observation_count(input);
+  result.uv.resize(observation_count * 2);
+  result.raw_residual.resize(observation_count * 2);
+  for (int vertex = 0; vertex < observation_count; ++vertex) {
     const Eigen::Vector3f point(
-        result.vertices[vertex * 3], result.vertices[vertex * 3 + 1],
-        result.vertices[vertex * 3 + 2]);
+        result.observation_points[vertex * 3],
+        result.observation_points[vertex * 3 + 1],
+        result.observation_points[vertex * 3 + 2]);
     const Eigen::Vector2f uv = project_unified_erp(
         point, input.image_width, input.image_height);
     for (int component = 0; component < 2; ++component) {
       result.uv[vertex * 2 + component] = uv(component);
       result.raw_residual[vertex * 2 + component] =
-          uv(component) - input.targets[vertex * 2 + component];
+          uv(component) - (*targets)[vertex * 2 + component];
     }
   }
   result.erp_ms = elapsed_ms(start);
   result.total_value_forward_ms = elapsed_ms(total_start);
-  record_forward_value_sample(input.camera, n, input.parameters, result);
-  record_performance_sample(input.camera, "value.rotations", n, result.rotations_ms);
-  record_performance_sample(input.camera, "value.pose_offsets", n, result.pose_offsets_ms);
-  record_performance_sample(input.camera, "value.fk", n, result.fk_ms);
-  record_performance_sample(input.camera, "value.lbs", n, result.lbs_ms);
-  record_performance_sample(input.camera, "value.erp", n, result.erp_ms);
-  record_performance_sample(input.camera, "value.total", n,
-                            result.total_value_forward_ms);
   return result;
 }
 

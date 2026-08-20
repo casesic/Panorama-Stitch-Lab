@@ -90,6 +90,7 @@ from lib_pano.human_fitting.staged_lm.stage_definitions.rigid import (
 from lib_pano.human_fitting.staged_lm.stage_runtime import run_stage
 from lib_pano.human_fitting.staged_lm.stage_timing import build_pipeline_timing
 from lib_pano.human_fitting.staged_lm.types import StageContext
+from lib_pano.human_fitting.staged_lm.types import FrameValidPoints, ValidPointSet
 from lib_pano.human3d.mesh_surface_sampling import load_vertex_ids
 
 
@@ -209,9 +210,19 @@ def build_context(args) -> StageContext:
     # Pre-compute valid SAM3D dense correspondences.
     sample_ids = fitter._sam3d_dense_sample_ids
     start = time.perf_counter()
-    valid_points_by_frame = [
-        precompute_valid_points(obs[0], obs[1], sample_ids) for obs in frame_observations
-    ]
+    if getattr(args, "cpp_include_all_surface_samples", False):
+        def all_samples(observation) -> ValidPointSet:
+            targets = observation.points_2d[sample_ids].astype("float32", copy=True)
+            targets[~torch.as_tensor(targets).isfinite().all(dim=1).numpy()] = 0.0
+            return ValidPointSet(vertex_ids=sample_ids.copy(), target_2d=targets)
+        valid_points_by_frame = [
+            FrameValidPoints(cam2=all_samples(obs[0]), cam4=all_samples(obs[1]))
+            for obs in frame_observations
+        ]
+    else:
+        valid_points_by_frame = [
+            precompute_valid_points(obs[0], obs[1], sample_ids) for obs in frame_observations
+        ]
     context_timing["valid_point_selection_ms"] = (time.perf_counter() - start) * 1000.0
     start = time.perf_counter()
     cam2_vid, cam2_tgt, cam4_vid, cam4_tgt = to_tensor_vertex_ids_and_targets(

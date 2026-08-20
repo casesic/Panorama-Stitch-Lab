@@ -68,6 +68,24 @@ std::vector<std::int64_t> read_int64_file(
   return values;
 }
 
+std::vector<std::int32_t> read_int32_file(
+    const std::filesystem::path& path, std::size_t expected_count) {
+  if (!std::filesystem::exists(path)) {
+    throw std::runtime_error("missing fixture file: " + path.string());
+  }
+  const std::uintmax_t expected_bytes = expected_count * sizeof(std::int32_t);
+  if (std::filesystem::file_size(path) != expected_bytes) {
+    throw std::runtime_error("fixture byte count mismatch: " + path.string());
+  }
+  std::vector<std::int32_t> values(expected_count);
+  std::ifstream stream(path, std::ios::binary);
+  if (!stream.read(reinterpret_cast<char*>(values.data()),
+                   static_cast<std::streamsize>(expected_bytes))) {
+    throw std::runtime_error("failed reading fixture file: " + path.string());
+  }
+  return values;
+}
+
 void write_float32_file(
     const std::filesystem::path& path, const std::vector<float>& values) {
   std::ofstream stream(path, std::ios::binary);

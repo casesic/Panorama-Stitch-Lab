@@ -1,5 +1,7 @@
 #pragma once
 
+#include "staged_lm/densekp.h"
+
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -23,11 +25,14 @@ struct PoseCameraInput {
   std::vector<float> right_hand_pose;       // 45
   float scale = 1.0F;
   std::vector<float> selected_v_shaped;     // point_count * 3
-  std::vector<float> selected_posedirs;     // 486(55-1*9) * point_count * 3
+  std::vector<float> selected_posedirs;     // Optional movable source.
+  // Immutable owner used by production Pose and PoseShape kernels.
   std::shared_ptr<const std::vector<float>> stable_selected_posedirs;
   std::vector<float> selected_lbs_weights;  // point_count * 55
   std::vector<float> targets;               // point_count * 2
-  int point_count = 0;
+  int point_count = 0;                      // SMPL-X support count
+  // Null preserves the surface path: support vertices are observations.
+  std::shared_ptr<const DenseKPObservation> densekp_observation;
   int image_width = 0;
   int image_height = 0;
 };
@@ -49,6 +54,7 @@ struct PoseCameraResult {
   std::vector<float> selected_transforms;
   std::vector<float> skinned_vertices;
   std::vector<float> vertices;
+  std::vector<float> observation_points;
   std::vector<float> uv;
   std::vector<float> raw_residual;
   double rotations_ms = 0.0;
@@ -59,14 +65,9 @@ struct PoseCameraResult {
   double total_value_forward_ms = 0.0;
 };
 
+int pose_observation_count(const PoseCameraInput& input);
+
 PoseCameraResult evaluate_pose_camera_value(
     const PoseModelInput& model, const PoseCameraInput& input);
-
-void compute_value_pose_offset_scalar(
-    const std::vector<float>& selected_posedirs,
-    const std::vector<float>& pose_feature,
-    int point_count,
-    std::vector<float>& output);
-void set_experimental_value_pose_offset_gemv(bool enabled);
 
 }  // namespace staged_lm

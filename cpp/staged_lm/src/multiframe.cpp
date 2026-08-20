@@ -60,99 +60,6 @@ PoseShapeCameraInput camera_at(
   return camera;
 }
 
-bool solve_dense(
-    const std::vector<double>& hessian, const std::vector<double>& gradient,
-    double damping, std::vector<double>& delta) {
-  using Matrix =
-      Eigen::Matrix<double, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>;
-  const int dimension = static_cast<int>(gradient.size());
-  Eigen::Map<const Matrix> mapped(hessian.data(), dimension, dimension);
-  Matrix matrix = mapped;
-  matrix.diagonal().array() += damping;
-  Eigen::Map<const Eigen::VectorXd> mapped_gradient(
-      gradient.data(), dimension);
-  Eigen::LLT<Matrix> cholesky(matrix);
-  if (cholesky.info() == Eigen::Success) {
-    const Eigen::VectorXd solution = cholesky.solve(-mapped_gradient);
-    if (cholesky.info() == Eigen::Success && solution.allFinite()) {
-      delta.assign(solution.data(), solution.data() + dimension);
-      return true;
-    }
-  }
-  const Eigen::VectorXd solution = matrix.fullPivLu().solve(-mapped_gradient);
-  if (!solution.allFinite()) return false;
-  delta.assign(solution.data(), solution.data() + dimension);
-  return true;
-}
-
-double arrowhead_quadratic_form(
-    const SchurSystem& system, const std::vector<double>& delta) {
-  const int frame_count = system.frame_count;
-  const int frame_dim = system.frame_dim;
-  const int beta_dim = system.beta_dim;
-  const int beta_offset = frame_count * frame_dim;
-  double value = 0.0;
-  for (int frame = 0; frame < frame_count; ++frame) {
-    const int offset = frame * frame_dim;
-    for (int row = 0; row < frame_dim; ++row) {
-      for (int column = 0; column < frame_dim; ++column) {
-        value += delta[offset + row] *
-            system.a[(frame * frame_dim + row) * frame_dim + column] *
-            delta[offset + column];
-      }
-      for (int beta = 0; beta < beta_dim; ++beta) {
-        value += 2.0 * delta[offset + row] *
-            system.b[(frame * frame_dim + row) * beta_dim + beta] *
-            delta[beta_offset + beta];
-      }
-    }
-  }
-  for (int row = 0; row < beta_dim; ++row) {
-    for (int column = 0; column < beta_dim; ++column) {
-      value += delta[beta_offset + row] * system.c[row * beta_dim + column] *
-          delta[beta_offset + column];
-    }
-  }
-  return value;
-}
-
-std::vector<double> dense_arrowhead(const SchurSystem& system) {
-  const int dimension =
-      system.frame_count * system.frame_dim + system.beta_dim;
-  const int beta_offset = system.frame_count * system.frame_dim;
-  std::vector<double> dense(dimension * dimension, 0.0);
-  for (int frame = 0; frame < system.frame_count; ++frame) {
-    const int offset = frame * system.frame_dim;
-    for (int row = 0; row < system.frame_dim; ++row) {
-      for (int column = 0; column < system.frame_dim; ++column) {
-        dense[(offset + row) * dimension + offset + column] =
-            system.a[(frame * system.frame_dim + row) * system.frame_dim +
-                     column];
-      }
-      for (int beta = 0; beta < system.beta_dim; ++beta) {
-        const double value =
-            system.b[(frame * system.frame_dim + row) * system.beta_dim + beta];
-        dense[(offset + row) * dimension + beta_offset + beta] = value;
-        dense[(beta_offset + beta) * dimension + offset + row] = value;
-      }
-    }
-  }
-  for (int row = 0; row < system.beta_dim; ++row) {
-    for (int column = 0; column < system.beta_dim; ++column) {
-      dense[(beta_offset + row) * dimension + beta_offset + column] =
-          system.c[row * system.beta_dim + column];
-    }
-  }
-  return dense;
-}
-
-std::vector<double> structured_gradient(const SchurSystem& system) {
-  std::vector<double> gradient = system.g_frame;
-  gradient.insert(
-      gradient.end(), system.g_beta.begin(), system.g_beta.end());
-  return gradient;
-}
-
 void validate_problem(const MultiFramePoseShapeLMProblem& problem) {
   if (problem.frames.empty()) {
     throw std::runtime_error("MULTIFRAME_REQUIRES_AT_LEAST_ONE_FRAME");
@@ -314,14 +221,12 @@ LMRunResult run_multiframe_pose_shape_lm(
         }
 
         DenseNormalEquations output;
-        output.hessian = dense_arrowhead(system);
-        output.gradient = structured_gradient(system);
+        output.hessian = schur_to_dense_hessian(system);
+        output.gradient = schur_gradient(system);
         output.jacobian_ms = jacobian_ms;
         output.normal_equations_ms = assembly_ms;
         auto shared_system = std::make_shared<SchurSystem>(std::move(system));
-        output.solve_override = [
-            shared_system, hessian = output.hessian,
-            gradient = output.gradient](
+        output.solve_override = [shared_system](
                 double damping, std::vector<double>& delta,
                 std::string& backend) {
           const PoseShapeSchurResult solved =
@@ -332,11 +237,11 @@ LMRunResult run_multiframe_pose_shape_lm(
             return true;
           }
           backend = "dense_fallback";
-          return solve_dense(hessian, gradient, damping, delta);
+          return solve_schur_dense_fallback(*shared_system, damping, delta);
         };
         output.quadratic_form_override = [shared_system](
             const std::vector<double>& delta) {
-          return arrowhead_quadratic_form(*shared_system, delta);
+          return schur_quadratic_form(*shared_system, delta);
         };
         output.normal_equations_ms = std::max(
             0.0, elapsed_ms(total_started) - output.jacobian_ms);

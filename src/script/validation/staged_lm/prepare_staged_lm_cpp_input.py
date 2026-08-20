@@ -19,6 +19,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bbox_dir", type=Path, required=True)
     parser.add_argument("--output_root", type=Path, required=True)
     parser.add_argument("--surface_sample_ids", type=Path, default=None)
+    parser.add_argument("--densekp_dir", type=Path, default=None)
     parser.add_argument("--device", choices=("cpu", "cuda"), default="cpu")
     parser.add_argument("--image_width", type=int, default=5760)
     parser.add_argument("--image_height", type=int, default=2880)
@@ -56,8 +57,16 @@ def main() -> int:
         "--image_height", str(args.image_height),
         "--reproj_objective", "charbonnier_irls",
     ]
-    if args.surface_sample_ids is not None:
-        common.extend(("--surface_sample_ids", str(args.surface_sample_ids)))
+    surface_sample_ids = args.surface_sample_ids
+    if args.densekp_dir is not None:
+        if surface_sample_ids is not None:
+            raise ValueError("--densekp_dir and --surface_sample_ids are mutually exclusive")
+        surface_sample_ids = (
+            REPOSITORY_ROOT / "cpp/staged_lm/assets/densekp_support_vertex_ids.npy"
+        )
+        common.append("--cpp_include_all_surface_samples")
+    if surface_sample_ids is not None:
+        common.extend(("--surface_sample_ids", str(surface_sample_ids)))
 
     run([
         sys.executable, str(scripts / "dump_stage1_cpp_reference.py"),
@@ -87,6 +96,17 @@ def main() -> int:
         "--pose_shape_max_accepted_steps", str(args.pose_shape_max_accepted_steps),
         "--lm_max_trials", str(args.lm_max_trials),
     ])
+    if args.densekp_dir is not None:
+        run([
+            sys.executable,
+            str(scripts / "convert_cpp_fixture_to_densekp.py"),
+            "--fixture", str(pipeline_fixture),
+            "--frame", str(args.frame),
+            "--densekp-dir", str(args.densekp_dir),
+            "--bbox-dir", str(args.bbox_dir),
+            "--image-width", str(args.image_width),
+            "--image-height", str(args.image_height),
+        ])
     print(f"[PASS] STAGED_LM_CPP_INPUT_READY frame={args.frame}")
     print(f"[FIXTURE] {pipeline_fixture}")
     return 0
