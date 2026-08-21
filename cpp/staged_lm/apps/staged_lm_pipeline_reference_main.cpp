@@ -1,4 +1,5 @@
 #include "staged_lm/binary_io.h"
+#include "staged_lm/densekp_output.h"
 #include "staged_lm/pipeline.h"
 #include "staged_lm/shape.h"
 
@@ -27,6 +28,13 @@ int integer(const std::map<std::string, std::string>& values,
             const std::string& key) { return std::stoi(values.at(key)); }
 float real(const std::map<std::string, std::string>& values,
            const std::string& key) { return std::stof(values.at(key)); }
+
+bool has_flag(int argc, char** argv, const std::string& requested) {
+  for (int index = 1; index < argc; ++index) {
+    if (argv[index] == requested) return true;
+  }
+  return false;
+}
 
 Stage1CameraInput stage1_camera(
     const std::filesystem::path& fixture,
@@ -148,6 +156,8 @@ int main(int argc, char** argv) {
   try {
     const auto fixture = argument(argc, argv, "--fixture");
     const auto output = argument(argc, argv, "--output");
+    const bool optimized_densekp_only =
+        has_flag(argc, argv, "--optimized-densekp-only");
     if (kEigenVectorize != static_cast<bool>(STAGED_LM_EXPECT_EIGEN_VECTORIZE)) {
       throw std::runtime_error("EIGEN_VECTORIZE_BUILD_POLICY_MISMATCH");
     }
@@ -253,6 +263,19 @@ int main(int argc, char** argv) {
 
     const StagedPipelineResult result = run_staged_pipeline(problem);
     std::filesystem::create_directories(output);
+    if (densekp_regressor) {
+      const OptimizedDenseKPObservation optimized = evaluate_optimized_densekp(
+          problem.pose_shape, result.pose_shape.final_parameters);
+      write_optimized_densekp_json(output / "optimized_densekp.json", optimized);
+    }
+    if (optimized_densekp_only) {
+      if (!densekp_regressor) {
+        throw std::runtime_error(
+            "OPTIMIZED_DENSEKP_OUTPUT_REQUIRES_DENSEKP_FIXTURE");
+      }
+      std::cout << "OPTIMIZED_DENSEKP_CPP_WRITTEN\n";
+      return 0;
+    }
     write_float32_file(output / "stage1_initial_parameters.f32",
                        result.stage1.initial_parameters);
     write_float32_file(output / "stage1_final_parameters.f32",

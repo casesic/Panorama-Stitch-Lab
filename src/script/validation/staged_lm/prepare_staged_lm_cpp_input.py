@@ -20,6 +20,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output_root", type=Path, required=True)
     parser.add_argument("--surface_sample_ids", type=Path, default=None)
     parser.add_argument("--densekp_dir", type=Path, default=None)
+    parser.add_argument("--densekp_pairs_json", type=Path, default=None)
+    parser.add_argument("--camera_group", choices=("old", "new"), default="old")
     parser.add_argument("--device", choices=("cpu", "cuda"), default="cpu")
     parser.add_argument("--image_width", type=int, default=5760)
     parser.add_argument("--image_height", type=int, default=2880)
@@ -58,7 +60,12 @@ def main() -> int:
         "--reproj_objective", "charbonnier_irls",
     ]
     surface_sample_ids = args.surface_sample_ids
-    if args.densekp_dir is not None:
+    densekp_requested = (
+        args.densekp_dir is not None or args.densekp_pairs_json is not None
+    )
+    if args.densekp_dir is not None and args.densekp_pairs_json is not None:
+        raise ValueError("DenseKP directory and delivery JSON are mutually exclusive")
+    if densekp_requested:
         if surface_sample_ids is not None:
             raise ValueError("--densekp_dir and --surface_sample_ids are mutually exclusive")
         surface_sample_ids = (
@@ -96,17 +103,26 @@ def main() -> int:
         "--pose_shape_max_accepted_steps", str(args.pose_shape_max_accepted_steps),
         "--lm_max_trials", str(args.lm_max_trials),
     ])
-    if args.densekp_dir is not None:
-        run([
+    if densekp_requested:
+        command = [
             sys.executable,
             str(scripts / "convert_cpp_fixture_to_densekp.py"),
             "--fixture", str(pipeline_fixture),
             "--frame", str(args.frame),
-            "--densekp-dir", str(args.densekp_dir),
-            "--bbox-dir", str(args.bbox_dir),
             "--image-width", str(args.image_width),
             "--image-height", str(args.image_height),
-        ])
+        ]
+        if args.densekp_pairs_json is not None:
+            command.extend((
+                "--densekp-pairs-json", str(args.densekp_pairs_json),
+                "--camera-group", args.camera_group,
+            ))
+        else:
+            command.extend((
+                "--densekp-dir", str(args.densekp_dir),
+                "--bbox-dir", str(args.bbox_dir),
+            ))
+        run(command)
     print(f"[PASS] STAGED_LM_CPP_INPUT_READY frame={args.frame}")
     print(f"[FIXTURE] {pipeline_fixture}")
     return 0

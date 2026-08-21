@@ -1,4 +1,5 @@
 #include "staged_lm/binary_io.h"
+#include "staged_lm/densekp_output.h"
 #include "staged_lm/multiframe.h"
 #include "staged_lm/shape.h"
 
@@ -18,6 +19,12 @@ std::string argument(int argc, char** argv, const std::string& requested) {
     if (argv[index] == requested) return argv[index + 1];
   }
   throw std::runtime_error("missing " + requested);
+}
+
+bool has_flag(int argc, char** argv, const std::string& requested) {
+  for (int index = 1; index < argc; ++index)
+    if (argv[index] == requested) return true;
+  return false;
 }
 
 std::vector<std::filesystem::path> fixture_paths(const std::string& value) {
@@ -178,6 +185,8 @@ int main(int argc, char** argv) {
   try {
     const auto fixtures = fixture_paths(argument(argc, argv, "--fixtures"));
     const std::filesystem::path output = argument(argc, argv, "--output");
+    const bool optimized_densekp_only =
+        has_flag(argc, argv, "--optimized-densekp-only");
     const auto first_model_meta = read_key_value_file(
         fixtures.front() / "model_fixture_meta.txt");
     const auto first_pipeline_meta = read_key_value_file(
@@ -233,6 +242,24 @@ int main(int argc, char** argv) {
     for (std::size_t frame = 0; frame < result.frames.size(); ++frame) {
       const auto directory = output / ("frame_" + std::to_string(frame));
       std::filesystem::create_directories(directory);
+      if (densekp_regressor) {
+        PoseShapeLMProblem output_problem;
+        output_problem.base_joints = problem.base_joints;
+        output_problem.joint_basis = problem.joint_basis;
+        output_problem.beta_anchor = problem.beta_anchor;
+        output_problem.body_pose_anchor = problem.frames[frame].body_pose_anchor;
+        output_problem.parents = problem.parents;
+        output_problem.cam2 = problem.frames[frame].pose_shape_cam2;
+        output_problem.cam4 = problem.frames[frame].pose_shape_cam4;
+        output_problem.beta_limit = problem.beta_limit;
+        std::vector<float> parameters = result.frames[frame].final_parameters;
+        parameters.insert(
+            parameters.end(), result.beta_latent.begin(), result.beta_latent.end());
+        write_optimized_densekp_json(
+            directory / "optimized_densekp.json",
+            evaluate_optimized_densekp(output_problem, parameters));
+      }
+      if (optimized_densekp_only) continue;
       write_float32_file(
           directory / "stage1_final_parameters.f32",
           result.frames[frame].stage1.final_parameters);
@@ -242,6 +269,14 @@ int main(int argc, char** argv) {
       write_float32_file(
           directory / "pose_shape_frame_parameters.f32",
           result.frames[frame].final_parameters);
+    }
+    if (optimized_densekp_only) {
+      if (!densekp_regressor)
+        throw std::runtime_error(
+            "OPTIMIZED_DENSEKP_OUTPUT_REQUIRES_DENSEKP_FIXTURE");
+      std::cout << "OPTIMIZED_DENSEKP_CPP_WRITTEN frames="
+                << result.frames.size() << '\n';
+      return 0;
     }
     write_float32_file(output / "shared_beta_latent.f32", result.beta_latent);
     write_float32_file(output / "shared_physical_beta.f32", result.physical_beta);

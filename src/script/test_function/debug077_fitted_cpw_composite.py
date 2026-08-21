@@ -4,6 +4,7 @@ import argparse
 import csv
 import os
 from pathlib import Path
+import time
 
 import config_script  # noqa: F401 — ensure src/ on sys.path
 
@@ -26,6 +27,15 @@ from lib_pano.composite.cpw_warp import (
     generate_cpw_backward_map,
     target_priority_composite,
     warp_image_with_backward_map,
+)
+from lib_pano.composite.cpw_warp_cache import (
+    build_cpw_cache_specification,
+    load_or_generate_cpw_backward_map,
+)
+from lib_pano.camera.ds_camera_params import (
+    DS_PARAMS,
+    DS_PARAMS_CAM2,
+    DS_PARAMS_CAM4,
 )
 
 
@@ -365,8 +375,20 @@ def run_cpw_direction(
     src_cam: str,
     tgt_cam: str,
     direction_name: str,
+    profile_timing: dict[str, float] | None = None,
+    warp_map_cache_dir: Path | None = None,
+    warp_map_cache_mode: str = "off",
+    camera_group: str = "old",
 ) -> None:
     """读取 data_dir/corr_npz/{frame}.npz，按 src_cam→tgt_cam 做 CPW backward warp + target-priority 合成。"""
+    cpw_start = time.perf_counter()
+
+    def record(name: str, start: float) -> None:
+        if profile_timing is not None:
+            profile_timing[name] = profile_timing.get(name, 0.0) + (
+                time.perf_counter() - start
+            ) * 1000.0
+
     corr_npz_dir = data_dir / "corr_npz"
     out_dir = out_base / direction_name
     warp_dir = out_dir / "warp"
@@ -391,6 +413,7 @@ def run_cpw_direction(
         writer.writeheader()
 
         for frame_idx in frame_idxs:
+            point_start = time.perf_counter()
             fk = f"{frame_idx:05d}"
             row = {k: "" for k in fieldnames}
             row["frame"] = frame_idx
@@ -456,13 +479,62 @@ def run_cpw_direction(
             # 适配库接口：grid 仅覆盖 target crop（image_shape=crop），target 点转 crop-local，
             # source 点保持全局 → 输出 backward map 直接是 source 全图采样坐标。
             dst_local = tgt_pts - np.array([x1, y1], dtype=tgt_pts.dtype)
-            backward_map, _ = generate_cpw_backward_map(
-                src_pts=src_pts,
-                dst_pts=dst_local,
-                image_shape=(crop_h, crop_w),
+            record("cpw_point_preparation_ms", point_start)
+            if camera_group == "new":
+                camera_parameters = {
+                    "group": "new", "cam2": DS_PARAMS_CAM2,
+                    "cam4": DS_PARAMS_CAM4,
+                }
+            else:
+                camera_parameters = {
+                    "group": "old", "cam2": DS_PARAMS, "cam4": DS_PARAMS,
+                }
+            camera_parameters["erp_rotate_matrix"] = [
+                [1.0, 0.0, 0.0], [0.0, 0.0, -1.0], [0.0, 1.0, 0.0],
+            ]
+            specification = build_cpw_cache_specification(
+                camera_parameters=camera_parameters,
+                erp_size=(ERP_W, ERP_H),
+                source_image_size=(src_img.shape[1], src_img.shape[0]),
+                target_image_size=(tgt_img.shape[1], tgt_img.shape[0]),
+                output_size=(crop_w, crop_h),
+                direction=direction_name,
+                source_camera=src_cam,
+                target_camera=tgt_cam,
+                crop_bbox=target_crop_bbox,
                 k=CPW_KNN,
                 power=CPW_POWER,
+                src_points=src_pts,
+                dst_points=dst_local,
             )
+
+            def generate_map():
+                return generate_cpw_backward_map(
+                    src_pts=src_pts,
+                    dst_pts=dst_local,
+                    image_shape=(crop_h, crop_w),
+                    k=CPW_KNN,
+                    power=CPW_POWER,
+                )
+
+            cache_directory = warp_map_cache_dir or out_base / ".cpw_warp_cache"
+            backward_map, _, cache_result = load_or_generate_cpw_backward_map(
+                cache_directory, specification, generate_map,
+                cache_mode=warp_map_cache_mode,
+            )
+            if profile_timing is not None:
+                profile_timing["cpw_warp_map_ms"] = (
+                    profile_timing.get("cpw_warp_map_ms", 0.0)
+                    + float(cache_result["build_ms"])
+                )
+                profile_timing["cpw_warp_map_cache_load_ms"] = (
+                    profile_timing.get("cpw_warp_map_cache_load_ms", 0.0)
+                    + float(cache_result["cache_load_ms"])
+                )
+                hit_key = "cpw_warp_map_cache_hit_count"
+                profile_timing[hit_key] = profile_timing.get(hit_key, 0.0) + float(
+                    bool(cache_result["cache_hit"])
+                )
             if backward_map.size == 0:
                 row["status"] = "skip_empty_map"
                 writer.writerow(row)
@@ -473,6 +545,7 @@ def run_cpw_direction(
             map_y = backward_map[..., 1]
             inside = (map_x >= 0) & (map_x < ERP_W) & (map_y >= 0) & (map_y < ERP_H)
 
+            interpolation_start = time.perf_counter()
             warped_crop = warp_image_with_backward_map(
                 src_img, backward_map, interpolation=cv2.INTER_LINEAR,
             )
@@ -481,7 +554,9 @@ def run_cpw_direction(
                 interpolation=cv2.INTER_NEAREST,
             ) > 0
             warp_valid = inside & warped_src_valid
+            record("cpw_interpolation_ms", interpolation_start)
 
+            blending_start = time.perf_counter()
             tgt_crop = tgt_img[y1:y2, x1:x2]
             tgt_valid_crop = tgt_valid_full[y1:y2, x1:x2]
 
@@ -511,12 +586,15 @@ def run_cpw_direction(
                 src_pts, tgt_pts, source_crop_bbox, target_crop_bbox,
                 src_cam, tgt_cam,
             )
+            record("cpw_blending_ms", blending_start)
 
+            save_start = time.perf_counter()
             cv2.imwrite(str(warp_dir / f"{fk}.jpg"), warped_full, [cv2.IMWRITE_JPEG_QUALITY, 95])
             composite_path = composite_dir / f"{fk}.jpg"
             cv2.imwrite(str(composite_path), composite_full, [cv2.IMWRITE_JPEG_QUALITY, 95])
             cv2.imwrite(str(overlay_dir / f"{fk}.jpg"), overlay_crop, [cv2.IMWRITE_JPEG_QUALITY, 95])
             cv2.imwrite(str(panel_dir / f"{fk}.jpg"), panel, [cv2.IMWRITE_JPEG_QUALITY, 95])
+            record("cpw_output_save_ms", save_start)
 
             warp_valid_pixels = int(warp_valid.sum())
             fill_pixels = int(fill_mask.sum())
@@ -531,6 +609,7 @@ def run_cpw_direction(
             )
 
     print(f"[CPW] summary: {summary_path}")
+    record("cpw_ms", cpw_start)
 
 
 def generate_points_for_segment(
