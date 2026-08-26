@@ -22,6 +22,7 @@ src/lib_pano/local_setting.py
 *.jar
 *.pt
 *.txt
+!cpp/staged_lm/CMakeLists.txt
 
 tools_other/
 tools/*

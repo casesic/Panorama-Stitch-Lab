@@ -6,6 +6,8 @@
 
 namespace staged_lm {
 
+class EvaluatorBackend;
+
 struct DenseNormalEquations {
   std::vector<double> hessian;
   std::vector<double> gradient;
@@ -85,10 +87,18 @@ struct LMRunResult {
   double total_solve_ms = 0.0;
   double total_control_ms = 0.0;
   double total_lm_ms = 0.0;
+  std::size_t batch_h2d_count = 0;
+  std::size_t batch_h2d_bytes = 0;
+  std::size_t batch_d2h_count = 0;
+  std::size_t batch_d2h_bytes = 0;
 };
 
 using NormalEquationFunction = std::function<DenseNormalEquations(const std::vector<float>&)>;
 using ObjectiveFunction = std::function<double(const std::vector<float>&)>;
+using BatchNormalEquationFunction = std::function<std::vector<DenseNormalEquations>(
+    const std::vector<int>&, const std::vector<std::vector<float>>&) >;
+using BatchObjectiveFunction = std::function<std::vector<double>(
+    const std::vector<int>&, const std::vector<std::vector<float>>&) >;
 
 double initialise_lm_damping(double max_diagonal);
 double increase_lm_damping(double damping);
@@ -102,5 +112,17 @@ LMRunResult run_lm(
     const std::vector<float>& initial_parameters, const LMConfig& config,
     const NormalEquationFunction& normal_equations,
     const ObjectiveFunction& true_objective);
+
+LMRunResult run_lm(
+    const std::vector<float>& initial_parameters, const LMConfig& config,
+    EvaluatorBackend& evaluator);
+
+// Run independent LM problems in lockstep.  The controller and each problem's
+// damping/acceptance state remain on CPU; only evaluator calls are grouped.
+std::vector<LMRunResult> run_lm_batch(
+    const std::vector<std::vector<float>>& initial_parameters,
+    const std::vector<LMConfig>& configs,
+    const BatchNormalEquationFunction& normal_equations,
+    const BatchObjectiveFunction& true_objective);
 
 }  // namespace staged_lm

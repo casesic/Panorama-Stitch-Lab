@@ -1,5 +1,6 @@
 #include "staged_lm/multiframe.h"
 
+#include "staged_lm/cuda_evaluators.h"
 #include "staged_lm/pose_shape_schur.h"
 #include "staged_lm/shape.h"
 
@@ -11,8 +12,28 @@
 #include <memory>
 #include <stdexcept>
 
+#if STAGED_LM_HAS_NVTX
+#include <nvtx3/nvToolsExt.h>
+#endif
+
 namespace staged_lm {
 namespace {
+
+class ProfileRange {
+ public:
+  explicit ProfileRange(const char* name) {
+#if STAGED_LM_HAS_NVTX
+    nvtxRangePushA(name);
+#else
+    (void)name;
+#endif
+  }
+  ~ProfileRange() {
+#if STAGED_LM_HAS_NVTX
+    nvtxRangePop();
+#endif
+  }
+};
 
 using Clock = std::chrono::steady_clock;
 
@@ -92,6 +113,169 @@ std::size_t multiframe_beta_offset(std::size_t frame_count) {
   return frame_count * kStagedLMFrameDimension;
 }
 
+struct CudaMultiFramePoseShapeWorkspace {
+  explicit CudaMultiFramePoseShapeWorkspace(
+      const MultiFramePoseShapeLMProblem& source) : problem(source) {
+    const std::size_t frame_count = problem.frames.size();
+    const std::vector<float> latent = latent_from_anchor(
+        problem.beta_anchor, problem.beta_limit);
+    local_problems.reserve(frame_count);
+    for (const auto& frame : problem.frames) {
+      PoseShapeLMProblem local;
+      local.initial_parameters = frame.initial_parameters;
+      local.initial_parameters.insert(
+          local.initial_parameters.end(), latent.begin(), latent.end());
+      local.base_joints = problem.base_joints;
+      local.joint_basis = problem.joint_basis;
+      local.beta_anchor = problem.beta_anchor;
+      local.body_pose_anchor = frame.body_pose_anchor;
+      local.parents = problem.parents;
+      local.cam2 = frame.cam2;
+      local.cam4 = frame.cam4;
+      local.beta_limit = problem.beta_limit;
+      local.normal_config = problem.normal_config;
+      local.lm_config = problem.lm_config;
+      local.lm_config.parameter_dimension = 85;
+      local.evaluator_backend = EvaluatorBackendKind::kCuda;
+      local_problems.push_back(std::move(local));
+    }
+    evaluators.reserve(frame_count);
+    for (const auto& local : local_problems) {
+      evaluators.push_back(std::make_unique<CudaPoseShapeEvaluator>(local));
+    }
+    normal_equation_workspace =
+        create_cuda_multiframe_pose_shape_ne_workspace(
+            static_cast<int>(frame_count));
+  }
+  ~CudaMultiFramePoseShapeWorkspace() {
+    destroy_cuda_multiframe_pose_shape_ne_workspace(
+        normal_equation_workspace);
+  }
+
+  const MultiFramePoseShapeLMProblem& problem;
+  std::vector<PoseShapeLMProblem> local_problems;
+  std::vector<std::unique_ptr<CudaPoseShapeEvaluator>> evaluators;
+  CudaMultiFramePoseShapeNormalEquationWorkspace*
+      normal_equation_workspace = nullptr;
+  std::vector<float> parameters;
+  bool forward_ready = false;
+  bool linearization_ready = false;
+};
+
+CudaMultiFramePoseShapeEvaluator::CudaMultiFramePoseShapeEvaluator(
+    const MultiFramePoseShapeLMProblem& problem)
+    : workspace_(std::make_unique<CudaMultiFramePoseShapeWorkspace>(problem)) {}
+CudaMultiFramePoseShapeEvaluator::~CudaMultiFramePoseShapeEvaluator() = default;
+
+void CudaMultiFramePoseShapeEvaluator::forward(
+    const std::vector<float>& parameters) {
+  ProfileRange profile("multiframe_cuda_pose_shape_forward");
+  workspace_->parameters = parameters;
+  const std::size_t count = workspace_->evaluators.size();
+  for (std::size_t frame = 0; frame < count; ++frame) {
+    workspace_->evaluators[frame]->forward(
+        local_parameters(parameters, frame, count));
+  }
+  workspace_->forward_ready = true;
+}
+
+double CudaMultiFramePoseShapeEvaluator::evaluate_residual() {
+  if (!workspace_->forward_ready) {
+    throw std::runtime_error("CUDA_MULTIFRAME_FORWARD_REQUIRED");
+  }
+  double value = 0.0;
+  for (auto& evaluator : workspace_->evaluators)
+    value += evaluator->evaluate_residual();
+  const std::size_t count = workspace_->evaluators.size();
+  if (count > 1) {
+    const std::size_t beta_offset = multiframe_beta_offset(count);
+    double shape_anchor = 0.0;
+    for (int beta = 0; beta < 10; ++beta) {
+      const float physical = workspace_->problem.beta_limit *
+          std::tanh(workspace_->parameters[beta_offset + beta]);
+      const float residual =
+          (physical - workspace_->problem.beta_anchor[beta]) *
+          workspace_->problem.normal_config.shape_anchor_scale;
+      shape_anchor += 0.5 * static_cast<double>(residual) * residual;
+    }
+    value -= static_cast<double>(count - 1) * shape_anchor;
+  }
+  return value;
+}
+
+void CudaMultiFramePoseShapeEvaluator::linearize(
+    const std::vector<float>& parameters) {
+  ProfileRange profile("multiframe_cuda_pose_shape_linearize");
+  workspace_->parameters = parameters;
+  const std::size_t count = workspace_->evaluators.size();
+  for (std::size_t frame = 0; frame < count; ++frame) {
+    workspace_->evaluators[frame]->linearize(
+        local_parameters(parameters, frame, count));
+  }
+  workspace_->linearization_ready = true;
+}
+
+DenseNormalEquations CudaMultiFramePoseShapeEvaluator::build_normal_equations() {
+  ProfileRange profile("multiframe_cuda_pose_shape_normal_equations");
+  if (!workspace_->linearization_ready) {
+    throw std::runtime_error("CUDA_MULTIFRAME_LINEARIZATION_REQUIRED");
+  }
+  const int frame_count = static_cast<int>(workspace_->evaluators.size());
+  SchurSystem system;
+  system.frame_count = frame_count;
+  system.frame_dim = 75;
+  system.beta_dim = 10;
+  std::vector<CudaPoseWorkspace*> cam2_workspaces;
+  std::vector<CudaPoseWorkspace*> cam4_workspaces;
+  std::vector<float> body_pose_anchors;
+  cam2_workspaces.reserve(frame_count);
+  cam4_workspaces.reserve(frame_count);
+  body_pose_anchors.reserve(static_cast<std::size_t>(frame_count) * 63);
+  double jacobian_ms = 0.0;
+  for (auto& evaluator : workspace_->evaluators) {
+    cam2_workspaces.push_back(evaluator->cam2_workspace());
+    cam4_workspaces.push_back(evaluator->cam4_workspace());
+    jacobian_ms += evaluator->last_jacobian_ms();
+  }
+  for (const auto& frame : workspace_->problem.frames) {
+    body_pose_anchors.insert(body_pose_anchors.end(),
+        frame.body_pose_anchor.begin(), frame.body_pose_anchor.end());
+  }
+  CudaMultiFramePoseShapeNormalEquationResult blocks =
+      build_cuda_multiframe_pose_shape_normal_equations(
+          workspace_->normal_equation_workspace, cam2_workspaces,
+          cam4_workspaces, workspace_->parameters, body_pose_anchors,
+          workspace_->problem.beta_anchor, workspace_->problem.beta_limit,
+          workspace_->problem.normal_config);
+  system.a = std::move(blocks.a);
+  system.b = std::move(blocks.b);
+  system.c = std::move(blocks.c);
+  system.g_frame = std::move(blocks.g_pose);
+  system.g_beta = std::move(blocks.g_beta);
+  DenseNormalEquations output;
+  output.hessian = schur_to_dense_hessian(system);
+  output.gradient = schur_gradient(system);
+  output.jacobian_ms = jacobian_ms;
+  output.normal_equations_ms = blocks.total_ms;
+  auto shared = std::make_shared<SchurSystem>(std::move(system));
+  output.solve_override = [shared](double damping,
+      std::vector<double>& delta, std::string& backend) {
+    const PoseShapeSchurResult solved =
+        solve_pose_shape_schur(*shared, damping, false);
+    if (solved.success) {
+      delta = solved.full_delta;
+      backend = "schur";
+      return true;
+    }
+    backend = "dense_fallback";
+    return solve_schur_dense_fallback(*shared, damping, delta);
+  };
+  output.quadratic_form_override = [shared](const std::vector<double>& delta) {
+    return schur_quadratic_form(*shared, delta);
+  };
+  return output;
+}
+
 LMRunResult run_multiframe_pose_shape_lm(
     const MultiFramePoseShapeLMProblem& problem) {
   validate_problem(problem);
@@ -125,7 +309,19 @@ LMRunResult run_multiframe_pose_shape_lm(
     single.lm_config = problem.lm_config;
     single.lm_config.parameter_dimension =
         kStagedLMFrameDimension + kStagedLMBetaDimension;
+    single.evaluator_backend = problem.evaluator_backend;
     return run_pose_shape_lm(single);
+  }
+
+  if (problem.evaluator_backend == EvaluatorBackendKind::kCuda) {
+    LMConfig config = problem.lm_config;
+    config.parameter_dimension = static_cast<int>(dimension);
+    std::unique_ptr<CudaMultiFramePoseShapeEvaluator> evaluator;
+    {
+      ProfileRange profile("multiframe_cuda_pose_shape_workspace");
+      evaluator = std::make_unique<CudaMultiFramePoseShapeEvaluator>(problem);
+    }
+    return run_lm(initial, config, *evaluator);
   }
 
   NormalEquationFunction normal_equations =
@@ -305,6 +501,7 @@ MultiFrameStagedLMResult run_multiframe_staged_pipeline(
   pose_shape.beta_limit = problem.beta_limit;
   pose_shape.normal_config = problem.pose_shape_normal_config;
   pose_shape.lm_config = problem.pose_shape_lm_config;
+  pose_shape.evaluator_backend = problem.evaluator_backend;
 
   auto started = Clock::now();
   for (std::size_t frame = 0; frame < problem.frames.size(); ++frame) {
@@ -316,6 +513,8 @@ MultiFrameStagedLMResult run_multiframe_staged_pipeline(
   result.stage1_total_ms = elapsed_ms(started);
 
   started = Clock::now();
+  std::vector<PoseLMProblem> pose_problems;
+  pose_problems.reserve(problem.frames.size());
   for (std::size_t frame = 0; frame < problem.frames.size(); ++frame) {
     auto& output = result.frames[frame];
     const auto& input = problem.frames[frame];
@@ -327,9 +526,25 @@ MultiFrameStagedLMResult run_multiframe_staged_pipeline(
       throw std::runtime_error("MULTIFRAME_STAGE1_POSE_HANDOFF_MISMATCH");
     }
     PoseLMProblem pose_problem = input.pose;
+    pose_problem.evaluator_backend = problem.evaluator_backend;
     pose_problem.cam2.parameters = output.pose_initial_parameters;
     pose_problem.cam4.parameters = output.pose_initial_parameters;
-    output.pose = run_pose_lm(pose_problem);
+    pose_problems.push_back(std::move(pose_problem));
+  }
+  if (problem.evaluator_backend == EvaluatorBackendKind::kCuda &&
+      problem.batch_cuda_pose) {
+    auto pose_results = run_multiframe_pose_lm_cuda(pose_problems);
+    for (std::size_t frame = 0; frame < problem.frames.size(); ++frame) {
+      result.frames[frame].pose = std::move(pose_results[frame]);
+    }
+  } else {
+    for (std::size_t frame = 0; frame < problem.frames.size(); ++frame) {
+      result.frames[frame].pose = run_pose_lm(pose_problems[frame]);
+    }
+  }
+  for (std::size_t frame = 0; frame < problem.frames.size(); ++frame) {
+    auto& output = result.frames[frame];
+    const auto& input = problem.frames[frame];
     pose_shape.frames.push_back({
         input.pose_shape_cam2, input.pose_shape_cam4, input.body_pose_anchor,
         output.pose.final_parameters});

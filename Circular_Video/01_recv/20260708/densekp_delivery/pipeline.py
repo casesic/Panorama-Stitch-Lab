@@ -26,13 +26,28 @@ from .camera.erp_rotate import (
     rotate_erp_points,
 )
 from .camera.fisheye_points import erp_points_to_fisheye_points
-from .image_io import read_image
+from .image_io import read_image, read_image_pair_profiled
 from .person_match import match_persons
+from .profiling import write_runtime_profiles
 from .runners.base import DenseKPResult
 from .schema import build_empty_json, build_matched_json, write_json
 from .vis import save_visualizations
 
 logger = logging.getLogger(__name__)
+
+
+def load_erp_pair(config, runtime=None):
+    """Load one fisheye pair and produce normal-ERP images without inference."""
+    cache = CacheManager(
+        config.out_dir,
+        cache_mode=config.cache_mode,
+        calibration_cache_dir=config.calibration_cache_dir,
+    )
+    profile: dict[str, float | int | bool | str] = {}
+    erp_cam2, erp_cam4, *_ = _get_or_build_erp(
+        config, cache, profile, runtime,
+    )
+    return erp_cam2, erp_cam4
 
 
 def run_pipeline(args, runtime=None) -> None:
@@ -61,7 +76,9 @@ def run_pipeline(args, runtime=None) -> None:
 
     try:
         (erp_cam2, erp_cam4, fisheye_cam2, fisheye_cam4,
-         luts, calibration) = _get_or_build_erp(args, cache, profile)
+         luts, calibration) = _get_or_build_erp(
+            args, cache, profile, runtime,
+        )
     except Exception as e:
         logger.error("Fisheye to ERP failed: %s", e)
         _write_err_json(result_dir, "fisheye_to_erp_failed", backend, coord_space, erp_w, erp_h, str(e))
@@ -71,6 +88,7 @@ def run_pipeline(args, runtime=None) -> None:
         mask_cam2, mask_cam4 = _get_or_build_valid_masks(
             args, cache, erp_cam2, erp_cam4,
             fisheye_cam2, fisheye_cam4, luts, calibration, profile,
+            runtime,
         )
     except Exception as e:
         logger.warning("Valid mask build failed (non-fatal): %s", e)
@@ -79,7 +97,7 @@ def run_pipeline(args, runtime=None) -> None:
     try:
         inference_start = time.perf_counter()
         result_cam2, result_cam4 = _run_densekp(
-            args, cache, runner, erp_cam2, erp_cam4
+            runner, erp_cam2, erp_cam4
         )
         profile["densekp_runner_total_ms"] = (
             time.perf_counter() - inference_start
@@ -103,9 +121,13 @@ def run_pipeline(args, runtime=None) -> None:
 
     if status != "ok":
         err_json = build_empty_json(status, erp_w, erp_h, backend, coord_space)
-        write_json(err_json, result_dir / "densekp_pairs.json")
+        write_json(err_json, result_dir / _err_json_name(coord_space))
         save_visualizations(out_dir, args.vis_option, result_cam2, result_cam4,
                             erp_cam2, erp_cam4)
+        write_runtime_profiles(
+            args, result_dir, profile, runner, runner_profile_before,
+            runtime, runtime_start,
+        )
         return
 
     postprocess_start = time.perf_counter()
@@ -232,71 +254,10 @@ def run_pipeline(args, runtime=None) -> None:
                             erp_cam2, erp_cam4, match_data, coord_space="erp",
                             det_image_cam2=erp_cam2, det_image_cam4=erp_cam4)
 
-    if getattr(args, "profile_runtime", False):
-        runner_profile_total = getattr(runner, "profile_timing", {})
-        runner_profile = {
-            name: float(value) - float(runner_profile_before.get(name, 0.0))
-            for name, value in runner_profile_total.items()
-        }
-        profile.update(runner_profile)
-        profile["detector_ms"] = float(
-            runner_profile.get("detector_inference_ms", 0.0)
-        )
-        profile["postprocess_ms"] = float(
-            profile.get("delivery_postprocess_ms", 0.0)
-            + runner_profile.get("densekp_preprocess_ms", 0.0)
-            + runner_profile.get("densekp_postprocess_ms", 0.0)
-        )
-        profile["session_creation_count"] = int(
-            getattr(runner, "session_creation_count", 0)
-        )
-        profile["detector_initialization_count"] = int(
-            getattr(runner, "detector_initialization_count", 0)
-        )
-        persistent = runtime is not None
-        profile["persistent_runtime"] = persistent
-        profile["runtime_startup_ms"] = float(
-            getattr(runtime, "startup_ms", 0.0) if persistent else
-            runner_profile.get("ort_init_ms", 0.0)
-            + runner_profile.get("detector_init_ms", 0.0)
-        )
-        profile["runtime_load_count"] = int(
-            getattr(runtime, "load_count", 1) if persistent else 1
-        )
-        profile["frame_level_runner_creation"] = not persistent
-        profile["model_weights_reloaded_per_process"] = not persistent
-        profile["lm_ms"] = 0.0
-        profile["cpw_ms"] = 0.0
-        profile["runtime_total_ms"] = (
-            time.perf_counter() - runtime_start
-        ) * 1000.0
-        (result_dir / "densekp_runtime_profile.json").write_text(
-            json.dumps(profile, indent=2, sort_keys=True), encoding="utf-8"
-        )
-        inference_profile = {
-            "preprocess_ms": float(
-                runner_profile.get("densekp_preprocess_ms", 0.0)
-            ),
-            "detector_ms": float(
-                runner_profile.get("detector_inference_ms", 0.0)
-            ),
-            "bbox_postprocess_ms": float(
-                runner_profile.get("bbox_postprocess_ms", 0.0)
-            ),
-            "densekp_model_ms": float(
-                runner_profile.get("densekp_inference_ms", 0.0)
-            ),
-            "decode_ms": float(
-                runner_profile.get("densekp_postprocess_ms", 0.0)
-            ),
-            "coordinate_ms": float(
-                profile.get("coordinate_transform_ms", 0.0)
-            ),
-        }
-        (result_dir / "densekp_inference_profile.json").write_text(
-            json.dumps(inference_profile, indent=2, sort_keys=True),
-            encoding="utf-8",
-        )
+    write_runtime_profiles(
+        args, result_dir, profile, runner, runner_profile_before,
+        runtime, runtime_start,
+    )
 
 
 def _err_json_name(coord_space: str) -> str:
@@ -363,11 +324,18 @@ def _build_runner(args):
     return DenseKPRuntime.from_args(args)._runner
 
 
-def _get_or_build_erp(args, cache, profile):
-    start = time.perf_counter()
-    fisheye2 = read_image(args.fisheye_cam2)
-    fisheye4 = read_image(args.fisheye_cam4)
-    profile["image_load_ms"] = (time.perf_counter() - start) * 1000.0
+def _get_or_build_erp(args, cache, profile, runtime=None):
+    fisheye2, fisheye4, image_io_profile = read_image_pair_profiled(
+        args.fisheye_cam2, args.fisheye_cam4,
+        executor=(runtime.image_io_executor if runtime is not None else None),
+    )
+    profile["image_io_profile"] = image_io_profile
+    profile["cam2_read_ms"] = image_io_profile["cam2_read_ms"]
+    profile["cam4_read_ms"] = image_io_profile["cam4_read_ms"]
+    profile["image_load_ms"] = image_io_profile["total_read_ms"]
+    profile["image_disk_read_ms"] = image_io_profile["disk_read_ms"]
+    profile["image_decode_ms"] = image_io_profile["decode_ms"]
+    profile["image_copy_ms"] = image_io_profile["copy_ms"]
     ds2, ds4 = select_camera_params(args.camera)
     r2 = R_EXTRINSIC_CAM2
     r4 = R_EXTRINSIC_CAM4
@@ -383,8 +351,24 @@ def _get_or_build_erp(args, cache, profile):
         "cam2_extrinsic": r2.tolist(),
         "cam4_extrinsic": r4.tolist(),
     }
+    if runtime is not None:
+        calibration = runtime.intern_calibration(calibration)
     start = time.perf_counter()
-    luts = cache.read_calibration_luts(calibration)
+    luts = (
+        runtime.get_static_geometry(calibration, "luts")
+        if runtime is not None else None
+    )
+    if luts is not None:
+        runtime.static_cache_counts["lut_memory_hit_count"] += 1
+        profile["lut_memory_hit_count"] = 1
+        profile["lut_disk_load_count"] = 0
+    else:
+        luts = cache.read_calibration_luts(calibration)
+        if luts is not None and runtime is not None:
+            runtime.static_cache_counts["lut_disk_load_count"] += 1
+            profile["lut_disk_load_count"] = 1
+            profile["lut_memory_hit_count"] = 0
+            runtime.put_static_geometry(calibration, "luts", luts)
     profile["lut_cache_load_ms"] = (time.perf_counter() - start) * 1000.0
     if luts is None:
         if cache.cache_mode == "read_only":
@@ -402,24 +386,77 @@ def _get_or_build_erp(args, cache, profile):
         )
         luts = (lut2, lut4)
         cache.write_calibration_luts(calibration, luts)
+        if runtime is not None:
+            runtime.put_static_geometry(calibration, "luts", luts)
         profile["lut_build_ms"] = (time.perf_counter() - lut_start) * 1000.0
     else:
         profile["lut_build_ms"] = 0.0
 
     start = time.perf_counter()
-    erp_cam2, erp_cam4 = convert_fisheye_pair_to_erp(
-        fisheye2, fisheye4, luts[0], luts[1], args.erp_width, args.erp_height,
-    )
+    requested_remap_backend = getattr(args, "erp_remap_backend", "cuda")
+    actual_remap_backend = "cpu"
+    remapper = None
+    temporary_remapper = False
+    if requested_remap_backend == "cuda":
+        try:
+            from .camera.cuda_remap import CudaErpRemapper
+
+            remapper = (
+                runtime.get_static_geometry(calibration, "cuda_erp_remapper")
+                if runtime is not None else None
+            )
+            if remapper is None:
+                library_path = getattr(args, "erp_remap_cuda_library", None)
+                if not library_path:
+                    raise FileNotFoundError("--erp-remap-cuda-library is missing")
+                remapper = CudaErpRemapper(
+                    library_path,
+                    fisheye2.shape[:2],
+                    (args.erp_height, args.erp_width),
+                    luts,
+                )
+                if runtime is not None:
+                    runtime.put_static_geometry(
+                        calibration, "cuda_erp_remapper", remapper,
+                    )
+                else:
+                    temporary_remapper = True
+            erp_cam2, erp_cam4 = remapper.remap_pair(fisheye2, fisheye4)
+            actual_remap_backend = "cuda"
+        except Exception as error:
+            logger.warning("CUDA ERP remap unavailable; using CPU: %s", error)
+    if actual_remap_backend == "cpu":
+        erp_cam2, erp_cam4 = convert_fisheye_pair_to_erp(
+            fisheye2, fisheye4, luts[0], luts[1],
+            args.erp_width, args.erp_height,
+        )
+    if temporary_remapper:
+        remapper.close()
     profile["erp_remap_ms"] = (time.perf_counter() - start) * 1000.0
+    profile["erp_remap_backend"] = actual_remap_backend
     return erp_cam2, erp_cam4, fisheye2, fisheye4, luts, calibration
 
 
 def _get_or_build_valid_masks(
     args, cache, erp_cam2, erp_cam4, fisheye_cam2, fisheye_cam4, luts,
-    calibration, profile,
+    calibration, profile, runtime=None,
 ):
     start = time.perf_counter()
-    cached = cache.read_calibration_valid_masks(calibration)
+    cached = (
+        runtime.get_static_geometry(calibration, "valid_masks")
+        if runtime is not None else None
+    )
+    if cached is not None:
+        runtime.static_cache_counts["valid_mask_memory_hit_count"] += 1
+        profile["valid_mask_memory_hit_count"] = 1
+        profile["valid_mask_disk_load_count"] = 0
+    else:
+        cached = cache.read_calibration_valid_masks(calibration)
+        if cached is not None and runtime is not None:
+            runtime.static_cache_counts["valid_mask_disk_load_count"] += 1
+            profile["valid_mask_disk_load_count"] = 1
+            profile["valid_mask_memory_hit_count"] = 0
+            runtime.put_static_geometry(calibration, "valid_masks", cached)
     profile["mask_cache_load_ms"] = (time.perf_counter() - start) * 1000.0
     if cached is not None:
         profile["mask_build_ms"] = 0.0
@@ -441,12 +478,16 @@ def _get_or_build_valid_masks(
     mask_cam4 = mask_cam4 > 0
 
     cache.write_calibration_valid_masks(calibration, (mask_cam2, mask_cam4))
+    if runtime is not None:
+        runtime.put_static_geometry(
+            calibration, "valid_masks", (mask_cam2, mask_cam4),
+        )
     profile["mask_build_ms"] = (time.perf_counter() - start) * 1000.0
 
     return mask_cam2, mask_cam4
 
 
-def _run_densekp(args, cache, runner, erp_cam2, erp_cam4):
+def _run_densekp(runner, erp_cam2, erp_cam4):
     result_cam2 = _run_densekp_one_camera(runner, erp_cam2, "cam2")
     result_cam4 = _run_densekp_one_camera(runner, erp_cam4, "cam4")
     return result_cam2, result_cam4

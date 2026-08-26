@@ -3,6 +3,7 @@
 #include "staged_lm/pipeline.h"
 
 #include <cstddef>
+#include <memory>
 
 namespace staged_lm {
 
@@ -25,6 +26,22 @@ struct MultiFramePoseShapeLMProblem {
   float beta_limit = 2.5F;
   PoseShapeNormalEquationConfig normal_config;
   LMConfig lm_config;
+  EvaluatorBackendKind evaluator_backend = EvaluatorBackendKind::kCpu;
+};
+
+struct CudaMultiFramePoseShapeWorkspace;
+
+class CudaMultiFramePoseShapeEvaluator final : public EvaluatorBackend {
+ public:
+  explicit CudaMultiFramePoseShapeEvaluator(
+      const MultiFramePoseShapeLMProblem& problem);
+  ~CudaMultiFramePoseShapeEvaluator() override;
+  void forward(const std::vector<float>& parameters) override;
+  double evaluate_residual() override;
+  void linearize(const std::vector<float>& parameters) override;
+ DenseNormalEquations build_normal_equations() override;
+ private:
+  std::unique_ptr<CudaMultiFramePoseShapeWorkspace> workspace_;
 };
 
 std::size_t multiframe_parameter_dimension(std::size_t frame_count);
@@ -51,6 +68,8 @@ struct MultiFrameStagedLMProblem {
   float beta_limit = 2.5F;
   PoseShapeNormalEquationConfig pose_shape_normal_config;
   LMConfig pose_shape_lm_config;
+  EvaluatorBackendKind evaluator_backend = EvaluatorBackendKind::kCpu;
+  bool batch_cuda_pose = true;
 };
 
 struct MultiFrameStagedLMFrameResult {

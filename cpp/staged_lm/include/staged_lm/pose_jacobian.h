@@ -65,6 +65,11 @@ struct PoseCameraJacobianResult {
   double erp_jacobian_chain_ms = 0.0;
   double assemble_active_ms = 0.0;
   double total_jacobian_ms = 0.0;
+  double cuda_allocation_ms = 0.0;
+  double cuda_memcpy_ms = 0.0;
+  double cuda_h2d_ms = 0.0;
+  double cuda_d2h_ms = 0.0;
+  double cuda_kernel_ms = 0.0;
 };
 
 PoseCameraJacobianResult evaluate_pose_camera_with_jacobian(

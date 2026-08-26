@@ -51,6 +51,8 @@ class ORTRunner:
             "densekp_tensor_prepare_ms": 0.0,
             "densekp_inference_ms": 0.0,
             "densekp_postprocess_ms": 0.0,
+            "densekp_ort_call_count": 0.0,
+            "densekp_ort_batch_item_count": 0.0,
         }
         self.session_creation_count = 0
         self.detector_initialization_count = 0
@@ -99,6 +101,10 @@ class ORTRunner:
     @property
     def loaded(self) -> bool:
         return self._session is not None and self._detector is not None
+
+    @property
+    def execution_providers(self) -> list[str]:
+        return [] if self._session is None else list(self._session.get_providers())
 
     def close(self) -> None:
         """Release references owned by this runner."""
@@ -149,6 +155,8 @@ class ORTRunner:
             ) * 1000.0
             start = time.perf_counter()
             ort_out = self._session.run([self._ort_out_name], {self._ort_in_name: batch['img']})[0]
+            self.profile_timing["densekp_ort_call_count"] += 1
+            self.profile_timing["densekp_ort_batch_item_count"] += batch['img'].shape[0]
             self.profile_timing["densekp_inference_ms"] += (
                 time.perf_counter() - start
             ) * 1000.0
@@ -185,8 +193,6 @@ class ORTRunner:
             persons=persons, camera_name=camera_name,
             error_message=None if persons else "No persons processed",
         )
-
-
 
 def _rotate_2d(pt_2d, rot_rad):
     x, y = float(pt_2d[0]), float(pt_2d[1])

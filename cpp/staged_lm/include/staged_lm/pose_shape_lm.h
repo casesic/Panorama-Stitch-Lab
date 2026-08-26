@@ -1,5 +1,6 @@
 #pragma once
 #include "staged_lm/lm.h"
+#include "staged_lm/evaluator.h"
 #include "staged_lm/pose_shape_forward.h"
 #include "staged_lm/pose_shape_normal_equations.h"
 namespace staged_lm {
@@ -12,6 +13,7 @@ namespace staged_lm {
         float beta_limit = 2.5F;
         PoseShapeNormalEquationConfig normal_config;
         LMConfig lm_config;
+        EvaluatorBackendKind evaluator_backend = EvaluatorBackendKind::kCpu;
     };
     LMRunResult run_pose_shape_lm(const PoseShapeLMProblem &);
 }

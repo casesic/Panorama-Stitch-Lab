@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+import json
 import time
 from typing import Any
 
@@ -14,10 +16,51 @@ class DenseKPRuntime:
     """
 
     def __init__(self, runner: Any):
+        # Model resources live for the whole stream.
         self._runner = runner
         self.startup_ms = 0.0
         self.load_count = 0
         self.closed = False
+        # Image decode workers and calibration-derived GPU/CPU geometry are
+        # shared by frames; rebuilding either per frame dominates runtime.
+        self.image_io_executor = ThreadPoolExecutor(
+            max_workers=2, thread_name_prefix="densekp-image-io",
+        )
+        self._static_geometry: dict[str, dict[str, Any]] = {}
+        self.static_cache_counts = {
+            "lut_disk_load_count": 0,
+            "lut_memory_hit_count": 0,
+            "valid_mask_disk_load_count": 0,
+            "valid_mask_memory_hit_count": 0,
+        }
+
+    @staticmethod
+    def _calibration_key(specification: dict[str, Any]) -> str:
+        return json.dumps(specification, sort_keys=True, separators=(",", ":"))
+
+    def intern_calibration(self, specification: dict[str, Any]) -> dict[str, Any]:
+        """Return the one resident calibration object for this specification."""
+        key = self._calibration_key(specification)
+        entry = self._static_geometry.setdefault(key, {})
+        return entry.setdefault("calibration", specification)
+
+    def get_static_geometry(
+        self, specification: dict[str, Any], name: str,
+    ) -> Any | None:
+        entry = self._static_geometry.get(self._calibration_key(specification))
+        return None if entry is None else entry.get(name)
+
+    def put_static_geometry(
+        self, specification: dict[str, Any], name: str, value: Any,
+    ) -> None:
+        key = self._calibration_key(specification)
+        self._static_geometry.setdefault(key, {"calibration": specification})[
+            name
+        ] = value
+
+    @property
+    def static_geometry_entry_count(self) -> int:
+        return len(self._static_geometry)
 
     @classmethod
     def from_args(cls, args: Any) -> "DenseKPRuntime":
@@ -44,6 +87,11 @@ class DenseKPRuntime:
         else:
             raise ValueError(f"Unknown backend: {args.backend}")
         return cls(runner)
+
+    @classmethod
+    def from_config(cls, config: Any) -> "DenseKPRuntime":
+        """Construct from the public configuration interface."""
+        return cls.from_args(config)
 
     def load(self) -> "DenseKPRuntime":
         if self.closed:
@@ -75,6 +123,13 @@ class DenseKPRuntime:
         if self.closed:
             return
         self._runner.close()
+        self.image_io_executor.shutdown()
+        for entry in self._static_geometry.values():
+            for value in entry.values():
+                close = getattr(value, "close", None)
+                if close is not None:
+                    close()
+        self._static_geometry.clear()
         self.closed = True
 
     @property
@@ -92,6 +147,10 @@ class DenseKPRuntime:
     @property
     def detector_initialization_count(self) -> int:
         return int(getattr(self._runner, "detector_initialization_count", 0))
+
+    @property
+    def execution_providers(self) -> list[str]:
+        return list(getattr(self._runner, "execution_providers", []))
 
     def __enter__(self) -> "DenseKPRuntime":
         return self.load()

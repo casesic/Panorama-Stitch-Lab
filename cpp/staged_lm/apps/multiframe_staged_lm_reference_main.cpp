@@ -5,7 +5,10 @@
 
 #include <Eigen/Core>
 
+#include <chrono>
 #include <filesystem>
+#include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <map>
 #include <sstream>
@@ -25,6 +28,14 @@ bool has_flag(int argc, char** argv, const std::string& requested) {
   for (int index = 1; index < argc; ++index)
     if (argv[index] == requested) return true;
   return false;
+}
+
+std::string optional_argument(
+    int argc, char** argv, const std::string& requested,
+    const std::string& fallback) {
+  for (int index = 1; index + 1 < argc; ++index)
+    if (argv[index] == requested) return argv[index + 1];
+  return fallback;
 }
 
 std::vector<std::filesystem::path> fixture_paths(const std::string& value) {
@@ -120,6 +131,23 @@ PoseShapeCameraInput model_camera(
   return result;
 }
 
+void write_trajectory(
+    const std::filesystem::path& path, const LMRunResult& result) {
+  std::ofstream output(path);
+  output << std::setprecision(17);
+  output << "index,outer,trial,lambda_before,lambda_after,solve_backend,"
+            "solve_success,candidate_objective,predicted_reduction,"
+            "actual_reduction,rho,accepted\n";
+  for (const auto& trial : result.trials) {
+    output << trial.index << ',' << trial.outer << ',' << trial.trial << ','
+           << trial.lambda_before << ',' << trial.lambda_after << ','
+           << trial.solve_backend << ',' << trial.solve_success << ','
+           << trial.candidate_objective << ',' << trial.predicted_reduction << ','
+           << trial.actual_reduction << ',' << trial.rho << ',' << trial.accepted
+           << '\n';
+  }
+}
+
 StagedLMFrameProblem load_frame(
     const std::filesystem::path& fixture,
     const std::vector<float>& base_joints,
@@ -183,15 +211,20 @@ StagedLMFrameProblem load_frame(
 
 int main(int argc, char** argv) {
   try {
+    const auto app_started = std::chrono::steady_clock::now();
     const auto fixtures = fixture_paths(argument(argc, argv, "--fixtures"));
     const std::filesystem::path output = argument(argc, argv, "--output");
     const bool optimized_densekp_only =
         has_flag(argc, argv, "--optimized-densekp-only");
+    const EvaluatorBackendKind evaluator_backend = parse_evaluator_backend(
+        optional_argument(argc, argv, "--evaluator-backend", "cpu").c_str());
     const auto first_model_meta = read_key_value_file(
         fixtures.front() / "model_fixture_meta.txt");
     const auto first_pipeline_meta = read_key_value_file(
         fixtures.front() / "pipeline_meta.txt");
     MultiFrameStagedLMProblem problem;
+    problem.evaluator_backend = evaluator_backend;
+    problem.batch_cuda_pose = !has_flag(argc, argv, "--sequential-cuda-pose");
     std::shared_ptr<const DenseKPRegressor> densekp_regressor;
     if (first_model_meta.count("observation_mode") &&
         first_model_meta.at("observation_mode") == "densekp") {
@@ -234,10 +267,14 @@ int main(int argc, char** argv) {
           problem.beta_anchor, problem.parents,
           problem.pose_shape_normal_config, densekp_regressor));
     }
+    const double fixture_model_load_ms =
+        std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - app_started).count();
 
     Eigen::setNbThreads(1);
     const MultiFrameStagedLMResult result =
         run_multiframe_staged_pipeline(problem);
+    const auto output_started = std::chrono::steady_clock::now();
     std::filesystem::create_directories(output);
     for (std::size_t frame = 0; frame < result.frames.size(); ++frame) {
       const auto directory = output / ("frame_" + std::to_string(frame));
@@ -266,6 +303,8 @@ int main(int argc, char** argv) {
       write_float32_file(
           directory / "pose_final_parameters.f32",
           result.frames[frame].pose.final_parameters);
+      write_trajectory(
+          directory / "pose_trajectory.csv", result.frames[frame].pose);
       write_float32_file(
           directory / "pose_shape_frame_parameters.f32",
           result.frames[frame].final_parameters);
@@ -280,19 +319,57 @@ int main(int argc, char** argv) {
     }
     write_float32_file(output / "shared_beta_latent.f32", result.beta_latent);
     write_float32_file(output / "shared_physical_beta.f32", result.physical_beta);
+    write_float32_file(
+        output / "pose_shape_final_parameters.f32",
+        result.pose_shape.final_parameters);
+    write_trajectory(output / "pose_shape_trajectory.csv", result.pose_shape);
+    std::size_t pose_linearizations = 0, pose_objectives = 0;
+    for (const auto& frame : result.frames) {
+      pose_linearizations += frame.pose.normal_equation_call_count;
+      pose_objectives += frame.pose.objective_call_count;
+    }
+    const std::size_t before_h2d_count =
+        pose_linearizations * 6 + pose_objectives * 4;
+    const std::size_t before_h2d_bytes =
+        pose_linearizations * 2664 + pose_objectives * 1344;
+    const std::size_t before_d2h_count = pose_linearizations * 4;
+    const std::size_t before_d2h_bytes = pose_linearizations * 77280;
+    const auto& transfer = result.frames.front().pose;
+    const double output_export_ms =
+        std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - output_started).count();
+    const double app_profiled_ms =
+        std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - app_started).count();
     write_key_value_file(output / "multiframe_summary.txt", {
         {"frame_count", std::to_string(result.frames.size())},
         {"parameter_dimension", std::to_string(
             result.pose_shape.final_parameters.size())},
         {"shared_beta_block_count", "1"},
         {"pose_shape_status", result.pose_shape.status},
+        {"pose_shape_accepted", std::to_string(result.pose_shape.accepted_steps)},
+        {"pose_shape_rejected", std::to_string(result.pose_shape.rejected_trials)},
+        {"pose_shape_trials", std::to_string(result.pose_shape.trials.size())},
         {"stage1_total_ms", std::to_string(result.stage1_total_ms)},
         {"pose_total_ms", std::to_string(result.pose_total_ms)},
         {"pose_shape_total_ms", std::to_string(result.pose_shape_total_ms)},
         {"total_ms", std::to_string(result.total_ms)},
         {"ms_per_frame", std::to_string(result.ms_per_frame)},
+        {"fixture_model_load_ms", std::to_string(fixture_model_load_ms)},
+        {"output_export_ms", std::to_string(output_export_ms)},
+        {"app_profiled_ms", std::to_string(app_profiled_ms)},
         {"kernel_policy", "optimized_native_stable_p"},
         {"densekp_variant", "sparse_materialized"},
+        {"evaluator_backend", evaluator_backend_name(evaluator_backend)},
+        {"pose_cuda_scheduling", problem.batch_cuda_pose ? "batch" : "sequential"},
+        {"pose_transfer_before_h2d_count", std::to_string(before_h2d_count)},
+        {"pose_transfer_before_h2d_bytes", std::to_string(before_h2d_bytes)},
+        {"pose_transfer_before_d2h_count", std::to_string(before_d2h_count)},
+        {"pose_transfer_before_d2h_bytes", std::to_string(before_d2h_bytes)},
+        {"pose_transfer_after_h2d_count", std::to_string(transfer.batch_h2d_count)},
+        {"pose_transfer_after_h2d_bytes", std::to_string(transfer.batch_h2d_bytes)},
+        {"pose_transfer_after_d2h_count", std::to_string(transfer.batch_d2h_count)},
+        {"pose_transfer_after_d2h_bytes", std::to_string(transfer.batch_d2h_bytes)},
     });
     std::cout << "MULTI_FRAME_STAGED_LM_READY=PASS frames="
               << result.frames.size() << " parameter_dimension="

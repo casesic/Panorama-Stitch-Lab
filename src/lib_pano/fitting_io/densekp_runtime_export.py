@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 import shutil
 import sys
@@ -62,11 +63,27 @@ def materialize_runtime_fixture(
     output_fixture: Path,
     observation: DenseKPDeliveryObservation,
     assets_directory: Path = DEFAULT_ASSETS,
+    *,
+    link_static_files: bool = False,
 ) -> None:
-    """Clone a 204-support model bundle and inject only DenseKP observations."""
+    """Clone a 204-support model bundle and inject DenseKP observations.
+
+    The forward model always evaluates 204 supporting SMPL-X vertices.  The
+    observation operator regresses those vertices to at most 138 valid DenseKP
+    semantic rows; these counts describe different spaces and must not be
+    conflated.
+    """
     if output_fixture.exists():
         raise FileExistsError(f"runtime fixture already exists: {output_fixture}")
-    shutil.copytree(base_fixture, output_fixture)
+    if link_static_files:
+        shutil.copytree(
+            base_fixture, output_fixture,
+            copy_function=lambda source, destination: os.symlink(
+                Path(source).resolve(), destination,
+            ),
+        )
+    else:
+        shutil.copytree(base_fixture, output_fixture)
 
     regressor = np.fromfile(
         assets_directory / "densekp_regressor_138x204.f32", dtype="<f4",
@@ -115,7 +132,17 @@ def materialize_runtime_fixture(
             if densekp_ready else regressor[densekp_ids] @ base_local,
             dtype="<f4",
         )
+        if local_path.is_symlink():
+            local_path.unlink()
         densekp_local.tofile(local_path)
+        for name in (
+            f"stage1_{camera}_targets.f32",
+            f"model_{camera}_targets.f32",
+            f"model_{camera}_densekp_ids.i32",
+        ):
+            path = output_fixture / name
+            if path.is_symlink():
+                path.unlink()
         targets.tofile(output_fixture / f"stage1_{camera}_targets.f32")
         targets.tofile(output_fixture / f"model_{camera}_targets.f32")
         densekp_ids.tofile(output_fixture / f"model_{camera}_densekp_ids.i32")
@@ -130,12 +157,18 @@ def materialize_runtime_fixture(
         "densekp_support_count": "204",
         "densekp_row_count": "138",
     })
+    for path in (stage_meta_path, model_meta_path):
+        if path.is_symlink():
+            path.unlink()
     _write_metadata(stage_meta_path, stage_meta)
     _write_metadata(model_meta_path, model_meta)
     for name in (
         "densekp_support_vertex_ids.i32", "densekp_regressor_138x204.f32",
     ):
-        shutil.copyfile(assets_directory / name, output_fixture / name)
+        destination = output_fixture / name
+        if destination.is_symlink():
+            destination.unlink()
+        shutil.copyfile(assets_directory / name, destination)
 
 
 def main() -> int:
