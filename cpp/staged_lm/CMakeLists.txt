@@ -32,6 +32,7 @@ add_library(staged_lm STATIC
     src/pose_shape_lm.cpp
     src/pose_shape_normal_equations.cpp
     src/pose_shape_schur.cpp
+    src/runtime_preparation.cpp
     src/shape.cpp
     src/so3.cpp
     src/stage1.cpp

@@ -44,6 +44,9 @@ class ORTRunner:
             "ort_init_ms": 0.0,
             "detector_init_ms": 0.0,
             "detector_inference_ms": 0.0,
+            "detector_preprocess_ms": 0.0,
+            "detector_ort_ms": 0.0,
+            "detector_postprocess_ms": 0.0,
             "bbox_postprocess_ms": 0.0,
             "densekp_preprocess_ms": 0.0,
             "densekp_crop_resize_ms": 0.0,
@@ -118,11 +121,162 @@ class ORTRunner:
         h, w = image_bgr.shape[:2]
 
         start = time.perf_counter()
+        detector_before = dict(getattr(self._detector, "profile_timing", {}))
         detections = self._detector.detect(image_bgr)
         self.profile_timing["detector_inference_ms"] += (
             time.perf_counter() - start
         ) * 1000.0
+        detector_after = getattr(self._detector, "profile_timing", {})
+        for source, target in (
+            ("preprocess_ms", "detector_preprocess_ms"),
+            ("inference_ms", "detector_ort_ms"),
+            ("postprocess_ms", "detector_postprocess_ms"),
+        ):
+            self.profile_timing[target] += float(detector_after.get(source, 0.0)) - float(
+                detector_before.get(source, 0.0))
         return self._run_single_stage(image_bgr, detections, image_path, camera_name, h, w)
+
+    def run_batch(
+        self,
+        items: list[tuple[np.ndarray, str, str]],
+        densekp_batch_size: int | None = None,
+    ) -> list[DenseKPResult]:
+        """Run serial B=1 detection, then one global DenseKP crop queue.
+
+        The shipped detector graph has a fixed batch dimension of one.  This
+        method therefore deliberately preserves its production inference and
+        only batches the dynamic-batch DenseKP graph across images.  The tuple
+        index is the restoration key, so unequal/empty results cannot reorder
+        frame, camera, or ROI metadata.
+        """
+        self._lazy_init()
+        detections_per_item = []
+        for image, _, _ in items:
+            before = dict(getattr(self._detector, "profile_timing", {}))
+            started = time.perf_counter()
+            detections_per_item.append(self._detector.detect(image))
+            self.profile_timing["detector_inference_ms"] += (
+                time.perf_counter() - started) * 1000.0
+            after = getattr(self._detector, "profile_timing", {})
+            for source, target in (
+                ("preprocess_ms", "detector_preprocess_ms"),
+                ("inference_ms", "detector_ort_ms"),
+                ("postprocess_ms", "detector_postprocess_ms"),
+            ):
+                self.profile_timing[target] += float(after.get(source, 0.0)) - float(
+                    before.get(source, 0.0))
+        return self._run_detected_batch(
+            items, detections_per_item,
+            self.batch_size if densekp_batch_size is None else densekp_batch_size,
+        )
+
+    def run_bboxes(
+        self,
+        items: list[tuple[np.ndarray, str, str, list[list[float]]]],
+        densekp_batch_size: int = 1,
+    ) -> list[DenseKPResult]:
+        """Run DenseKP directly from externally supplied xyxy boxes.
+
+        This is the track-guided inference primitive.  It deliberately knows
+        nothing about tracks or temporal policy and never consults detector
+        scores.  Each box is converted to the same detection dictionary used
+        by the production detector path, then enters identical preprocessing.
+        """
+        self._lazy_init()
+        runner_items = [(image, path, camera) for image, path, camera, _ in items]
+        detections = [[{
+            "bbox_xyxy": np.asarray(box, dtype=np.float32),
+            "score": 1.0,
+        } for box in boxes] for _, _, _, boxes in items]
+        return self._run_detected_batch(
+            runner_items, detections, densekp_batch_size)
+
+    def _run_detected_batch(self, items, detections_per_item, batch_size):
+        persons_per_item: list[list[DenseKPPerson]] = [[] for _ in items]
+        jobs = []
+        for item_index, ((image, _, _), detections) in enumerate(
+            zip(items, detections_per_item)
+        ):
+            if not detections:
+                continue
+            started = time.perf_counter()
+            boxes = np.stack([d["bbox_xyxy"] for d in detections]).astype(np.float32)
+            scales = (boxes[:, 2:4] - boxes[:, 0:2]) / 200.0
+            centers = (boxes[:, 2:4] + boxes[:, 0:2]) / 2.0
+            self.profile_timing["bbox_postprocess_ms"] += (
+                time.perf_counter() - started) * 1000.0
+            for person_index in range(len(detections)):
+                jobs.append((item_index, person_index, image, detections[person_index],
+                             boxes[person_index], centers[person_index], scales[person_index]))
+
+        prepared = []
+        mean = 255.0 * np.asarray(IMAGE_MEAN, np.float32)
+        std = 255.0 * np.asarray(IMAGE_STD, np.float32)
+        for job in jobs:
+            _, _, image, _, _, center, scale = job
+            bbox_size = float(_expand_to_aspect_ratio(
+                scale * 200, target_aspect_ratio=None).max())
+            started = time.perf_counter()
+            patch, _ = _generate_image_patch_cv2(
+                image, float(center[0]), float(center[1]), bbox_size, bbox_size,
+                IMAGE_SIZE, IMAGE_SIZE, False, 1.0, 0)
+            self.profile_timing["densekp_crop_resize_ms"] += (
+                time.perf_counter() - started) * 1000.0
+            started = time.perf_counter()
+            array = _convert_cvimg_to_tensor(patch[:, :, ::-1])
+            self.profile_timing["densekp_tensor_prepare_ms"] += (
+                time.perf_counter() - started) * 1000.0
+            started = time.perf_counter()
+            # Preserve the production B1 operation order exactly.  Vectorized
+            # broadcasting is shorter but can change float32 rounding before
+            # ORT, obscuring the actual batch-inference parity measurement.
+            for channel in range(min(image.shape[2], 3)):
+                array[channel] = (
+                    array[channel] - mean[channel]) / std[channel]
+            self.profile_timing["densekp_normalize_ms"] += (
+                time.perf_counter() - started) * 1000.0
+            prepared.append((job, bbox_size, array))
+
+        batch_size = max(1, int(batch_size))
+        for start_index in range(0, len(prepared), batch_size):
+            chunk = prepared[start_index:start_index + batch_size]
+            started = time.perf_counter()
+            tensor = np.stack([entry[2] for entry in chunk]).astype(np.float32)
+            self.profile_timing["densekp_tensor_prepare_ms"] += (
+                time.perf_counter() - started) * 1000.0
+            started = time.perf_counter()
+            output = self._session.run(
+                [self._ort_out_name], {self._ort_in_name: tensor})[0]
+            self.profile_timing["densekp_ort_call_count"] += 1
+            self.profile_timing["densekp_ort_batch_item_count"] += len(chunk)
+            self.profile_timing["densekp_inference_ms"] += (
+                time.perf_counter() - started) * 1000.0
+            started = time.perf_counter()
+            for local_index, (job, bbox_size, _) in enumerate(chunk):
+                item_index, person_index, _, detection, box, center, _ = job
+                prediction = output[local_index]
+                crop_xy = (prediction[:, :2] + 0.5) * IMAGE_SIZE
+                keypoints = _crop_xy_to_orig_xy_by_affine(
+                    crop_xy, center, bbox_size)
+                persons_per_item[item_index].append(DenseKPPerson(
+                    person_index=person_index, bbox=box.tolist(),
+                    keypoints=keypoints,
+                    raw_scores=prediction[:, 2].astype(np.float32),
+                    detection_score=float(detection.get("score", 0.0)),
+                    source="ort",
+                ))
+            self.profile_timing["densekp_postprocess_ms"] += (
+                time.perf_counter() - started) * 1000.0
+
+        results = []
+        for (image, image_path, camera_name), persons in zip(items, persons_per_item):
+            height, width = image.shape[:2]
+            results.append(DenseKPResult(
+                image_path=image_path, image_width=width, image_height=height,
+                persons=persons, camera_name=camera_name,
+                error_message=None if persons else "No persons processed",
+            ))
+        return results
 
     def _run_single_stage(self, image_bgr, detections, image_path, camera_name, h, w):
         persons = []

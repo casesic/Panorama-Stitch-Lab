@@ -7,6 +7,7 @@ prepared 204-support C++ model bundle. It never runs SMPL-X or Python LM.
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
@@ -26,6 +27,75 @@ from lib_pano.fitting_io.densekp_delivery_io import (
 
 
 DEFAULT_ASSETS = PROJECT_ROOT / "cpp/staged_lm/assets"
+
+
+@dataclass(frozen=True)
+class PersonFrameInitialState:
+    """Normalized per-person state consumed by C++ runtime preparation."""
+
+    frame_parameters: np.ndarray  # [75]
+    beta: np.ndarray  # physical [10]
+    cam2_left_hand_pose: np.ndarray  # [45]
+    cam2_right_hand_pose: np.ndarray  # [45]
+    cam4_left_hand_pose: np.ndarray  # [45]
+    cam4_right_hand_pose: np.ndarray  # [45]
+    cam2_scale: float
+    cam4_scale: float
+
+    def validate(self) -> None:
+        expected = {
+            "frame_parameters": (75,), "beta": (10,),
+            "cam2_left_hand_pose": (45,), "cam2_right_hand_pose": (45,),
+            "cam4_left_hand_pose": (45,), "cam4_right_hand_pose": (45,),
+        }
+        for name, shape in expected.items():
+            value = np.asarray(getattr(self, name))
+            if value.shape != shape or not np.isfinite(value).all():
+                raise ValueError(f"{name} must be finite with shape {shape}")
+
+
+def person_initial_state_from_smplx(cam2: object, cam4: object) -> PersonFrameInitialState:
+    """Normalize two camera SMPL-X parameter objects for staged-LM.
+
+    Body pose and beta are shared model state.  Global orientation and
+    translation remain camera-specific and occupy the first 12 entries of the
+    established per-frame layout.
+    """
+    def array(value: object) -> np.ndarray:
+        tensor = getattr(value, "detach", lambda: value)()
+        tensor = getattr(tensor, "cpu", lambda: tensor)()
+        return np.asarray(tensor, dtype=np.float32).reshape(-1)
+
+    body2, body4 = array(cam2.body_pose), array(cam4.body_pose)
+    beta2, beta4 = array(cam2.beta), array(cam4.beta)
+    if body2.shape != (63,) or body4.shape != (63,):
+        raise ValueError("SMPL-X body pose must contain 21x3 axis-angle values")
+    if beta2.shape != (10,) or beta4.shape != (10,):
+        raise ValueError("SMPL-X beta must contain 10 values")
+    if not np.array_equal(body2, body4) or not np.array_equal(beta2, beta4):
+        raise ValueError("cam2/cam4 must share body pose and beta")
+    frame = np.concatenate((
+        array(cam2.orient), array(cam2.transl),
+        array(cam4.orient), array(cam4.transl), body2,
+    )).astype(np.float32, copy=False)
+    state = PersonFrameInitialState(
+        frame_parameters=frame,
+        beta=beta2,
+        cam2_left_hand_pose=array(cam2.left_hand_pose),
+        cam2_right_hand_pose=array(cam2.right_hand_pose),
+        cam4_left_hand_pose=array(cam4.left_hand_pose),
+        cam4_right_hand_pose=array(cam4.right_hand_pose),
+        cam2_scale=float(array(cam2.scale)[0]),
+        cam4_scale=float(array(cam4.scale)[0]),
+    )
+    state.validate()
+    return state
+
+
+def _replace_float32(path: Path, value: np.ndarray) -> None:
+    if path.is_symlink():
+        path.unlink()
+    np.ascontiguousarray(value, dtype="<f4").tofile(path)
 
 
 def _metadata(path: Path) -> dict[str, str]:
@@ -169,6 +239,47 @@ def materialize_runtime_fixture(
         if destination.is_symlink():
             destination.unlink()
         shutil.copyfile(assets_directory / name, destination)
+
+
+def materialize_person_runtime_fixture(
+    base_fixture: Path,
+    output_fixture: Path,
+    observation: DenseKPDeliveryObservation,
+    initial: PersonFrameInitialState,
+    assets_directory: Path = DEFAULT_ASSETS,
+) -> None:
+    """Create a T=1 person fixture whose derived Stage1 geometry is rebuilt in C++."""
+    initial.validate()
+    materialize_runtime_fixture(
+        base_fixture, output_fixture, observation, assets_directory,
+        link_static_files=True,
+    )
+    frame = np.asarray(initial.frame_parameters, dtype=np.float32)
+    _replace_float32(output_fixture / "stage1_initial_parameters.f32", frame[:12])
+    _replace_float32(output_fixture / "model_body_pose_anchor.f32", frame[12:])
+    _replace_float32(output_fixture / "model_beta_anchor.f32", initial.beta)
+    for camera in ("cam2", "cam4"):
+        _replace_float32(
+            output_fixture / f"model_{camera}_left_hand_pose.f32",
+            getattr(initial, f"{camera}_left_hand_pose"),
+        )
+        _replace_float32(
+            output_fixture / f"model_{camera}_right_hand_pose.f32",
+            getattr(initial, f"{camera}_right_hand_pose"),
+        )
+        _replace_float32(
+            output_fixture / f"model_{camera}_scale.f32",
+            np.asarray([getattr(initial, f"{camera}_scale")], np.float32),
+        )
+    metadata = _metadata(output_fixture / "pipeline_meta.txt")
+    metadata.update({
+        "input_mode": "person_runtime_v1",
+        "runtime_prepare_stage1_required": "true",
+    })
+    pipeline_meta = output_fixture / "pipeline_meta.txt"
+    if pipeline_meta.is_symlink():
+        pipeline_meta.unlink()
+    _write_metadata(pipeline_meta, metadata)
 
 
 def main() -> int:

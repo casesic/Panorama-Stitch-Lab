@@ -101,23 +101,18 @@ def fisheye_to_erp(
     return _ray_to_erp(world_rays, width, height)
 
 
-def load_densekp_delivery_observation(
-    path: str | Path,
+def _observation_from_payload(
+    data: dict,
     *,
-    image_width: int = 5760,
-    image_height: int = 2880,
-    camera_group: str = "old",
+    image_width: int,
+    image_height: int,
+    camera_group: str,
 ) -> DenseKPDeliveryObservation:
-    """Load delivery pairs and normalize ERP/fisheye input to ERP_ROTATE."""
-    data = json.loads(Path(path).read_text(encoding="utf-8"))
-    if data.get("status", "matched") != "matched":
-        raise ValueError(f"DenseKP delivery is not matched: {data.get('status')}")
+    """Normalize one person payload from v1 or v2 to ERP_ROTATE."""
     pairs = np.asarray(data["pairs"], dtype=np.float32)
     if pairs.ndim != 2 or pairs.shape[1] != 4:
         raise ValueError(f"invalid DenseKP pairs shape: {pairs.shape}")
-    point_ids = np.asarray(
-        data.get("point_ids", np.arange(len(pairs))), dtype=np.int32
-    )
+    point_ids = np.asarray(data.get("point_ids", np.arange(len(pairs))), dtype=np.int32)
     valid = np.asarray(data.get("valid", np.ones(len(pairs))), dtype=bool)
     if point_ids.shape != (len(pairs),) or valid.shape != (len(pairs),):
         raise ValueError("DenseKP point_ids/valid length mismatch")
@@ -127,28 +122,47 @@ def load_densekp_delivery_observation(
         points2 = erp_to_erp_rotate(points2, image_width, image_height)
         points4 = erp_to_erp_rotate(points4, image_width, image_height)
     elif coord_space == "fisheye":
-        points2 = erp_to_erp_rotate(
-            fisheye_to_erp(
-                points2, "cam2", image_width, image_height, camera_group
-            ), image_width, image_height
-        )
-        points4 = erp_to_erp_rotate(
-            fisheye_to_erp(
-                points4, "cam4", image_width, image_height, camera_group
-            ), image_width, image_height
-        )
+        points2 = erp_to_erp_rotate(fisheye_to_erp(points2, "cam2", image_width, image_height, camera_group), image_width, image_height)
+        points4 = erp_to_erp_rotate(fisheye_to_erp(points4, "cam4", image_width, image_height, camera_group), image_width, image_height)
     elif coord_space != "erp_rotate":
         raise ValueError(f"unsupported DenseKP coordinate space: {coord_space}")
     finite = np.isfinite(points2).all(axis=1) & np.isfinite(points4).all(axis=1)
-    in_range = (
-        (points2[:, 0] >= 0) & (points2[:, 0] < image_width)
-        & (points2[:, 1] >= 0) & (points2[:, 1] < image_height)
-        & (points4[:, 0] >= 0) & (points4[:, 0] < image_width)
-        & (points4[:, 1] >= 0) & (points4[:, 1] < image_height)
+    in_range = ((points2[:,0]>=0)&(points2[:,0]<image_width)&(points2[:,1]>=0)&(points2[:,1]<image_height)&(points4[:,0]>=0)&(points4[:,0]<image_width)&(points4[:,1]>=0)&(points4[:,1]<image_height))
+    return DenseKPDeliveryObservation(np.ascontiguousarray(points2,np.float32),np.ascontiguousarray(points4,np.float32),point_ids,valid&finite&in_range)
+
+
+def load_densekp_delivery_observations(
+    path: str | Path,
+    *,
+    image_width: int = 5760,
+    image_height: int = 2880,
+    camera_group: str = "old",
+) -> list[DenseKPDeliveryObservation]:
+    """Load every matched person; this is the canonical v2 API."""
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    if data.get("status", "matched") != "matched":
+        raise ValueError(f"DenseKP delivery is not matched: {data.get('status')}")
+    schema = data.get("schema_version", "densekp_pairs_v1")
+    payloads = data.get("persons", []) if schema == "densekp_pairs_v2" else [data]
+    return [_observation_from_payload(
+        {**person, "coord_space": data.get("coord_space", "erp")},
+        image_width=image_width, image_height=image_height,
+        camera_group=camera_group,
+    ) for person in payloads]
+
+
+def load_densekp_delivery_observation(
+    path: str | Path, *, image_width: int = 5760, image_height: int = 2880,
+    camera_group: str = "old",
+) -> DenseKPDeliveryObservation:
+    """Compatibility API: accept v1 or exactly one v2 person, never choose person 0."""
+    observations = load_densekp_delivery_observations(
+        path, image_width=image_width, image_height=image_height,
+        camera_group=camera_group,
     )
-    return DenseKPDeliveryObservation(
-        points_cam2=np.ascontiguousarray(points2, dtype=np.float32),
-        points_cam4=np.ascontiguousarray(points4, dtype=np.float32),
-        point_ids=point_ids,
-        valid=valid & finite & in_range,
-    )
+    if len(observations) != 1:
+        raise ValueError(
+            "single-person staged-LM requires exactly one matched DenseKP person; "
+            f"delivery contains {len(observations)}. Select/track one person explicitly."
+        )
+    return observations[0]

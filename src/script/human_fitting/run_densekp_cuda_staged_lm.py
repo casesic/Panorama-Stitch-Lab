@@ -178,7 +178,18 @@ def run_densekp_cuda_staged_lm(args: argparse.Namespace) -> int:
             profile_path = delivery_output / "result/densekp_runtime_profile.json"
             delivery_profile = load_numeric_profile(profile_path)
             delivery_status = str(delivery_payload.get("status", "unknown"))
-            valid_count = int(sum(delivery_payload.get("valid", [])))
+            if delivery_payload.get("schema_version") == "densekp_pairs_v2":
+                persons = delivery_payload.get("persons", [])
+                if len(persons) > 1:
+                    raise RuntimeError(
+                        "C++ staged-LM runner is single-person: DenseKP v2 "
+                        f"contains {len(persons)} matched people for frame {frame}. "
+                        "Track/select one identity before fitting; multi-frame is "
+                        "temporal batching, not multiple people."
+                    )
+                valid_count = int(sum(persons[0].get("valid", []))) if persons else 0
+            else:
+                valid_count = int(sum(delivery_payload.get("valid", [])))
             if delivery_status not in {"ok", "matched"} or valid_count == 0:
                 reason = delivery_status if valid_count else f"{delivery_status}:valid=0"
                 skipped_frames.append({"frame": frame, "reason": reason})

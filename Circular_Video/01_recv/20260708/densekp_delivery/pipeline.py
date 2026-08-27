@@ -27,13 +27,30 @@ from .camera.erp_rotate import (
 )
 from .camera.fisheye_points import erp_points_to_fisheye_points
 from .image_io import read_image, read_image_pair_profiled
-from .person_match import match_persons
+from .overlap_roi import (
+    build_compact_detection_rois, build_detection_rois,
+    crop_erp_roi, deduplicate_periodic_persons, merge_roi_results,
+    restore_result_to_full_erp,
+)
+from .person_match import match_all_persons
 from .profiling import write_runtime_profiles
 from .runners.base import DenseKPResult
 from .schema import build_empty_json, build_matched_json, write_json
 from .vis import save_visualizations
 
 logger = logging.getLogger(__name__)
+# The compact-strips candidate is retained for repeatable attribution, but the
+# fixed-batch YOLOX benchmark makes the two-component layout the faster policy.
+DETECTION_ROI_STRATEGY = "component_bbox"
+
+
+def _build_roi_geometry(mask_cam2, mask_cam4):
+    strict, detection, component_rois = build_detection_rois(mask_cam2, mask_cam4)
+    compact_rois = (
+        build_compact_detection_rois(detection, component_rois)
+        if DETECTION_ROI_STRATEGY == "compact_strips" else component_rois
+    )
+    return strict, detection, component_rois, compact_rois
 
 
 def load_erp_pair(config, runtime=None):
@@ -91,17 +108,68 @@ def run_pipeline(args, runtime=None) -> None:
             runtime,
         )
     except Exception as e:
-        logger.warning("Valid mask build failed (non-fatal): %s", e)
-        mask_cam2, mask_cam4 = None, None
+        logger.error("Valid mask build failed: %s", e)
+        _write_err_json(result_dir, "valid_mask_failed", backend, coord_space,
+                        erp_w, erp_h, str(e))
+        return
+
+    roi_start = time.perf_counter()
+    roi_geometry = (runtime.get_static_geometry(
+                        calibration, f"overlap_roi_{DETECTION_ROI_STRATEGY}")
+                    if runtime is not None else None)
+    if roi_geometry is None:
+        roi_geometry = _build_roi_geometry(mask_cam2, mask_cam4)
+        if runtime is not None:
+            runtime.put_static_geometry(calibration, f"overlap_roi_{DETECTION_ROI_STRATEGY}", roi_geometry)
+        profile["overlap_roi_memory_hit_count"] = 0
+    else:
+        profile["overlap_roi_memory_hit_count"] = 1
+    strict_overlap, detection_mask, component_rois, detection_rois = roi_geometry
+    profile["overlap_roi_build_ms"] = (time.perf_counter() - roi_start) * 1000.0
+    profile["full_erp_pixels"] = int(erp_w * erp_h)
+    profile["detection_roi_pixels"] = int(sum(r.pixel_count for r in detection_rois))
+    profile["detection_roi_ratio"] = float(profile["detection_roi_pixels"] / max(1, erp_w * erp_h))
+    profile["detection_roi_count"] = len(detection_rois)
+    profile["roi_count"] = len(detection_rois)
+    profile["roi_source_pixels_total"] = profile["detection_roi_pixels"]
+    profile["roi_source_pixel_ratio"] = profile["detection_roi_ratio"]
+    profile["roi_mask_pixels_total"] = int(detection_mask.sum())
+    profile["roi_fill_ratio"] = float(detection_mask.sum() / max(1, profile["detection_roi_pixels"]))
+    profile["detector_call_count"] = 2 * len(detection_rois)
+    profile["roi_specification"] = []
+    for index, roi in enumerate(detection_rois):
+        mask_pixels = int(detection_mask[
+            roi.y_start:roi.y_start + roi.height
+        ][:, roi.x_indices()].sum())
+        profile["roi_specification"].append({
+            "roi_index": index, "x_start": roi.x_start,
+            "x_segments": ([[roi.x_start, roi.erp_width],
+                            [0, roi.x_start + roi.width - roi.erp_width]]
+                           if roi.wraps_seam else
+                           [[roi.x_start, roi.x_start + roi.width]]),
+            "y0": roi.y_start, "y1": roi.y_start + roi.height,
+            "width": roi.width, "height": roi.height,
+            "roi_pixels": roi.pixel_count,
+            "mask_pixels_inside_roi": mask_pixels,
+            "fill_ratio": mask_pixels / max(1, roi.pixel_count),
+            "aspect_ratio": roi.width / max(1, roi.height),
+        })
 
     try:
         inference_start = time.perf_counter()
         result_cam2, result_cam4 = _run_densekp(
-            runner, erp_cam2, erp_cam4
+            runner, erp_cam2, erp_cam4, detection_rois
         )
         profile["densekp_runner_total_ms"] = (
             time.perf_counter() - inference_start
         ) * 1000.0
+        profile["densekp_person_count_before_dedup"] = int(
+            getattr(result_cam2, "person_count_before_dedup", len(result_cam2.persons))
+            + getattr(result_cam4, "person_count_before_dedup", len(result_cam4.persons))
+        )
+        profile["densekp_person_count_after_dedup"] = int(
+            len(result_cam2.persons) + len(result_cam4.persons)
+        )
     except Exception as e:
         logger.error("DenseKP inference failed: %s", e)
         _write_err_json(result_dir, "densekp_failed", backend, coord_space, erp_w, erp_h, str(e))
@@ -132,7 +200,7 @@ def run_pipeline(args, runtime=None) -> None:
 
     postprocess_start = time.perf_counter()
     try:
-        match_data = match_persons(
+        match_data = match_all_persons(
             result_cam2, result_cam4,
             erp_mask_cam2=mask_cam2,
             erp_mask_cam4=mask_cam4,
@@ -144,45 +212,29 @@ def run_pipeline(args, runtime=None) -> None:
         _write_err_json(result_dir, "densekp_failed", backend, coord_space, erp_w, erp_h, f"matching failed: {e}")
         return
 
-    kps_cam2 = match_data["kps_cam2"]
-    kps_cam4 = match_data["kps_cam4"]
-    keep = match_data["keep"]
-
-    if mask_cam2 is None or mask_cam4 is None:
-        keep = np.ones(len(kps_cam2), dtype=bool)
-        h2, w2 = erp_cam2.shape[:2]
-        h4, w4 = erp_cam4.shape[:2]
-        for i in range(len(kps_cam2)):
-            x2, y2 = kps_cam2[i, 0], kps_cam2[i, 1]
-            x4, y4 = kps_cam4[i, 0], kps_cam4[i, 1]
-            if not (np.isfinite(x2) and np.isfinite(y2) and 0 <= x2 < w2 and 0 <= y2 < h2):
-                keep[i] = False
-            if not (np.isfinite(x4) and np.isfinite(y4) and 0 <= x4 < w4 and 0 <= y4 < h4):
-                keep[i] = False
-        match_data["keep"] = keep
-        match_data["valid_count"] = int(keep.sum())
     profile["delivery_postprocess_ms"] = (
         time.perf_counter() - postprocess_start
     ) * 1000.0
 
     if coord_space == "erp":
         _write_erp_json(result_dir, backend, coord_space, args, erp_w, erp_h,
-                        fisheye_cam2_path, fisheye_cam4_path, match_data, kps_cam2, kps_cam4, keep)
+                        fisheye_cam2_path, fisheye_cam4_path, match_data)
         _handle_save_option(args, out_dir, result_cam2, result_cam4, match_data, erp_cam2, erp_cam4)
         save_visualizations(out_dir, args.vis_option, result_cam2, result_cam4,
-                            erp_cam2, erp_cam4, match_data, coord_space=coord_space)
+                            erp_cam2, erp_cam4, match_data, coord_space=coord_space,
+                            detection_rois=detection_rois,
+                            strict_overlap_mask=strict_overlap,
+                            detection_mask=detection_mask)
 
     elif coord_space == "erp_rotate":
         coordinate_start = time.perf_counter()
-        kps_cam2_rot = rotate_erp_points(kps_cam2, erp_w, erp_h)
-        kps_cam4_rot = rotate_erp_points(kps_cam4, erp_w, erp_h)
+        transformed = _transform_matches(match_data, lambda p: rotate_erp_points(p, erp_w, erp_h))
         profile["coordinate_transform_ms"] = (
             time.perf_counter() - coordinate_start
         ) * 1000.0
 
         _write_erp_json(result_dir, backend, coord_space, args, erp_w, erp_h,
-                        fisheye_cam2_path, fisheye_cam4_path, match_data,
-                        kps_cam2_rot, kps_cam4_rot, keep,
+                        fisheye_cam2_path, fisheye_cam4_path, transformed,
                         json_name="densekp_pairs_erp_rotate.json",
                         erp_rotate_matrix=DEFAULT_ERP_TO_ERP_ROTATE_R,
                         profile=profile)
@@ -190,7 +242,10 @@ def run_pipeline(args, runtime=None) -> None:
                             erp_cam2, erp_cam4)
         save_visualizations(out_dir, args.vis_option, result_cam2, result_cam4,
                             erp_cam2, erp_cam4, match_data, coord_space="erp",
-                            det_image_cam2=erp_cam2, det_image_cam4=erp_cam4)
+                            det_image_cam2=erp_cam2, det_image_cam4=erp_cam4,
+                            detection_rois=detection_rois,
+                            strict_overlap_mask=strict_overlap,
+                            detection_mask=detection_mask)
 
     elif coord_space == "fisheye":
         lut2, lut4 = luts
@@ -199,13 +254,12 @@ def run_pipeline(args, runtime=None) -> None:
         h2, w2 = fish2.shape[:2]
         h4, w4 = fish4.shape[:2]
 
-        kps_cam2_fish = erp_points_to_fisheye_points(kps_cam2, lut2[0], lut2[1])
-        kps_cam4_fish = erp_points_to_fisheye_points(kps_cam4, lut4[0], lut4[1])
-
-        keep_fish = keep.copy()
-        finite2 = np.isfinite(kps_cam2_fish).all(axis=1)
-        finite4 = np.isfinite(kps_cam4_fish).all(axis=1)
-        keep_fish = keep_fish & finite2 & finite4
+        transformed = _transform_matches_two(
+            match_data,
+            lambda p: erp_points_to_fisheye_points(p, lut2[0], lut2[1]),
+            lambda p: erp_points_to_fisheye_points(p, lut4[0], lut4[1]),
+            range_sizes=((w2, h2), (w4, h4)),
+        )
 
         fisheye_meta = {
             "image_size_cam2": [int(w2), int(h2)],
@@ -214,36 +268,33 @@ def run_pipeline(args, runtime=None) -> None:
 
         _write_fisheye_json(result_dir, backend, coord_space, args, fisheye_meta,
                             fisheye_cam2_path, fisheye_cam4_path,
-                            match_data, kps_cam2_fish, kps_cam4_fish, keep_fish,
+                            transformed,
                             json_name="densekp_pairs_fisheye.json")
         _handle_save_option(args, out_dir, result_cam2, result_cam4, match_data,
                             erp_cam2, erp_cam4)
-        match_data_fish = dict(match_data)
-        match_data_fish["keep"] = keep_fish
-        match_data_fish["valid_count"] = int(keep_fish.sum())
         save_visualizations(out_dir, args.vis_option, result_cam2, result_cam4,
                             erp_cam2, erp_cam4, match_data, coord_space="erp",
-                            det_image_cam2=erp_cam2, det_image_cam4=erp_cam4)
+                            det_image_cam2=erp_cam2, det_image_cam4=erp_cam4,
+                            detection_rois=detection_rois,
+                            strict_overlap_mask=strict_overlap,
+                            detection_mask=detection_mask)
         save_visualizations(out_dir, args.vis_option, result_cam2, result_cam4,
-                            fish2, fish4, match_data_fish, coord_space=coord_space,
-                            kps_cam2=kps_cam2_fish, kps_cam4=kps_cam4_fish,
+                            fish2, fish4, transformed, coord_space=coord_space,
                             det_image_cam2=erp_cam2, det_image_cam4=erp_cam4)
 
     elif coord_space == "both":
         _write_erp_json(result_dir, backend, "erp", args, erp_w, erp_h,
-                        fisheye_cam2_path, fisheye_cam4_path, match_data, kps_cam2, kps_cam4, keep,
+                        fisheye_cam2_path, fisheye_cam4_path, match_data,
                         json_name="densekp_pairs_erp.json", profile=profile)
 
         coordinate_start = time.perf_counter()
-        kps_cam2_rot = rotate_erp_points(kps_cam2, erp_w, erp_h)
-        kps_cam4_rot = rotate_erp_points(kps_cam4, erp_w, erp_h)
+        transformed = _transform_matches(match_data, lambda p: rotate_erp_points(p, erp_w, erp_h))
         profile["coordinate_transform_ms"] = (
             time.perf_counter() - coordinate_start
         ) * 1000.0
 
         _write_erp_json(result_dir, backend, "erp_rotate", args, erp_w, erp_h,
-                        fisheye_cam2_path, fisheye_cam4_path, match_data,
-                        kps_cam2_rot, kps_cam4_rot, keep,
+                        fisheye_cam2_path, fisheye_cam4_path, transformed,
                         json_name="densekp_pairs_erp_rotate.json",
                         erp_rotate_matrix=DEFAULT_ERP_TO_ERP_ROTATE_R,
                         profile=profile)
@@ -252,7 +303,10 @@ def run_pipeline(args, runtime=None) -> None:
                             erp_cam2, erp_cam4)
         save_visualizations(out_dir, args.vis_option, result_cam2, result_cam4,
                             erp_cam2, erp_cam4, match_data, coord_space="erp",
-                            det_image_cam2=erp_cam2, det_image_cam4=erp_cam4)
+                            det_image_cam2=erp_cam2, det_image_cam4=erp_cam4,
+                            detection_rois=detection_rois,
+                            strict_overlap_mask=strict_overlap,
+                            detection_mask=detection_mask)
 
     write_runtime_profiles(
         args, result_dir, profile, runner, runner_profile_before,
@@ -276,7 +330,6 @@ def _write_err_json(result_dir, status, backend, coord_space, erp_w, erp_h, erro
 
 def _write_erp_json(result_dir, backend, coord_space, args, erp_w, erp_h,
                     fisheye_cam2_path, fisheye_cam4_path, match_data,
-                    kps_cam2, kps_cam4, keep,
                     json_name="densekp_pairs.json",
                     erp_rotate_matrix=None, profile=None):
     start = time.perf_counter()
@@ -288,7 +341,6 @@ def _write_erp_json(result_dir, backend, coord_space, args, erp_w, erp_h,
         fisheye_cam4=fisheye_cam4_path,
         coord_space=coord_space,
         match_result=match_data,
-        kps_cam2=kps_cam2, kps_cam4=kps_cam4, keep=keep,
         erp_rotate_matrix=erp_rotate_matrix,
     )
     write_json(json_data, result_dir / json_name)
@@ -296,12 +348,13 @@ def _write_erp_json(result_dir, backend, coord_space, args, erp_w, erp_h,
         profile["json_export_ms"] = float(profile.get("json_export_ms", 0.0)) + (
             time.perf_counter() - start
         ) * 1000.0
-    logger.info("Wrote %s: valid=%d/%d", json_name, int(keep.sum()), len(keep))
+    logger.info("Wrote %s: matched_persons=%d", json_name,
+                len(match_data.get("matches", [])))
 
 
 def _write_fisheye_json(result_dir, backend, coord_space, args, fisheye_meta,
                         fisheye_cam2_path, fisheye_cam4_path, match_data,
-                        kps_cam2, kps_cam4, keep, json_name="densekp_pairs_fisheye.json"):
+                        json_name="densekp_pairs_fisheye.json"):
     json_data = build_matched_json(
         backend=backend,
         image_width=int(fisheye_meta["image_size_cam2"][0]),
@@ -311,11 +364,42 @@ def _write_fisheye_json(result_dir, backend, coord_space, args, fisheye_meta,
         fisheye_cam4=fisheye_cam4_path,
         coord_space=coord_space,
         match_result=match_data,
-        kps_cam2=kps_cam2, kps_cam4=kps_cam4, keep=keep,
         fisheye_meta=fisheye_meta,
     )
     write_json(json_data, result_dir / json_name)
-    logger.info("Wrote %s: valid=%d/%d (fisheye)", json_name, int(keep.sum()), len(keep))
+    logger.info("Wrote %s: matched_persons=%d (fisheye)", json_name,
+                len(match_data.get("matches", [])))
+
+
+def _transform_matches_two(match_data, transform2, transform4, range_sizes=None):
+    transformed = dict(match_data)
+    transformed["matches"] = []
+    for match in match_data.get("matches", []):
+        item = dict(match)
+        item["kps_cam2"] = transform2(match["kps_cam2"])
+        item["kps_cam4"] = transform4(match["kps_cam4"])
+        keep = np.asarray(match["keep"], dtype=bool).copy()
+        keep &= np.isfinite(item["kps_cam2"]).all(axis=1)
+        keep &= np.isfinite(item["kps_cam4"]).all(axis=1)
+        if range_sizes is not None:
+            for key, (width, height) in zip(("kps_cam2", "kps_cam4"), range_sizes):
+                points = item[key]
+                keep &= ((points[:, 0] >= 0) & (points[:, 0] < width)
+                         & (points[:, 1] >= 0) & (points[:, 1] < height))
+        item["keep"] = keep
+        item["valid_count"] = int(keep.sum())
+        transformed["matches"].append(item)
+    return transformed
+
+
+def _transform_matches(match_data, transform):
+    return _transform_matches_two(match_data, transform, transform)
+
+
+def _finite_matrix_for_json(matrix):
+    array = np.asarray(matrix)
+    return [[(float(value) if np.isfinite(value) else None) for value in row]
+            for row in array]
 
 
 def _build_runner(args):
@@ -487,10 +571,90 @@ def _get_or_build_valid_masks(
     return mask_cam2, mask_cam4
 
 
-def _run_densekp(runner, erp_cam2, erp_cam4):
-    result_cam2 = _run_densekp_one_camera(runner, erp_cam2, "cam2")
-    result_cam4 = _run_densekp_one_camera(runner, erp_cam4, "cam4")
-    return result_cam2, result_cam4
+def _run_densekp(runner, erp_cam2, erp_cam4, detection_rois):
+    if not detection_rois:
+        return (
+            DenseKPResult("erp_cam2_overlap_roi", erp_cam2.shape[1], erp_cam2.shape[0], [], "cam2"),
+            DenseKPResult("erp_cam4_overlap_roi", erp_cam4.shape[1], erp_cam4.shape[0], [], "cam4"),
+        )
+    outputs=[]
+    for camera,image in (("cam2",erp_cam2),("cam4",erp_cam4)):
+        restored=[]
+        for roi_index,roi in enumerate(detection_rois):
+            crop=crop_erp_roi(image,roi)
+            restored.append(restore_result_to_full_erp(
+                _run_densekp_one_camera(runner,crop,f"{camera}_compact_{roi_index}"),roi,
+            ))
+        merged=merge_roi_results(restored,image.shape[1],image.shape[0],camera)
+        before=sum(len(r.persons) for r in restored)
+        if DETECTION_ROI_STRATEGY == "compact_strips":
+            merged.persons=deduplicate_periodic_persons(merged.persons,image.shape[1])
+        setattr(merged,"person_count_before_dedup",before)
+        outputs.append(merged)
+    return tuple(outputs)
+
+
+def run_densekp_erp_window(
+    runner,
+    frames: list[tuple[int, np.ndarray, np.ndarray]],
+    detection_rois,
+    densekp_batch_size: int,
+) -> tuple[dict[int, tuple[DenseKPResult, DenseKPResult]], dict[str, float]]:
+    """Experimental delivery batch over preloaded ERP frames.
+
+    Detection retains the fixed-B1 production model; only DenseKP person crops
+    are combined across frame/camera/ROI.  Metadata is restored by explicit
+    list position rather than inference result ordering.
+    """
+    timing = {"roi_extraction_ms": 0.0, "metadata_restoration_ms": 0.0}
+    if not detection_rois:
+        return {
+            frame: (
+                DenseKPResult("erp_cam2_overlap_roi", cam2.shape[1], cam2.shape[0], [], "cam2"),
+                DenseKPResult("erp_cam4_overlap_roi", cam4.shape[1], cam4.shape[0], [], "cam4"),
+            ) for frame, cam2, cam4 in frames
+        }, timing
+
+    items = []
+    metadata = []
+    started = time.perf_counter()
+    for frame, cam2, cam4 in frames:
+        for camera, image in (("cam2", cam2), ("cam4", cam4)):
+            for roi_index, roi in enumerate(detection_rois):
+                items.append((
+                    crop_erp_roi(image, roi),
+                    f"{frame}_{camera}_compact_{roi_index}",
+                    f"{camera}_compact_{roi_index}",
+                ))
+                metadata.append((frame, camera, roi_index, roi, image.shape))
+    timing["roi_extraction_ms"] = (time.perf_counter() - started) * 1000.0
+
+    results = runner.run_batch(items, densekp_batch_size=densekp_batch_size)
+    started = time.perf_counter()
+    grouped: dict[tuple[int, str], list[DenseKPResult]] = {}
+    shapes: dict[tuple[int, str], tuple[int, ...]] = {}
+    for result, (frame, camera, _, roi, shape) in zip(results, metadata):
+        grouped.setdefault((frame, camera), []).append(
+            restore_result_to_full_erp(result, roi))
+        shapes[(frame, camera)] = shape
+
+    output = {}
+    for frame, _, _ in frames:
+        camera_results = []
+        for camera in ("cam2", "cam4"):
+            shape = shapes[(frame, camera)]
+            restored = grouped[(frame, camera)]
+            merged = merge_roi_results(restored, shape[1], shape[0], camera)
+            before = sum(len(result.persons) for result in restored)
+            if DETECTION_ROI_STRATEGY == "compact_strips":
+                merged.persons = deduplicate_periodic_persons(
+                    merged.persons, shape[1])
+            setattr(merged, "person_count_before_dedup", before)
+            camera_results.append(merged)
+        output[frame] = tuple(camera_results)
+    timing["metadata_restoration_ms"] = (
+        time.perf_counter() - started) * 1000.0
+    return output, timing
 
 
 def _run_densekp_one_camera(runner, erp_img, camera_name):
@@ -519,17 +683,24 @@ def _handle_save_option(args, out_dir, result_cam2, result_cam4, match_data, erp
             json.dump({
                 "cam2_person_count": len(result_cam2.persons),
                 "cam4_person_count": len(result_cam4.persons),
-                "selected_match": {
-                    "cam2_person_index": match_data["cam2_person_index"],
-                    "cam4_person_index": match_data["cam4_person_index"],
-                    "valid_count": match_data["valid_count"],
-                },
+                "candidate_indices_cam2": match_data["candidate_indices_cam2"],
+                "candidate_indices_cam4": match_data["candidate_indices_cam4"],
+                "pairwise_cost_matrix_deg": _finite_matrix_for_json(match_data["pairwise_cost_matrix_deg"]),
+                "pairwise_median_angular_error_deg": _finite_matrix_for_json(match_data["pairwise_median_angular_error_deg"]),
+                "pairwise_eligible": match_data["pairwise_eligible"].tolist(),
+                "pairwise_valid_counts": match_data["pairwise_valid_counts"].tolist(),
+                "matches": [{k: v for k, v in match.items()
+                             if k not in ("kps_cam2", "kps_cam4", "keep")}
+                            for match in match_data["matches"]],
+                "unmatched_cam2": match_data["unmatched_cam2"],
+                "unmatched_cam4": match_data["unmatched_cam4"],
             }, f, ensure_ascii=False, indent=2)
         with open(debug_dir / "summary.json", "w", encoding="utf-8") as f:
             json.dump({
                 "backend": args.backend,
-                "valid_count": int(match_data["valid_count"]),
-                "total_points": int(match_data["total_points"]),
+                "matched_person_count": len(match_data["matches"]),
+                "valid_count": sum(int(m["valid_count"]) for m in match_data["matches"]),
+                "total_points": sum(int(m["total_points"]) for m in match_data["matches"]),
             }, f, ensure_ascii=False, indent=2)
 
 

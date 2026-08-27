@@ -119,6 +119,22 @@ class DenseKPRuntime:
     def run(self, image_bgr, image_path: str, camera_name: str = ""):
         return self.infer(image_bgr, image_path, camera_name)
 
+    def run_batch(self, items, densekp_batch_size: int | None = None):
+        """Batch DenseKP crops across delivery images when supported."""
+        self.load()
+        method = getattr(self._runner, "run_batch", None)
+        if method is None:
+            return [self._runner.run(*item) for item in items]
+        return method(items, densekp_batch_size=densekp_batch_size)
+
+    def run_bboxes(self, items, densekp_batch_size: int = 1):
+        """Run detector-free DenseKP for externally supplied xyxy boxes."""
+        self.load()
+        method = getattr(self._runner, "run_bboxes", None)
+        if method is None:
+            raise NotImplementedError("runner does not support bbox-guided DenseKP")
+        return method(items, densekp_batch_size=densekp_batch_size)
+
     def close(self) -> None:
         if self.closed:
             return
