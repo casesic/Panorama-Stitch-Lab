@@ -17,6 +17,17 @@ from lib_pano.delivery_bootstrap import ensure_importable
 from lib_pano.human_fitting.matched_person_tracks import MatchedPerson
 
 
+def runtime_profile_delta(
+    before: dict[str, float], after: dict[str, float],
+) -> dict[str, float]:
+    """Return per-frame deltas from cumulative runtime timing counters."""
+    return {
+        key: float(value) - float(before.get(key, 0.0))
+        for key, value in after.items()
+        if isinstance(value, (int, float))
+    }
+
+
 def load_erp_frame_pair(
     erp_cam2_path: str | Path, erp_cam4_path: str | Path,
 ) -> tuple[np.ndarray, np.ndarray]:

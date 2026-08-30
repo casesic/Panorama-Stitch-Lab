@@ -24,6 +24,7 @@ import numpy as np
 from lib_pano.fitting_io.densekp_delivery_boundary import (
     build_component_detection_rois, densekp_calls_since, detector_call_count,
     matched_persons_from_full_erp, match_full_erp, run_full_detection,
+    runtime_profile_delta,
 )
 from lib_pano.fitting_io.track_guided_delivery import (
     run_track_guided_densekp,
@@ -143,6 +144,7 @@ class TrackGuidedSequenceOrchestrator:
         self.detection_rois = build_component_detection_rois(*valid_masks)
         self.frame_records: list[FrameSequenceRecord] = []
         self._last_full_counts: dict[str, Any] | None = None
+        self._last_guided_timing: dict[str, float | int] | None = None
 
     def active_tracks(self) -> list[Any]:
         return [track for track in self.track_manager.tracks.values()
@@ -154,12 +156,31 @@ class TrackGuidedSequenceOrchestrator:
         before = dict(self.runtime.profile_timing)
         pair = run_full_detection(
             self.runtime, erp_cam2, erp_cam4, self.detection_rois)
+        inference_wall_ms = (time.perf_counter() - started) * 1000.0
+        matching_started = time.perf_counter()
         match_data = match_full_erp(pair[0], pair[1], *self.valid_masks)
+        matching_ms = (time.perf_counter() - matching_started) * 1000.0
         elapsed_ms = (time.perf_counter() - started) * 1000.0
+        runtime_delta = runtime_profile_delta(
+            before, dict(self.runtime.profile_timing))
+        detector_ms = runtime_delta.get("detector_inference_ms")
+        densekp_parts = (
+            "bbox_postprocess_ms", "densekp_preprocess_ms",
+            "densekp_inference_ms", "densekp_postprocess_ms",
+        )
+        densekp_ms = (
+            sum(runtime_delta[name] for name in densekp_parts)
+            if all(name in runtime_delta for name in densekp_parts) else None
+        )
         counts = {
             "detector_calls": detector_call_count(self.detection_rois),
             "densekp_calls": densekp_calls_since(self.runtime, before),
             "inference_ms": elapsed_ms,
+            "full_inference_wall_ms": inference_wall_ms,
+            "full_matching_ms": matching_ms,
+            "full_detector_ms": detector_ms,
+            "full_densekp_ms": densekp_ms,
+            "full_runtime_profile_delta": runtime_delta,
             "cam2_person_count": len(pair[0].persons),
             "cam4_person_count": len(pair[1].persons),
             "matched_person_count": len(match_data.get("matches", [])),
@@ -186,6 +207,7 @@ class TrackGuidedSequenceOrchestrator:
             candidate_dedup_angle_deg=self.config.candidate_dedup_angle_deg,
         )
         timing["wall_ms"] = (time.perf_counter() - started) * 1000.0
+        self._last_guided_timing = timing
         return observations, [
             observation for observation in observations if not observation.success
         ], {key: timing[key] for key in ("detector_calls", "densekp_calls")}
@@ -193,9 +215,11 @@ class TrackGuidedSequenceOrchestrator:
     def process_frame(self, frame: int, erp_cam2: np.ndarray,
                       erp_cam4: np.ndarray) -> FrameSequenceRecord:
         """Advance one true timeline step for one frame."""
+        frame_started = time.perf_counter()
         active = self.active_tracks()
         requested = self.scheduler.mode(frame, len(active))
         self.hmr2_batch.update_frame_images(erp_cam2, erp_cam4)
+        self._last_guided_timing = None
 
         started = time.perf_counter()
         decision = run_delivery_with_same_frame_recovery(
@@ -227,11 +251,52 @@ class TrackGuidedSequenceOrchestrator:
                 for row in decision.observations
                 for spec in (row.crop_cam2, row.crop_cam4) if spec is not None
             ]
+            guided = self._last_guided_timing or {}
+            delivery_info["guided_timing"] = {
+                "guided_bbox_projection_ms": guided.get("bbox_projection_ms"),
+                "guided_crop_ms": guided.get("guided_crop_ms"),
+                "guided_densekp_ms": guided.get("guided_densekp_ms"),
+                "guided_validation_ms": guided.get("guided_validation_ms"),
+                "guided_identity_ms": guided.get("identity_gate_ms"),
+                "guided_wall_ms": guided.get("wall_ms"),
+            }
         else:
             persons = list(decision.observations)
             bound = None
             delivery_info.update(self._last_full_counts or {})
+            if decision.actual_mode == DeliveryFrameMode.RECOVERY:
+                guided = self._last_guided_timing or {}
+                delivery_info["guided_timing_before_recovery"] = {
+                    "guided_bbox_projection_ms": guided.get("bbox_projection_ms"),
+                    "guided_crop_ms": guided.get("guided_crop_ms"),
+                    "guided_densekp_ms": guided.get("guided_densekp_ms"),
+                    "guided_validation_ms": guided.get("guided_validation_ms"),
+                    "guided_identity_ms": guided.get("identity_gate_ms"),
+                    "guided_wall_ms": guided.get("wall_ms"),
+                }
             self._last_full_counts = None
+
+        measured_components = [
+            delivery_info.get("full_detector_ms"),
+            delivery_info.get("full_densekp_ms"),
+            delivery_info.get("full_matching_ms"),
+        ]
+        if (decision.actual_mode == DeliveryFrameMode.FULL_DETECTION
+                and all(value is not None for value in measured_components)):
+            delivery_info["full_other_ms"] = (
+                delivery_ms - sum(float(value)
+                                  for value in measured_components))
+        guided_timing = delivery_info.get("guided_timing")
+        if guided_timing is not None:
+            disjoint = [
+                guided_timing.get("guided_bbox_projection_ms"),
+                guided_timing.get("guided_crop_ms"),
+                guided_timing.get("guided_densekp_ms"),
+                guided_timing.get("guided_validation_ms"),
+            ]
+            if all(value is not None for value in disjoint):
+                guided_timing["guided_residual_ms"] = (
+                    delivery_ms - sum(float(value) for value in disjoint))
 
         result = self.fitting.process_frame(frame, persons, bound=bound)
         record = FrameSequenceRecord(
@@ -245,6 +310,8 @@ class TrackGuidedSequenceOrchestrator:
             payload=result.payload,
             profiling=result.profiling,
         )
+        result.profiling["frame_wall_ms"] = (
+            time.perf_counter() - frame_started) * 1000.0
         self.frame_records.append(record)
         return record
 
@@ -276,6 +343,7 @@ class TrackGuidedSequenceOrchestrator:
                 "requested_mode": record.requested_mode.value,
                 "mode": record.actual_mode.value,
                 "delivery_ms": record.delivery_ms,
+                "frame_wall_ms": record.profiling.get("frame_wall_ms"),
                 "detector_calls": record.detector_calls,
                 "densekp_calls": record.densekp_calls,
                 "delivery": record.delivery_info,

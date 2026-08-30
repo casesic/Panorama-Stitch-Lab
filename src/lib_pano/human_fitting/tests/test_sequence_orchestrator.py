@@ -8,6 +8,7 @@ from lib_pano.human_fitting.sequence_orchestrator import (
     ErpHmr2ColdStartBatch, TrackGuidedSequenceConfig,
     TrackGuidedSequenceOrchestrator,
 )
+from lib_pano.fitting_io.densekp_delivery_boundary import runtime_profile_delta
 from lib_pano.fitting_io.densekp_runtime_export import PersonFrameInitialState
 from lib_pano.fitting_io.track_guided_delivery import GuidedTrackObservation
 from lib_pano.human_fitting.matched_person_tracks import (
@@ -62,6 +63,14 @@ class _StubHmr(ErpHmr2ColdStartBatch):
 
 class _StubRuntime:
     profile_timing = {}
+
+
+def test_runtime_profile_delta_uses_cumulative_counter_difference():
+    assert runtime_profile_delta(
+        {"detector_inference_ms": 10.0, "densekp_inference_ms": 4.0},
+        {"detector_inference_ms": 13.5, "densekp_inference_ms": 6.25},
+    ) == {"detector_inference_ms": 3.5, "densekp_inference_ms": 2.25}
+    assert runtime_profile_delta({}, {}) == {}
 
 
 def _orchestrator(config: TrackGuidedSequenceConfig):
@@ -163,6 +172,7 @@ def test_guided_identity_gate_binding_is_used_verbatim():
     assert record.payload["persons"][0]["initialization"]["type"] == \
            "previous_frame"
     assert record.payload["persons"][0]["initialization"]["source_frame"] == 10
+    assert record.profiling["frame_wall_ms"] >= 0.0
 
 
 def test_guided_failure_recovers_with_full_detection_same_frame():
@@ -208,3 +218,39 @@ def test_guided_failure_recovers_with_full_detection_same_frame():
     next_record = builder.process_frame(12, object(), object())
     assert next_record.actual_mode.value == "TRACK_GUIDED"
     assert next_record.detector_calls == 0
+
+
+def test_guided_timing_is_exported_without_changing_identity_binding():
+    builder = _orchestrator(TrackGuidedSequenceConfig(detection_interval=3))
+
+    def fit(person, initialization, track_id):
+        return OptimizedPersonState(
+            frame_parameters=np.zeros(75, np.float32),
+            beta=np.zeros(10, np.float32),
+            optimized_pairs=person.pairs.copy(),
+            point_ids=person.point_ids.copy(), valid=person.valid.copy(),
+            success=True, status="ok",
+            warm_state_exact=isinstance(initialization, OptimizedPersonState))
+
+    builder.fitting.fit_person = fit
+    builder._full_delivery = lambda *_: (
+        [_person(0)], {"detector_calls": 4, "densekp_calls": 2})
+    builder.process_frame(10, object(), object())
+
+    def guided(_cam2, _cam4, tracks):
+        row = GuidedTrackObservation(
+            tracks[0].track_id, _person(tracks[0].track_id), None, None,
+            identity={"status": "GUIDED_ACCEPTED"})
+        builder._last_guided_timing = {
+            "bbox_projection_ms": 1.0, "guided_crop_ms": 2.0,
+            "guided_densekp_ms": 3.0, "guided_validation_ms": 4.0,
+            "identity_gate_ms": 0.5, "wall_ms": 10.5,
+        }
+        return [row], [], {"detector_calls": 0, "densekp_calls": 2}
+
+    builder._guided_delivery = guided
+    record = builder.process_frame(11, object(), object())
+    timing = record.delivery_info["guided_timing"]
+    assert timing["guided_identity_ms"] == 0.5
+    assert "guided_residual_ms" in timing
+    assert record.delivery_info["identity"][0]["status"] == "GUIDED_ACCEPTED"
