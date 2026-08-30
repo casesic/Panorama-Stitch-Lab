@@ -35,7 +35,9 @@ FP32 forward 的主要输出为：
 - `pred_keypoints_2d`: HMR2 crop-normalized projected joints。
 
 initializer 忠实保留 rotation matrix，不在该层隐式转换为 axis-angle。输出顺序与输入
-bbox 顺序一致。
+bbox 顺序一致。`HMR2Initialization` production result 只保留 staged initialization
+需要的 SMPL/camera 字段；`pred_keypoints_2d` 和 `pred_vertices` 仍是 raw forward output，
+仅由 debug084 直接读取用于 sanity/visualization，不随 production result 传播。
 
 ## NumPy/chumpy 兼容
 

@@ -31,10 +31,6 @@ class HMR2Initialization:
     pred_cam: np.ndarray            # [3] weak-perspective crop camera
     pred_cam_t: np.ndarray          # [3] perspective crop translation
     pred_cam_t_full: np.ndarray     # [3] full-image camera translation
-    pred_keypoints_2d: np.ndarray   # [J,2], HMR2 normalized crop coordinates
-    pred_vertices_shape: tuple[int, ...]
-    pred_vertices_min: float
-    pred_vertices_max: float
 
 
 @dataclass(frozen=True)
@@ -118,8 +114,6 @@ class HMR2Initializer:
         betas = params["betas"].detach().cpu().numpy()
         cameras = output["pred_cam"].detach().cpu().numpy()
         camera_t = output["pred_cam_t"].detach().cpu().numpy()
-        keypoints = output["pred_keypoints_2d"].detach().cpu().numpy()
-        vertices = output["pred_vertices"].detach().cpu().numpy()
         results = []
         focal = (float(self.model_cfg.EXTRA.FOCAL_LENGTH)
                  / float(self.model_cfg.MODEL.IMAGE_SIZE)
@@ -141,10 +135,6 @@ class HMR2Initializer:
                 pred_cam=cameras[index].astype(np.float32),
                 pred_cam_t=camera_t[index].astype(np.float32),
                 pred_cam_t_full=full_camera,
-                pred_keypoints_2d=keypoints[index].astype(np.float32),
-                pred_vertices_shape=tuple(vertices[index].shape),
-                pred_vertices_min=float(vertices[index].min()),
-                pred_vertices_max=float(vertices[index].max()),
             ))
         return results
 

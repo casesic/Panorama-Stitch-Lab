@@ -1,4 +1,10 @@
-"""Run persistent CUDA DenseKP followed by one multi-frame CUDA staged-LM."""
+"""Run the legacy single-person, base-fixture multi-frame staged-LM path.
+
+The current Phase 4.1 production application is
+``run_densekp_track_guided_sequence.py``.  This entry is preserved as a
+legacy/reference runner; it does not orchestrate track-guided delivery,
+identity assignment, HMR2 cold starts, or per-person track lifecycle.
+"""
 
 from __future__ import annotations
 

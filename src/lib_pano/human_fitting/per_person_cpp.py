@@ -27,6 +27,7 @@ class CppPersonFitterConfig:
     base_fixture: Path
     executable: Path
     output_root: Path
+    # Build-compatible default for current callers; not a performance claim.
     evaluator_backend: str = "cpu"
 
 

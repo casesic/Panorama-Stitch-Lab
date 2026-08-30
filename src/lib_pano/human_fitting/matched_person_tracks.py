@@ -122,7 +122,6 @@ class TrackingConfig:
     max_reconnect_gap: int = 2
     max_temporal_angle_deg: float = 20.0
     boundary_margin_px: float = 2.0
-    bootstrap_hmr_frames: int = 1
 
 
 def _view_quality(person: MatchedPerson, camera: str,

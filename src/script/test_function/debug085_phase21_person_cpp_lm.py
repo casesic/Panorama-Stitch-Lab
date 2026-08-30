@@ -36,10 +36,6 @@ def _hmr_result(path: Path, person_index: int) -> HMR2Initialization:
         pred_cam=np.asarray(person["pred_cam"], np.float32),
         pred_cam_t=np.asarray(person["pred_cam_t"], np.float32),
         pred_cam_t_full=np.asarray(person["pred_cam_t_full"], np.float32),
-        pred_keypoints_2d=np.zeros((0, 2), np.float32),
-        pred_vertices_shape=tuple(person["pred_vertices_shape"]),
-        pred_vertices_min=float(person["pred_vertices_min"]),
-        pred_vertices_max=float(person["pred_vertices_max"]),
     )
 
 

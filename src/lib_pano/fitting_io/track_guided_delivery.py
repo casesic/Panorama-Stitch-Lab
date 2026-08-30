@@ -303,9 +303,3 @@ def run_track_guided_densekp(
     if return_identity_result:
         timing["identity_result"] = identity
     return list(observations.values()), timing
-
-
-def track_manager_config(track: Any):
-    """Build the default geometry config without coupling delivery to a manager."""
-    from lib_pano.human_fitting.matched_person_tracks import TrackingConfig
-    return TrackingConfig()

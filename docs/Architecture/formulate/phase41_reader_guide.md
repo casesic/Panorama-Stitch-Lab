@@ -10,6 +10,11 @@ src/script/human_fitting/run_densekp_track_guided_sequence.py   # CLI（薄）
 src/lib_pano/human_fitting/sequence_orchestrator.py             # 编排（无数学）
 ```
 
+这是当前 Phase 4.1 production composition root。旧入口
+`src/script/human_fitting/run_densekp_cuda_staged_lm.py` 仅保留为
+single-person、base-fixture、multi-frame staged-LM 的 legacy/reference runner；
+它没有 FULL/GUIDED 调度、identity gate、HMR2 cold start 或多人物 TrackState 生命周期。
+
 入口边界是**准备好的 normal-ERP 图像对**。fisheye→LUT→ERP remap 属于上游交付，
 留在 `densekp_delivery` 包内，正式 sequence 不做 remap。
 
@@ -56,10 +61,13 @@ src/lib_pano/human_fitting/sequence_orchestrator.py             # 编排（无�
 唯一边界文件：`src/lib_pano/human_fitting/per_person_cpp.py`。
 协议：fixture 目录文件名 + `*_meta.txt` 键值 + 输出二进制/JSON，见
 `fitting_io/densekp_runtime_export.py`。C++ 目录为 `cpp/staged_lm/`。
+`CppPersonFitterConfig` 默认使用 CPU evaluator，是当前调用方式和构建兼容性默认值，
+不表示 CPU evaluator 在算法或性能上优于 CUDA。
 
 ## 第一遍跳过的东西
 
-- 所有 `debug084~debug089`（benchmark/forensic 资产，Phase A 后仅作对照）；
+- 所有 `debug084~debug089`（validation / benchmark / forensic 资产，不是
+  current production composition root）；
 - `src/lib_pano/human_fitting/staged_lm/**`：Python 参考 LM 实现
   （LEGACY_REFERENCE），当前 production 主链是上面的 C++ 路径；
 - CUDA kernel、vis、cache/LUT 细节、assignment 重复实现的合并计划。
