@@ -27,7 +27,7 @@ class CppPersonFitterConfig:
     base_fixture: Path
     executable: Path
     output_root: Path
-    evaluator_backend: str = "cuda"
+    evaluator_backend: str = "cpu"
 
 
 class CppPerPersonFitter:

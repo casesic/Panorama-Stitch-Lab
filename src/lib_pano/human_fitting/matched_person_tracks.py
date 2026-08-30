@@ -252,16 +252,40 @@ class MatchedPersonTrackManager:
         self._next_track_id = 0
 
     def associate(self, frame: int,
-                  persons: Sequence[MatchedPerson]) -> list[TrackAssignment]:
-        candidates = [track for track in self.tracks.values()
-                      if frame - track.last_frame <= self.config.max_reconnect_gap + 1]
-        costs = np.full((len(candidates), len(persons)), np.inf, dtype=np.float64)
-        for row, track in enumerate(candidates):
-            for column, person in enumerate(persons):
-                value = temporal_person_cost_deg(track, person, self.config)
-                if value <= self.config.max_temporal_angle_deg:
-                    costs[row, column] = value
-        matched = optimal_cardinality_assignment(costs)
+                  persons: Sequence[MatchedPerson], *,
+                  bound: Sequence[tuple[int, int]] | None = None
+                  ) -> list[TrackAssignment]:
+        """Associate persons with tracks.
+
+        With ``bound=None`` the association is computed from temporal angular
+        costs.  Alternatively ``bound`` supplies identity-resolved
+        ``(track_id, person_index)`` pairs from a caller that already ran the
+        Phase 4.1 guided identity gate; the gate's global one-to-one decision
+        is then trusted verbatim instead of being recomputed.  Unbound book-
+        keeping (lost marking, initialization source, reinit flags) is shared.
+        """
+        if bound is None:
+            candidates = [track for track in self.tracks.values()
+                          if frame - track.last_frame <= self.config.max_reconnect_gap + 1]
+            costs = np.full((len(candidates), len(persons)), np.inf, dtype=np.float64)
+            for row, track in enumerate(candidates):
+                for column, person in enumerate(persons):
+                    value = temporal_person_cost_deg(track, person, self.config)
+                    if value <= self.config.max_temporal_angle_deg:
+                        costs[row, column] = value
+            matched = optimal_cardinality_assignment(costs)
+        else:
+            unknown = sorted({track_id for track_id, _ in bound
+                              if track_id not in self.tracks})
+            if unknown:
+                raise ValueError(f"bound references unknown tracks: {unknown}")
+            indexes = sorted(person_index for _, person_index in bound)
+            if indexes != list(range(len(persons))):
+                raise ValueError(
+                    "bound must resolve every current person exactly once")
+            candidates = [self.tracks[track_id] for track_id, _ in bound]
+            matched = [(row, person_index)
+                       for row, (_, person_index) in enumerate(bound)]
         by_person = {column: candidates[row] for row, column in matched}
         assignments = []
         for index, person in enumerate(persons):
@@ -346,13 +370,15 @@ class MatchedPersonFittingOrchestrator:
         self.counters = SequenceCounters()
 
     def process_frame(self, frame: int,
-                      persons: Sequence[MatchedPerson]) -> FrameOrchestrationResult:
+                      persons: Sequence[MatchedPerson], *,
+                      bound: Sequence[tuple[int, int]] | None = None
+                      ) -> FrameOrchestrationResult:
         active_before = {
             track_id for track_id, track in self.track_manager.tracks.items()
             if track.status == TrackStatus.ACTIVE
         }
         association_started = time.perf_counter()
-        assignments = self.track_manager.associate(frame, persons)
+        assignments = self.track_manager.associate(frame, persons, bound=bound)
         association_ms = (time.perf_counter() - association_started) * 1000.0
         cold_by_camera: dict[str, list[TrackAssignment]] = {"cam2": [], "cam4": []}
         views: dict[int, BestView] = {}
