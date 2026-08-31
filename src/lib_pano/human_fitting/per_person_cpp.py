@@ -150,4 +150,32 @@ class CppPerPersonFitter:
                            + int(summary["pose_shape_trials"])),
             cpp_lm_ms=float(summary["total_ms"]),
             warm_state_exact=warm_state_exact,
+            projection_extent_ratio=projection_extent_ratio(
+                np.ascontiguousarray(all_pairs[person.point_ids]),
+                person.pairs, person.valid),
         )
+
+
+def projection_extent_ratio(optimized_pairs: np.ndarray, raw_pairs: np.ndarray,
+                             valid: np.ndarray) -> float | None:
+    """Dimensionless collapse diagnostic: optimized/raw spatial extent.
+
+    Values well below 1 mean the fitted projections collapsed toward a point
+    even though the LM terminated successfully (see the Phase-A translation
+    semantic audit).  Diagnostic only; it never changes fitting behaviour.
+    """
+    valid = np.asarray(valid, bool)
+    if not valid.any():
+        return None
+    optimized = np.asarray(optimized_pairs, np.float64)[valid]
+    raw = np.asarray(raw_pairs, np.float64)[valid]
+    ratios = []
+    for axis in (0, 2):
+        raw_span = float(np.hypot(
+            np.ptp(raw[:, axis]), np.ptp(raw[:, axis + 1])))
+        if raw_span <= 0.0:
+            return None
+        optimized_span = float(np.hypot(
+            np.ptp(optimized[:, axis]), np.ptp(optimized[:, axis + 1])))
+        ratios.append(optimized_span / raw_span)
+    return float(sum(ratios) / len(ratios))

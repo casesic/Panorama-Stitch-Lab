@@ -72,6 +72,7 @@ class OptimizedPersonState:
     lm_iterations: int | None = None
     cpp_lm_ms: float | None = None
     warm_state_exact: bool | None = None
+    projection_extent_ratio: float | None = None
 
     def __post_init__(self) -> None:
         if np.asarray(self.frame_parameters).shape != (75,):
@@ -472,6 +473,7 @@ class MatchedPersonFittingOrchestrator:
                     "iterations": fitted.lm_iterations,
                     "lm_ms": fitted.cpp_lm_ms,
                     "attempts": lm_attempts,
+                    "projection_extent_ratio": fitted.projection_extent_ratio,
                 },
                 "cpp_preparation": {
                     "success": bool(fitted.cpp_preparation_success),

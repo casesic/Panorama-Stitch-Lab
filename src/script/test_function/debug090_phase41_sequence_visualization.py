@@ -1,12 +1,15 @@
 """Render Phase 4.1 sequence timeline: guided crops, identity gate, keypoints.
-
 Re-runs the production orchestrator on an ERP sequence and saves one
 side-by-side (cam2 | cam4) image per frame showing:
 
 - mode label (FULL_DETECTION / TRACK_GUIDED / RECOVERY)
 - yellow detection ROIs on FULL frames
 - orange/cyan guided crop boxes per track with identity status
-- green fitted keypoints (ERP_ROTATE pairs drawn back in normal ERP)
+- green dots: ALL valid DenseKP observation points (raw_pairs, ERP_ROTATE
+  pairs drawn back in normal ERP)
+- optional red dots (--show-optimized): C++ optimized_pairs; note this export
+  is known to collapse to a tiny extent (see track_guided_delivery.py), so it
+  is off by default
 """
 
 from __future__ import annotations
@@ -35,6 +38,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--cpp-executable", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--detect-interval", type=int, default=3)
+    parser.add_argument("--show-optimized", action="store_true",
+                        help="additionally draw C++ optimized_pairs (collapses)")
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--cpp-backend", choices=("cpu", "cuda"), default="cpu")
     parser.add_argument("--scale", type=float, default=0.25)
@@ -137,11 +142,19 @@ def main() -> int:
                           f"t{crop['track_id']}:{crop['status'][:12]}",
                           args.scale, width)
             for person in record.payload["persons"]:
-                points = _keypoints_erp(person["optimized_pairs"],
-                                        person["valid"], width, height)
-                for x, y in points:
+                valid = np.asarray(person["valid"], bool)
+                raw_points = _keypoints_erp(person["raw_pairs"], valid,
+                                            width, height)
+                for x, y in raw_points:
                     cv2.circle(canvas, (int(x * args.scale), int(y * args.scale)),
                                2, (0, 255, 0), -1, cv2.LINE_AA)
+                if args.show_optimized:
+                    opt_points = _keypoints_erp(person["optimized_pairs"],
+                                                valid, width, height)
+                    for x, y in opt_points:
+                        cv2.circle(canvas,
+                                   (int(x * args.scale), int(y * args.scale)),
+                                   1, (0, 0, 255), -1, cv2.LINE_AA)
             cv2.putText(canvas, f"cam{camera[-1]}", (8, 22),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2,
                         cv2.LINE_AA)

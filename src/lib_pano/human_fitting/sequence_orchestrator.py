@@ -15,7 +15,7 @@ from disk results.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 import time
 from typing import Any, Callable, Sequence
 
@@ -34,7 +34,8 @@ from lib_pano.fitting_io.densekp_runtime_export import (
 )
 from lib_pano.human3d.hmr2_initializer import HMR2Initializer
 from lib_pano.human_fitting.hmr2_staged_init import (
-    convert_hmr2_to_staged_initialization, to_smplx_camera_initializations,
+    convert_hmr2_to_staged_initialization, spherical_translation_initialization,
+    to_smplx_camera_initializations,
 )
 from lib_pano.human_fitting.matched_person_tracks import (
     MatchedPersonFittingOrchestrator, MatchedPersonTrackManager, TrackingConfig,
@@ -99,8 +100,26 @@ class ErpHmr2ColdStartBatch:
                 bboxes={"cam2": person.bbox_cam2, "cam4": person.bbox_cam4},
                 focal_length=self.focal_length,
             )
-            normalized.append(person_initial_state_from_smplx(
-                *to_smplx_camera_initializations(staged)))
+            state = person_initial_state_from_smplx(
+                *to_smplx_camera_initializations(staged))
+            # Replace the pinhole-semantics HMR2 translation (u, v, depth) with
+            # an observation-derived spherical translation: DenseKP centroid
+            # when enough valid points exist, else the matched-person ERP bbox
+            # center direction (seam-safe).  The pinhole depth component
+            # collapses all vertex directions under the directional ERP
+            # projection (see hmr2_staged_init docs).  Raises when neither
+            # source is usable -- a pinhole translation never falls back in.
+            replacement = spherical_translation_initialization(
+                person.pairs[:, 0:2], person.pairs[:, 2:], person.valid,
+                self.image_width, self.image_height,
+                bbox_cam2=person.bbox_cam2, bbox_cam4=person.bbox_cam4,
+                bbox_cam2_wraps_seam=person.bbox_cam2_wraps_seam,
+                bbox_cam4_wraps_seam=person.bbox_cam4_wraps_seam)
+            frame = np.array(state.frame_parameters, dtype=np.float32,
+                             copy=True)
+            frame[3:6], frame[9:12] = replacement
+            state = replace(state, frame_parameters=frame)
+            normalized.append(state)
         return normalized
 
 

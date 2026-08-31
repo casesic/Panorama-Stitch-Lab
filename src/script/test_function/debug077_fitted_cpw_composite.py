@@ -4,6 +4,8 @@ import argparse
 import csv
 import os
 from pathlib import Path
+import shutil
+import tempfile
 import time
 
 import config_script  # noqa: F401 — ensure src/ on sys.path
@@ -728,6 +730,19 @@ def discover_segments(result_dir: Path, cam: str = "cam2") -> list[str]:
     return [n for _, _, n in entries]
 
 
+def retain_debug_panel_only(direction_output: Path) -> None:
+    """Discard CPW intermediates after the CLI has produced its debug panel."""
+    if not direction_output.exists():
+        return
+    for child in direction_output.iterdir():
+        if child.name == "debug_panel":
+            continue
+        if child.is_dir():
+            shutil.rmtree(child)
+        else:
+            child.unlink()
+
+
 def main() -> None:
     args = parse_args()
 
@@ -759,40 +774,42 @@ def main() -> None:
     else:
         segments = [args.segment]
 
-    data_dir = output_root / "data"
-    for d in (
-        data_dir / "points_cam2",
-        data_dir / "points_cam4",
-        data_dir / "pairs",
-        data_dir / "corr_npz",
-    ):
-        d.mkdir(parents=True, exist_ok=True)
+    # Correspondences and point diagnostics are inputs to CPW, not retained CLI
+    # outputs.  Keep them in scratch storage and leave only debug_panel images.
+    shutil.rmtree(output_root / "data", ignore_errors=True)
+    with tempfile.TemporaryDirectory(prefix="debug077_cpw_") as scratch:
+        data_dir = Path(scratch) / "data"
+        for d in (
+            data_dir / "points_cam2",
+            data_dir / "points_cam4",
+            data_dir / "pairs",
+            data_dir / "corr_npz",
+        ):
+            d.mkdir(parents=True, exist_ok=True)
 
-    summary_rows: list[dict] = []
-    all_frames: list[int] = []
-    for i, segment in enumerate(segments):
+        summary_rows: list[dict] = []
+        all_frames: list[int] = []
+        for i, segment in enumerate(segments):
+            print()
+            print("=" * 60)
+            print(f"[{i + 1}/{len(segments)}] segment {segment}")
+            print("=" * 60)
+            all_frames.extend(
+                generate_points_for_segment(
+                    segment, R, image_dir, forwarder, result_dir,
+                    data_dir, summary_rows,
+                )
+            )
+
         print()
-        print("=" * 60)
-        print(f"[{i + 1}/{len(segments)}] segment {segment}")
-        print("=" * 60)
-        all_frames.extend(
-            generate_points_for_segment(segment, R, image_dir, forwarder, result_dir, data_dir, summary_rows)
-        )
+        print(f"[DONE] prepared {len(all_frames)} frames in temporary storage")
 
-    summary_path = data_dir / "summary.csv"
-    with summary_path.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(
-            f,
-            fieldnames=["frame", "total_points", "valid_cam2", "valid_cam4", "valid_both", "output_npz"],
-        )
-        writer.writeheader()
-        writer.writerows(summary_rows)
-    print()
-    print(f"[DONE] points: {len(all_frames)} frames → {data_dir}")
-    print(f"summary: {summary_path}")
-
-    for src_cam, tgt_cam, direction_name in get_direction_pairs(args.directions):
-        run_cpw_direction(all_frames, data_dir, output_root, image_dir, src_cam, tgt_cam, direction_name)
+        for src_cam, tgt_cam, direction_name in get_direction_pairs(args.directions):
+            run_cpw_direction(
+                all_frames, data_dir, output_root, image_dir,
+                src_cam, tgt_cam, direction_name,
+            )
+            retain_debug_panel_only(output_root / direction_name)
 
 
 if __name__ == "__main__":
