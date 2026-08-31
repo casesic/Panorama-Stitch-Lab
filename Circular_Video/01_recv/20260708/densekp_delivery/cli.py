@@ -14,7 +14,7 @@ except ImportError:
     from densekp_delivery.config import DenseKPConfig
     from densekp_delivery.pipeline import run_pipeline
 
-VALID_BACKENDS = ("pytorch", "ort")
+VALID_BACKENDS = ("pytorch", "ort", "trt")
 VALID_CACHE_MODES = ("read_write", "refresh", "read_only", "off")
 VALID_VIS_OPTIONS = ("none", "det", "densekp", "pair", "all")
 VALID_SAVE_OPTIONS = ("none", "npz", "debug", "all")
@@ -28,7 +28,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
 
     p.add_argument("--backend", type=str, required=True, choices=VALID_BACKENDS,
-                   help="Inference backend: pytorch, ort, or mock (for testing)")
+                   help="Inference backend: pytorch, ort, or trt")
     p.add_argument("--fisheye_cam2", type=str, required=True,
                    help="Path to cam2 fisheye image")
     p.add_argument("--fisheye_cam4", type=str, required=True,
@@ -41,6 +41,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                          help="Path to DenseKP PyTorch checkpoint (backend=pytorch)")
     g_model.add_argument("--onnx_path", type=str, default=None,
                          help="Path to DenseKP ONNX model (backend=ort)")
+    g_model.add_argument(
+        "--trt_engine_path", type=str, default=None,
+        help="Path to fixed-B1 TensorRT engine (backend=trt)",
+    )
 
     g_cam = p.add_argument_group("Camera / fisheye-to-ERP")
     g_cam.add_argument("--camera", type=str, default="old", choices=["old", "new"],
@@ -109,6 +113,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         p.error("--checkpoint is required when backend=pytorch")
     if args.backend == "ort" and not args.onnx_path:
         p.error("--onnx_path is required when backend=ort")
+    if args.backend == "trt" and not args.trt_engine_path:
+        p.error("--trt_engine_path is required when backend=trt")
 
     return args
 

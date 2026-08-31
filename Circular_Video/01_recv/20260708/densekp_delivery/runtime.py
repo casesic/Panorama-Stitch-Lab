@@ -84,6 +84,16 @@ class DenseKPRuntime:
                 detector_threshold=args.detector_threshold,
                 batch_size=getattr(args, "batch_size", 1),
             )
+        elif args.backend == "trt":
+            from .runners.trt_runner import TensorRTRunner
+
+            runner = TensorRTRunner(
+                engine_path=args.trt_engine_path,
+                device=args.device,
+                detector_backend=args.detector_backend,
+                detector_threshold=args.detector_threshold,
+                batch_size=getattr(args, "batch_size", 1),
+            )
         else:
             raise ValueError(f"Unknown backend: {args.backend}")
         return cls(runner)

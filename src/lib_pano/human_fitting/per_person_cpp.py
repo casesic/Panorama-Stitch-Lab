@@ -29,6 +29,10 @@ class CppPersonFitterConfig:
     output_root: Path
     # Build-compatible default for current callers; not a performance claim.
     evaluator_backend: str = "cpu"
+    execution_backend: str = "subprocess"
+    worker_executable: Path | None = None
+    worker_timeout_seconds: float = 30.0
+    worker_debug_dump_dir: Path | None = None
 
 
 class CppPerPersonFitter:
@@ -42,9 +46,16 @@ class CppPerPersonFitter:
     def __init__(self, config: CppPersonFitterConfig):
         if config.evaluator_backend not in {"cpu", "cuda"}:
             raise ValueError("evaluator_backend must be cpu or cuda")
+        if getattr(config, "execution_backend", "subprocess") != "subprocess":
+            raise ValueError(
+                "CppPerPersonFitter is the subprocess implementation; use "
+                "create_cpp_per_person_fitter for execution backend selection")
         self.config = config
         self._frozen_by_track: dict[int, PersonFrameInitialState] = {}
         self.call_count = 0
+
+    def close(self) -> None:
+        """Subprocess calls own no sequence-level process."""
 
     @staticmethod
     def _observation(person: MatchedPerson) -> DenseKPDeliveryObservation:
@@ -179,3 +190,28 @@ def projection_extent_ratio(optimized_pairs: np.ndarray, raw_pairs: np.ndarray,
             np.ptp(optimized[:, axis]), np.ptp(optimized[:, axis + 1])))
         ratios.append(optimized_span / raw_span)
     return float(sum(ratios) / len(ratios))
+
+
+def create_cpp_per_person_fitter(config: CppPersonFitterConfig):
+    """Explicit execution seam; never falls back between implementations."""
+    if config.execution_backend == "subprocess":
+        return CppPerPersonFitter(config)
+    if config.execution_backend != "persistent_worker":
+        raise ValueError(
+            "execution_backend must be subprocess or persistent_worker")
+    if config.evaluator_backend != "cpu":
+        raise ValueError("persistent worker production backend requires CPU evaluator")
+    if config.worker_executable is None:
+        raise ValueError("persistent_worker requires worker_executable")
+    from .persistent_cpp_worker import (
+        PersistentCppFittingWorker,
+        PersistentCppPerPersonFitter,
+        PersistentCppWorkerConfig,
+    )
+    worker = PersistentCppFittingWorker(PersistentCppWorkerConfig(
+        executable=config.worker_executable,
+        static_fixture=config.base_fixture,
+        timeout_seconds=config.worker_timeout_seconds,
+        debug_dump_dir=config.worker_debug_dump_dir,
+    )).start()
+    return PersistentCppPerPersonFitter(worker)

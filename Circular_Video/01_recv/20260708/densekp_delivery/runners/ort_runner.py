@@ -22,6 +22,10 @@ IMAGE_STD = [0.229, 0.224, 0.225]
 
 
 class ORTRunner:
+    """ORT inference plus the backend-independent DenseKP delivery stages."""
+
+    backend_name = "ort"
+
     def __init__(
         self,
         onnx_path: str,
@@ -56,6 +60,8 @@ class ORTRunner:
             "densekp_postprocess_ms": 0.0,
             "densekp_ort_call_count": 0.0,
             "densekp_ort_batch_item_count": 0.0,
+            "densekp_backend_call_count": 0.0,
+            "densekp_backend_batch_item_count": 0.0,
         }
         self.session_creation_count = 0
         self.detector_initialization_count = 0
@@ -115,6 +121,17 @@ class ORTRunner:
         self._session = None
         self._ort_in_name = None
         self._ort_out_name = None
+
+    def _infer_densekp(self, tensor: np.ndarray) -> np.ndarray:
+        """Backend-only inference seam; preprocessing and decode stay shared."""
+        return self._session.run(
+            [self._ort_out_name], {self._ort_in_name: tensor})[0]
+
+    def _record_backend_call(self, item_count: int) -> None:
+        self.profile_timing["densekp_backend_call_count"] += 1
+        self.profile_timing["densekp_backend_batch_item_count"] += item_count
+        self.profile_timing["densekp_ort_call_count"] += 1
+        self.profile_timing["densekp_ort_batch_item_count"] += item_count
 
     def run(self, image_bgr: np.ndarray, image_path: str, camera_name: str = "") -> DenseKPResult:
         self._lazy_init()
@@ -245,10 +262,8 @@ class ORTRunner:
             self.profile_timing["densekp_tensor_prepare_ms"] += (
                 time.perf_counter() - started) * 1000.0
             started = time.perf_counter()
-            output = self._session.run(
-                [self._ort_out_name], {self._ort_in_name: tensor})[0]
-            self.profile_timing["densekp_ort_call_count"] += 1
-            self.profile_timing["densekp_ort_batch_item_count"] += len(chunk)
+            output = self._infer_densekp(tensor)
+            self._record_backend_call(len(chunk))
             self.profile_timing["densekp_inference_ms"] += (
                 time.perf_counter() - started) * 1000.0
             started = time.perf_counter()
@@ -263,7 +278,7 @@ class ORTRunner:
                     keypoints=keypoints,
                     raw_scores=prediction[:, 2].astype(np.float32),
                     detection_score=float(detection.get("score", 0.0)),
-                    source="ort",
+                    source=self.backend_name,
                 ))
             self.profile_timing["densekp_postprocess_ms"] += (
                 time.perf_counter() - started) * 1000.0
@@ -308,9 +323,8 @@ class ORTRunner:
                 time.perf_counter() - start
             ) * 1000.0
             start = time.perf_counter()
-            ort_out = self._session.run([self._ort_out_name], {self._ort_in_name: batch['img']})[0]
-            self.profile_timing["densekp_ort_call_count"] += 1
-            self.profile_timing["densekp_ort_batch_item_count"] += batch['img'].shape[0]
+            ort_out = self._infer_densekp(batch['img'])
+            self._record_backend_call(batch['img'].shape[0])
             self.profile_timing["densekp_inference_ms"] += (
                 time.perf_counter() - start
             ) * 1000.0
@@ -336,7 +350,7 @@ class ORTRunner:
                     keypoints=keypoints_orig,
                     raw_scores=raw_scores,
                     detection_score=det_score,
-                    source="ort",
+                    source=self.backend_name,
                 ))
             self.profile_timing["densekp_postprocess_ms"] += (
                 time.perf_counter() - start

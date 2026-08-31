@@ -28,7 +28,9 @@ def parse_args() -> argparse.Namespace:
                         help="prepared ERP root with cam2/ and cam4/ subdirs")
     parser.add_argument("--valid-masks", type=Path, required=True,
                         help="npz file holding valid_masks_cam2 / valid_masks_cam4")
-    parser.add_argument("--onnx-path", type=Path, required=True)
+    parser.add_argument("--densekp-backend", choices=("ort", "trt"), default="ort")
+    parser.add_argument("--onnx-path", type=Path)
+    parser.add_argument("--trt-engine-path", type=Path)
     parser.add_argument("--hmr2-checkpoint", type=Path, required=True)
     parser.add_argument("--base-fixture", type=Path, required=True)
     parser.add_argument("--cpp-executable", type=Path, required=True)
@@ -38,7 +40,26 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--detector-backend", default="rtmlib_yolox")
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--cpp-backend", choices=("cpu", "cuda"), default="cpu")
-    return parser.parse_args()
+    parser.add_argument(
+        "--cpp-execution-backend",
+        choices=("subprocess", "persistent_worker"), default="subprocess",
+    )
+    parser.add_argument("--cpp-worker-executable", type=Path)
+    parser.add_argument("--cpp-worker-timeout-seconds", type=float, default=30.0)
+    parser.add_argument("--cpp-worker-debug-dump-dir", type=Path)
+    args = parser.parse_args()
+    if args.densekp_backend == "ort" and args.onnx_path is None:
+        parser.error("--onnx-path is required with --densekp-backend ort")
+    if args.densekp_backend == "trt" and args.trt_engine_path is None:
+        parser.error("--trt-engine-path is required with --densekp-backend trt")
+    if (args.cpp_execution_backend == "persistent_worker"
+            and args.cpp_worker_executable is None):
+        parser.error(
+            "--cpp-worker-executable is required with "
+            "--cpp-execution-backend persistent_worker")
+    if args.cpp_execution_backend == "persistent_worker" and args.cpp_backend != "cpu":
+        parser.error("persistent_worker requires --cpp-backend cpu")
+    return args
 
 
 def _frame_list(value: str) -> list[int]:
@@ -59,7 +80,7 @@ def main() -> int:
     from lib_pano.fitting_io.densekp_delivery_boundary import load_erp_frame_pair
     from lib_pano.human3d.hmr2_initializer import HMR2Initializer
     from lib_pano.human_fitting.per_person_cpp import (
-        CppPerPersonFitter, CppPersonFitterConfig,
+        CppPersonFitterConfig, create_cpp_per_person_fitter,
     )
     from lib_pano.human_fitting.sequence_orchestrator import (
         ErpHmr2ColdStartBatch, TrackGuidedSequenceConfig,
@@ -75,55 +96,77 @@ def main() -> int:
     height, width = np.asarray(valid_masks[0]).shape[:2]
 
     template = DenseKPConfig(
-        backend="ort", fisheye_cam2="", fisheye_cam4="", out_dir="",
-        onnx_path=str(args.onnx_path),
+        backend=args.densekp_backend, fisheye_cam2="", fisheye_cam4="", out_dir="",
+        onnx_path=(str(args.onnx_path) if args.onnx_path else None),
+        trt_engine_path=(str(args.trt_engine_path) if args.trt_engine_path else None),
         detector_backend=args.detector_backend,
         device=args.device, batch_size=1, profile_runtime=True)
     runtime = DenseKPRuntime.from_config(template).load()
     hmr = HMR2Initializer(args.hmr2_checkpoint, device=args.device)
     cold_start = ErpHmr2ColdStartBatch(hmr, width, height)
-    fitter = CppPerPersonFitter(CppPersonFitterConfig(
+    fitter = create_cpp_per_person_fitter(CppPersonFitterConfig(
         args.base_fixture, args.cpp_executable,
-        args.output_dir / "per_person_cpp", args.cpp_backend))
+        args.output_dir / "per_person_cpp", args.cpp_backend,
+        execution_backend=args.cpp_execution_backend,
+        worker_executable=args.cpp_worker_executable,
+        worker_timeout_seconds=args.cpp_worker_timeout_seconds,
+        worker_debug_dump_dir=args.cpp_worker_debug_dump_dir))
 
-    orchestrator = TrackGuidedSequenceOrchestrator(
-        runtime, cold_start, fitter, valid_masks,
-        TrackGuidedSequenceConfig(detection_interval=args.detect_interval),
-        sequence_start_frame=args.frames[0])
+    try:
+        orchestrator = TrackGuidedSequenceOrchestrator(
+            runtime, cold_start, fitter, valid_masks,
+            TrackGuidedSequenceConfig(detection_interval=args.detect_interval),
+            sequence_start_frame=args.frames[0])
 
-    records = []
+        def erp_path(camera: str, frame: int) -> Path:
+            for suffix in (".png", ".jpg", ".jpeg"):
+                candidate = args.erp_root / camera / f"{frame:05d}{suffix}"
+                if candidate.exists():
+                    return candidate
+            raise FileNotFoundError(f"no ERP image for {camera} frame {frame}")
 
-    def erp_path(camera: str, frame: int) -> Path:
-        for suffix in (".png", ".jpg", ".jpeg"):
-            candidate = args.erp_root / camera / f"{frame:05d}{suffix}"
-            if candidate.exists():
-                return candidate
-        raise FileNotFoundError(f"no ERP image for {camera} frame {frame}")
+        for frame in args.frames:
+            erp_cam2, erp_cam4 = load_erp_frame_pair(
+                erp_path("cam2", frame), erp_path("cam4", frame))
+            record = orchestrator.process_frame(frame, erp_cam2, erp_cam4)
+            persons = len(record.payload["persons"])
+            print(f"frame {frame}: mode={record.actual_mode.value} "
+                  f"persons={persons} detector={record.detector_calls} "
+                  f"densekp={record.densekp_calls}", flush=True)
 
-    for frame in args.frames:
-        erp_cam2, erp_cam4 = load_erp_frame_pair(
-            erp_path("cam2", frame), erp_path("cam4", frame))
-        record = orchestrator.process_frame(frame, erp_cam2, erp_cam4)
-        records.append(record)
-        persons = len(record.payload["persons"])
-        print(f"frame {frame}: mode={record.actual_mode.value} "
-              f"persons={persons} detector={record.detector_calls} "
-              f"densekp={record.densekp_calls}", flush=True)
-
-    result = orchestrator.sequence_result({
-        "erp_root": str(args.erp_root),
-        "requested_frames": args.frames,
-        "detect_interval": args.detect_interval,
-    })
-    args.output_dir.mkdir(parents=True, exist_ok=True)
-    (args.output_dir / "sequence_result.json").write_text(
-        json.dumps(result, indent=2) + "\n", encoding="utf-8")
-    runtime.close()
-    print("DENSEKP_TRACK_GUIDED_SEQUENCE=PASS "
-          f"frames={result['num_frames']} tracks={result['unique_tracks']} "
-          f"observations={result['matched_person_observations']} "
-          f"lm_successes={result['lm_successes']}")
-    return 0
+        result = orchestrator.sequence_result({
+            "erp_root": str(args.erp_root),
+            "requested_frames": args.frames,
+            "detect_interval": args.detect_interval,
+            "densekp_backend": args.densekp_backend,
+            "trt_engine_path": (
+                str(args.trt_engine_path) if args.trt_engine_path else None),
+            "cpp_execution_backend": args.cpp_execution_backend,
+            "cpp_evaluator_backend": args.cpp_backend,
+        })
+        worker = getattr(fitter, "worker", None)
+        if worker is not None:
+            result["worker_diagnostics"] = {
+                "process_start_count": worker.start_count,
+                "restart_count": worker.restart_count,
+                "static_model_load_count": worker.static_model_load_count,
+                "worker_startup_ms": worker.worker_startup_ms,
+                "static_model_load_ms": worker.static_model_load_ms,
+                "request_count": worker.request_count,
+                "request_profiles": worker.profile_rows,
+                "recent_stderr": worker.recent_stderr,
+            }
+        args.output_dir.mkdir(parents=True, exist_ok=True)
+        (args.output_dir / "sequence_result.json").write_text(
+            json.dumps(result, indent=2) + "\n", encoding="utf-8")
+        print("DENSEKP_TRACK_GUIDED_SEQUENCE=PASS "
+              f"frames={result['num_frames']} tracks={result['unique_tracks']} "
+              f"observations={result['matched_person_observations']} "
+              f"lm_successes={result['lm_successes']}")
+        return 0
+    finally:
+        fitter.close()
+        runtime.close()
 
 
 if __name__ == "__main__":
@@ -153,4 +196,3 @@ r'''
     --detect-interval 3
 
 '''
-

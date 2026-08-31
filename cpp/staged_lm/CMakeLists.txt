@@ -99,6 +99,7 @@ staged_lm_app(pose_shape_schur_reference_main apps/pose_shape_schur_reference_ma
 staged_lm_app(pose_shape_lm_reference_main apps/pose_shape_lm_reference_main.cpp)
 staged_lm_app(staged_lm_pipeline_reference_main apps/staged_lm_pipeline_reference_main.cpp)
 staged_lm_app(multiframe_staged_lm_reference_main apps/multiframe_staged_lm_reference_main.cpp)
+staged_lm_app(persistent_staged_lm_worker_main apps/persistent_staged_lm_worker_main.cpp)
 
 foreach(target staged_lm_pipeline_reference_main multiframe_staged_lm_reference_main)
   target_compile_definitions(${target} PRIVATE

@@ -1,5 +1,17 @@
 .vscode/
 Circular_Video/
+!Circular_Video/
+Circular_Video/*
+!Circular_Video/01_recv/
+Circular_Video/01_recv/*
+!Circular_Video/01_recv/20260708/
+Circular_Video/01_recv/20260708/*
+!Circular_Video/01_recv/20260708/densekp_delivery/
+Circular_Video/01_recv/20260708/densekp_delivery/*
+!Circular_Video/01_recv/20260708/densekp_delivery/config.py
+!Circular_Video/01_recv/20260708/densekp_delivery/runners/
+Circular_Video/01_recv/20260708/densekp_delivery/runners/*
+!Circular_Video/01_recv/20260708/densekp_delivery/runners/trt_runner.py
 PanoTools/
 models/
 ._*
