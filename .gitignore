@@ -21,13 +21,12 @@ data_process/
 src/script/tools/test_colab.ipynb
 __pycache__/
 **/__pycache__/
+# Docs: markdown is tracked at any depth, everything else under docs/ stays out.
+# (The old whitelist only re-included Architecture/staged_lm/*.md, so new
+# markdown added anywhere else was silently ignored.)
 docs/*
-!docs/data_flow.md
-!docs/debug_scripts.md
-!docs/pipeline_overview.md
-!docs/Architecture/
-!docs/Architecture/staged_lm/
-!docs/Architecture/staged_lm/*.md
+!docs/**/
+!docs/**/*.md
 *.zip
 src/lib_pano/local_setting.py
 *.zip
@@ -69,3 +68,6 @@ tools/SingleFitting/lib_dynamic_hvip/fitting/*
 !tools/SingleFitting/lib_dynamic_hvip/fitting/smplx_seq_forward_module.py
 !tools/SingleFitting/lib_dynamic_hvip/fitting/smpl_seq_forward_module.py
 build/
+
+# Local, machine-specific environment overrides (TMPDIR and friends). Never commit.
+.env
