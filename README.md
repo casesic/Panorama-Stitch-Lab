@@ -95,6 +95,12 @@ pytest -q tests/human_fitting/staged_lm
 - `docs/Architecture/archive/`：历史 bakeoff / attribution / profiling，只作追溯
 - `docs/changelogs/`：2026-08-03 那次大改的记录
 
+## 分支说明
+
+默认分支是 **`ssh_main`**，这份 README 描述的就是它。
+
+还有一个历史分支 **`legacy-2026-05`**：2026-05 的旧实现，138 个文件，与 `ssh_main` **没有共同祖先**（不是同一个起点的两条线，`git merge-base` 为空）。它保留下来只为追溯，**不要基于它继续开发**，也不要做合并尝试。
+
 ## 已知限制
 
 - **数据不在仓库**：`data_process/`、`Circular_Video/`、`models/` 被忽略，任何「跑通」都需要自备；本机绝对路径散落在部分 debug 脚本与文档里。
