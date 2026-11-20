@@ -2,15 +2,15 @@
 
 这个仓库没有 benchmark harness：数字是当时手测完写在 commit message 或某篇归档文档里的。所以下表**每一行都带来源**，来源里没有的信息保持「待补」——不替它补。
 
-关于「待补」：三条 commit 记录的硬件、输入、命令都没有配套日志，要补齐只能在同机重跑（见文末「怎么补」）。文档里那些 bakeoff / attribution 表是**同一台机器上的相对对比**，不是产品基准，跨文档比较 FPS 不成立。
+关于「待补」：三条 commit 记录的硬件已由作者补录为 RTX 3090（2026-11-20），点数与命令当时没有留日志，只能同机重跑才能补齐（见文末「怎么补」）。文档里那些 bakeoff / attribution 表是**同一台机器上的相对对比**，不是产品基准，跨文档比较 FPS 不成立。
 
 ## 结果表
 
 | 日期 | 硬件 | 输入 | 命令 | 指标 | 结果 | baseline | 来源 |
 |---|---|---|---|---|---|---|---|
-| 2026-08-13 | 待补 | 单帧 staged-LM，C++ O4 kernel | 待补 | 吞吐 | **5 FPS** | 待补 | commit `ee33380`「O4 cpp 5FPS」 |
-| 2026-08-18 | 待补 | 100 点 loss 的 C++ 管线 | 待补 | 吞吐 | **25–30 FPS** | 待补 | commit `58b0257`「CPP 100 points loss 25-30FPS」 |
-| 2026-08-31 | 待补 | DenseKP 的 TensorRT 后端 | 待补 | 正确性测试 | **通过**（原文 TEST PASSED） | 待补 | commit `905fb6c`「TRT TEST PASSED」 |
+| 2026-08-13 | RTX 3090（作者补录） | 单帧 staged-LM，C++ O4 kernel | 待补 | 吞吐 | **5 FPS** | 待补 | commit `ee33380`「O4 cpp 5FPS」 |
+| 2026-08-18 | RTX 3090（作者补录） | 100 点 loss 的 C++ 管线 | 待补 | 吞吐 | **25–30 FPS** | 待补 | commit `58b0257`「CPP 100 points loss 25-30FPS」 |
+| 2026-08-31 | RTX 3090（作者补录） | DenseKP 的 TensorRT 后端 | 待补 | 正确性测试 | **通过**（原文 TEST PASSED） | 待补 | commit `905fb6c`「TRT TEST PASSED」 |
 | 待补（文档未记） | 待补（文档只写单线程、`-march=native`） | frame 513，cam2 + cam4，T=1，138 点 / 204 support | Release，O4 `optimized_native_stable_p`，warmup 后跑 20 次取 median | 单帧 median 耗时 / FPS | D138：129.37 ms（7.73 FPS）<br>S138：23.81 ms（42.01 FPS） | S138（SAM3D 路线） | [densekp_vs_sam3d_cpp_performance_attribution](../docs/Architecture/archive/densekp_vs_sam3d_cpp_performance_attribution.md) |
 
 最后一行不是「我们的最终性能」，而是**归因实验**：它在同一 fixture 上比较两条拟合 policy，结论是 DenseKP 的 value/Jacobian regression 占 D138 的 74.34%、解释了与 S138 差距的约 91.11%。引用它时别把 7.73 / 42.01 FPS 当成端到端流水线速度。
