@@ -88,6 +88,7 @@ pytest -q tests/human_fitting/staged_lm
 ## 文档
 
 - [docs/README.md](docs/README.md)：文档索引与阅读顺序
+- [PIPELINE_CONTRACT](https://github.com/casesic/mamma_retrain/blob/main/docs/PIPELINE_CONTRACT.md)：四个仓库之间交接什么（放在 mamma_retrain，只有一份）
 - [docs/adr/](docs/adr/)：5 篇「为什么这么定」的短决策记录（ERP、C++ 重写、TensorRT、staged LM 公式化、DenseKP 生产交付）
 - [src/README.md](src/README.md)：staged LM 使用说明（输入输出、命令、性能口径）
 - `docs/Architecture/formulate/`：仍然约束当前代码的设计文档
